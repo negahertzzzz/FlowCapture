@@ -74,6 +74,12 @@ pub fn run() {
             commands::get_compressed_timeline,
             commands::get_replay_steps,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app, event| {
+            if let tauri::RunEvent::Ready = event {
+                #[cfg(all(debug_assertions, target_os = "macos"))]
+                platform::refresh_dev_dock_icon();
+            }
+        });
 }

@@ -134,7 +134,7 @@ pub fn render_styled_export_html(
     </div>
   </div>
 </div>"#,
-            logo = FLOWCAPTURE_LOGO_SVG,
+            logo = flowcapture_logo_html(32),
             title = html_escape(&title),
             overview = html_escape(&overview),
             date_icon = ICON_CALENDAR,
@@ -299,7 +299,15 @@ fn html_escape(input: &str) -> String {
         .replace('"', "&quot;")
 }
 
-const FLOWCAPTURE_LOGO_SVG: &str = r#"<svg width="32" height="32" viewBox="0 0 32 32" fill="none"><rect class="lbg" width="32" height="32" rx="9"/><g class="lfg" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" fill="none"><path d="M12 6 H6 V12"/><path d="M20 6 H26 V12"/><path d="M26 20 V26 H20"/><path d="M12 26 H6 V20"/></g><path class="lfg2" d="M13 12.5 L21 16 L13 19.5 Z"/></svg>"#;
+fn flowcapture_logo_html(size: u32) -> String {
+    let data = base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        include_bytes!("../../icons/32x32.png"),
+    );
+    format!(
+        r#"<img src="data:image/png;base64,{data}" width="{size}" height="{size}" alt="FlowCapture" style="display:block;object-fit:contain;border-radius:9px" />"#
+    )
+}
 
 const ICON_CALENDAR: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M3 9h18M8 2v4M16 2v4"/></svg>"#;
 const ICON_LIST: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01"/></svg>"#;
@@ -361,9 +369,6 @@ body { margin:0; font-family:var(--sans); background:#07090a; }
 .shot .cur { position:absolute; width:18px; height:18px; filter:drop-shadow(0 2px 3px rgba(0,0,0,.5)); }
 .shot-cap { display:flex; align-items:center; gap:8px; padding:11px 14px; background:var(--p-card); border-top:1px solid var(--p-line); font-size:12px; color:var(--p-muted); }
 .shot-cap svg { width:14px; height:14px; color:var(--p-accent); }
-.doc .lbg { fill:var(--p-accent); }
-.doc .lfg { stroke:var(--p-accent-ink); }
-.doc .lfg2 { fill:var(--p-accent-ink); }
 .doc.no-brand [data-brand] { display:none !important; }
 @media print {
   @page { size: Letter; margin: 0; }

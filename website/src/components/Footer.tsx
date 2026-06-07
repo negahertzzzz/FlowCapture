@@ -6,7 +6,7 @@ export function Footer() {
       <div className="wrap foot-grid">
         <div className="foot-brand">
           <a className="brand" href="#top">
-            <BrandLogo gradientId="mg2" />
+            <BrandLogo />
             FlowCapture
           </a>
           <p>

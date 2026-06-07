@@ -669,18 +669,6 @@
   color: var(--p-accent);
 }
 
-.export-doc .lbg {
-  fill: var(--p-accent);
-}
-
-.export-doc .lfg {
-  stroke: var(--p-accent-ink);
-}
-
-.export-doc .lfg2 {
-  fill: var(--p-accent-ink);
-}
-
 .export-doc.no-brand [data-brand] {
   display: none !important;
 }

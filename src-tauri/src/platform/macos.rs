@@ -17,3 +17,26 @@ impl MacPlatform {
         })
     }
 }
+
+/// `tauri dev` embeds `.icns` bytes for the dock icon, which can drop alpha and look
+/// oversized/square. Re-apply our PNG (squircle + padding) after startup.
+#[cfg(all(debug_assertions, target_os = "macos"))]
+pub fn refresh_dev_dock_icon() {
+    use objc2::{AllocAnyThread, MainThreadMarker};
+    use objc2_app_kit::{NSApplication, NSImage};
+    use objc2_foundation::NSData;
+
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+
+    let bytes = include_bytes!(concat!(env!("CARGO_MANIFEST_DIR"), "/app-icon.png"));
+    let data = NSData::with_bytes(bytes);
+    let Some(app_icon) = NSImage::initWithData(NSImage::alloc(), &data) else {
+        return;
+    };
+    app_icon.setSize(objc2_foundation::NSSize::new(1024.0, 1024.0));
+
+    let app = NSApplication::sharedApplication(mtm);
+    unsafe { app.setApplicationIconImage(Some(&app_icon)) };
+}

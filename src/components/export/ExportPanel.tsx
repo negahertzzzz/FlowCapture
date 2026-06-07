@@ -128,7 +128,7 @@ export function ExportPanel({
     <div className={`export-studio${sidebarOpen ? "" : " sidebar-collapsed"}`}>
       <aside className="config" aria-hidden={!sidebarOpen}>
         <div className="cfg-head">
-          <Logo size={34} radius={9} />
+          <Logo size={34} />
           <div>
             <div className="lt">Export</div>
             <div className="ls">Configure your document</div>
@@ -301,7 +301,7 @@ export function ExportPanel({
                 <div className="cover">
                   <div className="cover-band">
                     <div className="cover-brand" data-brand>
-                      <Logo size={32} radius={9} variant="accent" />
+                      <Logo size={32} variant="accent" />
                       <div>
                         <div className="bn">FlowCapture</div>
                         <div className="bt">Workflow documentation</div>

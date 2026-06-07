@@ -14,6 +14,8 @@ pub use permissions::{
     preflight_recording_start, prepare_recording_permissions, request_accessibility_permission,
     reveal_executable_in_finder, RecordingPermissions,
 };
+#[cfg(all(debug_assertions, target_os = "macos"))]
+pub use macos::refresh_dev_dock_icon;
 pub use traits::*;
 
 use anyhow::Result;
