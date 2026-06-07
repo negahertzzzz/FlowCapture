@@ -1,0 +1,410 @@
+use std::collections::{HashMap, HashSet};
+
+use regex::Regex;
+use serde_json::json;
+
+use crate::storage::models::{Screenshot, SessionEvent, WorkflowStep};
+
+pub fn build_workflow_steps(events: &[SessionEvent]) -> Vec<WorkflowStep> {
+    let mut steps = Vec::new();
+    let mut last_window: Option<(String, String)> = None;
+    let mut last_click_key: Option<String> = None;
+
+    for event in events {
+        if should_skip_event(event) {
+            continue;
+        }
+
+        match event.event_type.as_str() {
+            "window_focus" => {
+                let app = event
+                    .app_name
+                    .clone()
+                    .or_else(|| event.payload.get("app_name").and_then(|v| v.as_str()).map(str::to_string))
+                    .unwrap_or_else(|| "Application".to_string());
+                let title = event
+                    .payload
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(&app)
+                    .to_string();
+
+                if last_window.as_ref() == Some(&(app.clone(), title.clone())) {
+                    continue;
+                }
+                last_window = Some((app.clone(), title.clone()));
+                last_click_key = None;
+
+                steps.push(WorkflowStep {
+                    step: 0,
+                    title: format!("Open {title}"),
+                    description: format!("Switch to **{app}** and open **{title}**."),
+                    timestamp_ms: event.timestamp_ms,
+                    screenshot_ids: Vec::new(),
+                });
+            }
+            "mouse_click" => {
+                let button = event
+                    .payload
+                    .get("button")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("left");
+                let x = event.payload.get("x").and_then(|v| v.as_i64()).unwrap_or(0);
+                let y = event.payload.get("y").and_then(|v| v.as_i64()).unwrap_or(0);
+                let context = last_window
+                    .as_ref()
+                    .map(|(app, title)| format!(" in **{title}** ({app})"))
+                    .unwrap_or_default();
+                let click_key = format!("{button}:{x}:{y}:{context}");
+
+                if last_click_key.as_deref() == Some(click_key.as_str()) {
+                    continue;
+                }
+                last_click_key = Some(click_key);
+
+                steps.push(WorkflowStep {
+                    step: 0,
+                    title: format!("{}-click", button),
+                    description: format!(
+                        "{}{}.",
+                        match button {
+                            "right" => "Right-click the target element",
+                            "middle" => "Middle-click the target element",
+                            _ => "Click the target element",
+                        },
+                        context
+                    ),
+                    timestamp_ms: event.timestamp_ms,
+                    screenshot_ids: Vec::new(),
+                });
+            }
+            "typed_text" => {
+                let text = event
+                    .payload
+                    .get("text")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if text.trim().is_empty() {
+                    continue;
+                }
+                let app = event
+                    .app_name
+                    .clone()
+                    .unwrap_or_else(|| "the active application".to_string());
+                steps.push(WorkflowStep {
+                    step: 0,
+                    title: "Enter text".to_string(),
+                    description: format!("In **{app}**, type `{text}`."),
+                    timestamp_ms: event.timestamp_ms,
+                    screenshot_ids: Vec::new(),
+                });
+            }
+            "manual_marker" => {
+                steps.push(WorkflowStep {
+                    step: 0,
+                    title: "Manual step".to_string(),
+                    description: "Complete the marked manual step before continuing.".to_string(),
+                    timestamp_ms: event.timestamp_ms,
+                    screenshot_ids: Vec::new(),
+                });
+            }
+            _ => {}
+        }
+    }
+
+    renumber_steps(&mut steps);
+    collapse_duplicate_steps(&mut steps);
+    steps.truncate(24);
+    renumber_steps(&mut steps);
+    steps
+}
+
+pub fn match_screenshots_to_steps(steps: &mut [WorkflowStep], screenshots: &[Screenshot]) {
+    if screenshots.is_empty() {
+        return;
+    }
+
+    for step in steps.iter_mut() {
+        step.screenshot_ids.clear();
+        if let Some(shot) = nearest_screenshot(step.timestamp_ms, screenshots) {
+            step.screenshot_ids.push(shot.id.clone());
+        }
+    }
+}
+
+pub fn infer_workflow_summary(
+    session_title: &str,
+    events: &[SessionEvent],
+    steps: &[WorkflowStep],
+) -> (String, String) {
+    let mut panes = HashSet::new();
+    let mut apps = HashSet::new();
+
+    for event in events {
+        if let Some(app) = &event.app_name {
+            if !is_flowcapture_app(app) {
+                apps.insert(app.clone());
+            }
+        }
+        if event.event_type == "window_focus" {
+            if let Some(title) = event.payload.get("title").and_then(|v| v.as_str()) {
+                if !title.is_empty() && title != "FlowCapture" {
+                    panes.insert(title.to_string());
+                }
+            }
+        }
+    }
+
+    let title = if is_generic_session_title(session_title) {
+        if panes.is_empty() {
+            "Workflow Documentation".to_string()
+        } else if panes.len() == 1 {
+            format!("How to use {}", panes.iter().next().unwrap())
+        } else {
+            format!("Workflow: {}", summarize_panes(&panes))
+        }
+    } else {
+        session_title.to_string()
+    };
+
+    let overview = if steps.is_empty() {
+        "This workflow was recorded with FlowCapture.".to_string()
+    } else if panes.is_empty() {
+        format!(
+            "This guide walks through {} recorded actions to complete **{}**.",
+            steps.len(),
+            title
+        )
+    } else {
+        format!(
+            "This guide documents how to work with {} across {} steps, including navigating {}.",
+            apps.into_iter().collect::<Vec<_>>().join(", "),
+            steps.len(),
+            summarize_panes(&panes)
+        )
+    };
+
+    (title, overview)
+}
+
+pub fn render_documentation_markdown(
+    title: &str,
+    overview: &str,
+    steps: &[WorkflowStep],
+    screenshots: &[Screenshot],
+) -> String {
+    let mut output = format!("# {title}\n\n{overview}\n\n## Steps\n\n");
+    let lookup = screenshot_lookup(screenshots);
+
+    for step in steps {
+        output.push_str(&format!("### Step {}: {}\n\n", step.step, step.title));
+        output.push_str(&format!("{}\n\n", step.description));
+        if let Some(id) = step.screenshot_ids.first() {
+            if let Some(shot) = lookup.get(id.as_str()) {
+                output.push_str(&format!(
+                    "![Step {}]({})\n\n",
+                    step.step,
+                    markdown_image_path(shot)
+                ));
+            }
+        }
+    }
+
+    output.trim().to_string()
+}
+
+pub fn sanitize_markdown(markdown: &str) -> String {
+    let placeholder = Regex::new(r"\[[^\]]*(?:MISSING|SPECIFY|SPECIFIC|Describe|List any|TBD|TODO)[^\]]*\]")
+        .expect("valid regex");
+    let bracket_action =
+        Regex::new(r"(?m)^\s*[\*\-]\s+\*\*[^*]+\*\*:\s*\[[^\]]+\]\s*$").expect("valid regex");
+
+    let mut cleaned = markdown.to_string();
+    cleaned = placeholder.replace_all(&cleaned, "").to_string();
+    cleaned = bracket_action.replace_all(&cleaned, "").to_string();
+
+    cleaned
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim();
+            !trimmed.contains("[MISSING SCREENSHOT]")
+                && !trimmed.contains("[Specify")
+                && !trimmed.contains("[SPECIFIC")
+                && !trimmed.contains("[Describe what")
+                && !trimmed.contains("[List any")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        .replace("\n\n\n\n", "\n\n")
+        .replace("\n\n\n", "\n\n")
+        .trim()
+        .to_string()
+}
+
+pub fn normalize_screenshot_references(markdown: &str, screenshots: &[Screenshot]) -> String {
+    let image_re =
+        Regex::new(r"!\[([^\]]*)\]\(([^)]+)\)").expect("valid markdown image regex");
+
+    image_re
+        .replace_all(markdown, |caps: &regex::Captures| {
+            let alt = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+            let reference = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+            if let Some(shot) = find_screenshot_for_reference(reference, screenshots) {
+                format!("![{}]({})", alt, markdown_image_path(shot))
+            } else {
+                caps.get(0).map(|m| m.as_str()).unwrap_or("").to_string()
+            }
+        })
+        .into_owned()
+}
+
+pub fn strip_screenshot_references(markdown: &str, screenshots: &[Screenshot]) -> String {
+    let image_re =
+        Regex::new(r"!\[([^\]]*)\]\(([^)]+)\)").expect("valid markdown image regex");
+
+    let stripped = image_re
+        .replace_all(markdown, |caps: &regex::Captures| {
+            let reference = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+            if find_screenshot_for_reference(reference, screenshots).is_some() {
+                String::new()
+            } else {
+                caps.get(0).map(|m| m.as_str()).unwrap_or("").to_string()
+            }
+        })
+        .into_owned();
+
+    stripped
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+        .replace("\n\n\n\n", "\n\n")
+        .replace("\n\n\n", "\n\n")
+        .trim()
+        .to_string()
+}
+
+pub fn export_markdown_image_path(shot: &Screenshot) -> String {
+    format!("../screenshots/{}", screenshot_filename(shot))
+}
+
+pub fn markdown_image_path(shot: &Screenshot) -> String {
+    format!("screenshots/{}", screenshot_filename(shot))
+}
+
+fn find_screenshot_for_reference<'a>(
+    reference: &str,
+    screenshots: &'a [Screenshot],
+) -> Option<&'a Screenshot> {
+    let reference = reference.trim();
+
+    for shot in screenshots {
+        if reference == markdown_image_path(shot)
+            || reference == export_markdown_image_path(shot)
+            || reference == shot.path
+        {
+            return Some(shot);
+        }
+    }
+
+    for shot in screenshots {
+        let filename = screenshot_filename(shot);
+        if reference == filename
+            || reference.ends_with(&format!("/{filename}"))
+            || reference.contains(&shot.id)
+        {
+            return Some(shot);
+        }
+    }
+
+    None
+}
+
+fn screenshot_filename(shot: &Screenshot) -> String {
+    std::path::Path::new(&shot.path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(&shot.id)
+        .to_string()
+}
+
+fn screenshot_lookup<'a>(screenshots: &'a [Screenshot]) -> HashMap<&'a str, &'a Screenshot> {
+    screenshots.iter().map(|shot| (shot.id.as_str(), shot)).collect()
+}
+
+fn nearest_screenshot(timestamp_ms: i64, screenshots: &[Screenshot]) -> Option<&Screenshot> {
+    screenshots
+        .iter()
+        .min_by_key(|shot| (shot.timestamp_ms - timestamp_ms).unsigned_abs())
+}
+
+fn should_skip_event(event: &SessionEvent) -> bool {
+    if event.event_type == "window_focus" || event.event_type == "mouse_click" {
+        event
+            .app_name
+            .as_deref()
+            .is_some_and(is_flowcapture_app)
+    } else {
+        false
+    }
+}
+
+fn is_flowcapture_app(app: &str) -> bool {
+    app.eq_ignore_ascii_case("flowcapture") || app.contains("FlowCapture")
+}
+
+fn is_generic_session_title(title: &str) -> bool {
+    let normalized = title.trim().to_lowercase();
+    normalized.is_empty()
+        || normalized == "new workflow session"
+        || normalized.starts_with("new workflow")
+}
+
+fn summarize_panes(panes: &HashSet<String>) -> String {
+    let mut items: Vec<_> = panes.iter().cloned().collect();
+    items.sort();
+    match items.len() {
+        0 => "the recorded workflow".to_string(),
+        1 => items[0].clone(),
+        2 => format!("{} and {}", items[0], items[1]),
+        _ => format!("{}, {}, and more", items[0], items[1]),
+    }
+}
+
+fn renumber_steps(steps: &mut [WorkflowStep]) {
+    for (index, step) in steps.iter_mut().enumerate() {
+        step.step = index + 1;
+    }
+}
+
+fn collapse_duplicate_steps(steps: &mut Vec<WorkflowStep>) {
+    let mut collapsed: Vec<WorkflowStep> = Vec::with_capacity(steps.len());
+    for step in steps.drain(..) {
+        if let Some(last) = collapsed.last_mut() {
+            if last.title == step.title
+                && last.description == step.description
+                && (step.timestamp_ms - last.timestamp_ms).unsigned_abs() < 1500
+            {
+                continue;
+            }
+        }
+        collapsed.push(step);
+    }
+    *steps = collapsed;
+}
+
+pub fn events_for_prompt(events: &[SessionEvent]) -> serde_json::Value {
+    let compact: Vec<_> = events
+        .iter()
+        .take(120)
+        .map(|event| {
+            json!({
+                "type": event.event_type,
+                "app": event.app_name,
+                "payload": event.payload,
+                "timestamp_ms": event.timestamp_ms,
+            })
+        })
+        .collect();
+    json!(compact)
+}
