@@ -38,6 +38,12 @@ export function AiReplay() {
             </div>
           </div>
           <div className="replay-shot">
+            <img
+              className="replay-image"
+              src={current.image}
+              alt={current.title}
+              key={current.image}
+            />
             <div
               className="ring"
               style={{ left: `${current.x + 2}%`, top: `${current.y + 2}%` }}

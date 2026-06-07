@@ -70,6 +70,7 @@ export type ReplayStep = {
   desc: string;
   listTitle: string;
   listDesc: string;
+  image: string;
   x: number;
   y: number;
 };
@@ -80,8 +81,9 @@ export const REPLAY_STEPS: ReplayStep[] = [
     desc: "Switch to System Settings and open the Software Update pane.",
     listTitle: "Open Software Update",
     listDesc: "Navigate to the pane in System Settings.",
-    x: 62,
-    y: 38,
+    image: "/replay/step-1.png",
+    x: 55,
+    y: 47,
   },
   {
     title: "Review available update",
@@ -89,16 +91,17 @@ export const REPLAY_STEPS: ReplayStep[] = [
       "macOS Tahoe 26.5.1 (2.14 GB) is available. Read the release notes before installing.",
     listTitle: "Review available update",
     listDesc: "macOS Tahoe 26.5.1 — 2.14 GB.",
-    x: 40,
-    y: 55,
+    image: "/replay/step-2.png",
+    x: 75,
+    y: 20,
   },
   {
-    title: "Connect to Wi-Fi & install",
-    desc:
-      "Select the secured network, confirm the connection, then start the update.",
-    listTitle: "Connect to Wi-Fi & install",
-    listDesc: "Confirm the network, then start the update.",
-    x: 30,
-    y: 30,
+    title: "Click on Update Tonight",
+    desc: "Confirm the update tonight when you're ready to install.",
+    listTitle: "Click on Update Tonight",
+    listDesc: "Click Update Tonight to begin the update.",
+    image: "/replay/step-3.png",
+    x: 58,
+    y: 89,
   },
 ];

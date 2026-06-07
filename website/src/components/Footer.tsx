@@ -40,14 +40,12 @@ export function Footer({ variant = "landing" }: FooterProps) {
             </a>
             <a href="/docs/development/local-setup">Contributing</a>
             <a href="/docs/project/product-requirements">Roadmap</a>
-            <a href="/docs/intro">Changelog</a>
           </div>
           <div className="foot-col">
             <h5>Resources</h5>
             <Link to="/docs/intro">Documentation</Link>
             <Link to="/docs/reference/ai-providers">Providers</Link>
             <Link to="/docs/guide/settings-and-privacy">Privacy</Link>
-            <a href={`${root}#opensource`}>Discord</a>
           </div>
         </div>
       </div>
