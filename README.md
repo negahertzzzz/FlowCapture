@@ -29,7 +29,15 @@ npm run tauri dev
 6. Click **Generate Documentation**, edit the Markdown, then export MD/HTML/PDF/Video.
 7. Use **Show in Folder** on the Exports tab to locate generated files.
 
-See [docs/dogfooding.md](docs/dogfooding.md) for acceptance scenarios.
+See [docs/dogfooding.md](docs/dogfooding.md) for acceptance scenarios (also at `/docs/quality/dogfooding` on the website).
+
+## Website & documentation
+
+```bash
+npm run website:dev
+```
+
+Marketing site and docs live in `website/` (docs at `/docs/*`). Build with `npm run website:build`.
 
 ## Release build
 
