@@ -42,7 +42,7 @@ Packaged artifacts are written to:
 src-tauri/target/release/bundle/
 ```
 
-On macOS you get `FlowCapture.app`; on Windows an MSI/NSIS installer; on Linux `.deb` / `.AppImage` depending on config.
+On macOS you get `FlowCapture.app` and a `.dmg` installer. Pre-built downloads are available on [GitHub Releases](https://github.com/Abhi6722/FlowCapture/releases) (macOS Apple Silicon for now).
 
 ## Documentation
 

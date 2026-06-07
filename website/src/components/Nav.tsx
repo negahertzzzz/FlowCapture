@@ -2,6 +2,7 @@ import { useRef } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { BrandLogo } from "./BrandLogo";
 import { useNavScroll } from "../hooks/useNavScroll";
+import { GITHUB_REPO_URL, MACOS_DMG_URL } from "../lib/site";
 
 type NavProps = {
   variant?: "landing" | "docs";
@@ -13,6 +14,7 @@ export function Nav({ variant = "landing" }: NavProps) {
   const location = useLocation();
   const onDocs = variant === "docs" || location.pathname.startsWith("/docs");
   const root = onDocs ? "/" : "";
+  const downloadHref = onDocs ? MACOS_DMG_URL : `${root}#download`;
 
   return (
     <nav className="top" id="nav" ref={navRef}>
@@ -32,13 +34,23 @@ export function Nav({ variant = "landing" }: NavProps) {
           </Link>
         </div>
         <div className="nav-right">
-          <a className="gh-star" href={`${root}#opensource`}>
-            <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor">
+          <a
+            className="gh-link"
+            href={GITHUB_REPO_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            aria-label="GitHub repository"
+          >
+            <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor" aria-hidden>
               <path d="M8 0a8 8 0 0 0-2.53 15.59c.4.07.55-.17.55-.38v-1.34c-2.23.49-2.7-1.07-2.7-1.07-.36-.93-.89-1.18-.89-1.18-.73-.5.05-.49.05-.49.8.06 1.23.83 1.23.83.72 1.23 1.87.87 2.33.67.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.01.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 0 1 4 0c1.53-1.03 2.2-.82 2.2-.82.44 1.11.16 1.92.08 2.12.51.56.82 1.28.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48v2.19c0 .21.15.46.55.38A8 8 0 0 0 8 0Z" />
-            </svg>{" "}
-            <span className="star">★</span> <b>4.2k</b>
+            </svg>
           </a>
-          <a className="btn btn-primary btn-sm" href={`${root}#download`}>
+          <a
+            className="btn btn-primary btn-sm"
+            href={downloadHref}
+            target={onDocs ? "_blank" : undefined}
+            rel={onDocs ? "noopener noreferrer" : undefined}
+          >
             <svg
               viewBox="0 0 24 24"
               fill="none"

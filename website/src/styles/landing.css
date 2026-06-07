@@ -43,14 +43,13 @@ nav.top.scrolled { border-bottom-color: var(--hair); background: rgba(7,9,10,.82
 .nav-links .nav-docs { font-size: 14px; color: var(--text-2); padding: 8px 12px; border-radius: 8px; white-space: nowrap; transition: color .15s, background .15s; }
 .nav-links .nav-docs:hover { color: var(--text); background: rgba(255,255,255,.04); }
 .nav-right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
-.gh-star {
-  display: inline-flex; align-items: center; gap: 8px; height: 36px; padding: 0 12px;
+.gh-link {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 36px; height: 36px;
   border: 1px solid var(--hair-2); border-radius: 8px; background: rgba(255,255,255,.022);
-  font-size: 13px; color: var(--text-2); transition: border-color .2s, color .2s;
+  color: var(--text-2); transition: border-color .2s, color .2s, background .2s;
 }
-.gh-star:hover { border-color: var(--hair-strong); color: var(--text); }
-.gh-star b { color: var(--text); font-weight: 600; }
-.gh-star .star { color: var(--amber); }
+.gh-link:hover { border-color: var(--hair-strong); color: var(--text); background: rgba(255,255,255,.04); }
 
 /* ---------- Hero ---------- */
 .hero { padding: 76px 0 40px; text-align: center; }
@@ -289,6 +288,7 @@ section.blk { padding: 92px 0; }
 .final h2 { font-size: clamp(30px, 4.4vw, 52px); letter-spacing:-.035em; }
 .final p { color: var(--text-2); font-size:17px; margin: 18px auto 0; max-width: 52ch; }
 .final .cta { display:flex; gap:12px; justify-content:center; margin-top:30px; flex-wrap:wrap; }
+.download-note { margin-top: 16px; font-size: 13px; color: var(--muted); font-family: var(--mono); }
 
 /* ---------- Footer ---------- */
 footer { border-top: 1px solid var(--hair); padding: 56px 0 48px; }

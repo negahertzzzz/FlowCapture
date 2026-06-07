@@ -1,3 +1,5 @@
+import { GITHUB_REPO_URL, MACOS_DMG_URL } from "../../lib/site";
+
 export function OpenSource() {
   return (
     <section className="blk wrap" id="opensource">
@@ -27,7 +29,12 @@ export function OpenSource() {
             <PricingFeature>Interactive AI Replay</PricingFeature>
             <PricingFeature>Local SQLite storage & redaction</PricingFeature>
           </ul>
-          <a className="btn btn-primary" href="#download">
+          <a
+            className="btn btn-primary"
+            href={MACOS_DMG_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
             Download free
           </a>
         </div>
@@ -58,7 +65,7 @@ export function OpenSource() {
             <PricingFeature>Templates marketplace</PricingFeature>
             <PricingFeature>Enterprise SSO</PricingFeature>
           </ul>
-          <a className="btn btn-ghost" href="#download">
+          <a className="btn btn-ghost" href={GITHUB_REPO_URL} target="_blank" rel="noopener noreferrer">
             Join the waitlist
           </a>
         </div>

@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import { BrandLogo } from "./BrandLogo";
+import { GITHUB_REPO_URL, MACOS_DMG_URL } from "../lib/site";
 
 type FooterProps = {
   variant?: "landing" | "docs";
@@ -28,10 +29,15 @@ export function Footer({ variant = "landing" }: FooterProps) {
             <a href={`${root}#features`}>Features</a>
             <a href={`${root}#formats`}>Exports</a>
             <a href={`${root}#replay`}>AI Replay</a>
+            <a href={MACOS_DMG_URL} target="_blank" rel="noopener noreferrer">
+              Download
+            </a>
           </div>
           <div className="foot-col">
             <h5>Open source</h5>
-            <a href="https://github.com/flowcapture/flowcapture">GitHub</a>
+            <a href={GITHUB_REPO_URL} target="_blank" rel="noopener noreferrer">
+              GitHub
+            </a>
             <a href="/docs/development/local-setup">Contributing</a>
             <a href="/docs/project/product-requirements">Roadmap</a>
             <a href="/docs/intro">Changelog</a>
@@ -47,7 +53,7 @@ export function Footer({ variant = "landing" }: FooterProps) {
       </div>
       <div className="wrap foot-base">
         <span>© 2026 FlowCapture · MIT Licensed</span>
-        <span className="mono">Local-first · BYOK · Open source</span>
+        <span className="mono">macOS · Local-first · BYOK · Open source</span>
       </div>
     </footer>
   );
