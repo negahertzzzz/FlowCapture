@@ -1,0 +1,720 @@
+/* Export studio — config panel + live preview */
+
+.export-studio {
+  /* ↓ Main preview row height — change this to resize the export studio */
+  --export-studio-height: 680px;
+  /* ↓ Left sidebar width when expanded */
+  --export-sidebar-width: 272px;
+
+  display: grid;
+  grid-template-columns: var(--export-sidebar-width) minmax(0, 1fr);
+  grid-template-rows: var(--export-studio-height) auto;
+  margin-top: 24px;
+  border: 1px solid var(--hair);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+  background: linear-gradient(180deg, var(--surface), var(--bg));
+  transition: grid-template-columns 0.22s ease;
+}
+
+.export-studio.sidebar-collapsed {
+  --export-sidebar-width: 0px;
+}
+
+.export-studio .config {
+  border-right: 1px solid var(--hair);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  height: 100%;
+  max-height: var(--export-studio-height);
+  overflow: hidden;
+  background: linear-gradient(180deg, var(--surface), var(--bg));
+  transition: opacity 0.18s ease, border-color 0.18s ease;
+}
+
+.export-studio.sidebar-collapsed .config {
+  opacity: 0;
+  pointer-events: none;
+  border-right-color: transparent;
+}
+
+.export-studio .cfg-head {
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--hair);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.export-studio .cfg-head .lt {
+  font-size: 14.5px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.export-studio .cfg-head .ls {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.export-studio .cfg-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 18px 18px;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.export-studio .cfg-body::-webkit-scrollbar {
+  display: none;
+}
+
+.export-studio .cfg-sec {
+  padding: 18px 0;
+  border-bottom: 1px solid var(--hair);
+}
+
+.export-studio .cfg-sec:last-child {
+  border-bottom: 0;
+}
+
+.export-studio .cfg-sec h4 {
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--dim);
+  margin-bottom: 14px;
+  font-weight: 500;
+}
+
+.export-studio .cfg-label {
+  font-size: 13.5px;
+  color: var(--text-2);
+}
+
+.export-studio .seg {
+  display: flex;
+  padding: 3px;
+  background: var(--bg);
+  border: 1px solid var(--hair-2);
+  border-radius: 10px;
+  gap: 3px;
+  width: 100%;
+}
+
+.export-studio .seg button {
+  flex: 1;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 540;
+  padding: 8px 6px;
+  border-radius: 7px;
+  transition: 0.15s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.export-studio .seg button svg {
+  width: 15px;
+  height: 15px;
+}
+
+.export-studio .seg button.on {
+  background: var(--mint);
+  color: var(--mint-ink);
+}
+
+.export-studio .row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 0;
+}
+
+.export-studio .swatches {
+  display: flex;
+  gap: 9px;
+  margin-top: 4px;
+}
+
+.export-studio .sw {
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  border: 2px solid transparent;
+  cursor: pointer;
+  transition: 0.15s;
+  position: relative;
+}
+
+.export-studio .sw.on {
+  border-color: var(--text);
+}
+
+.export-studio .sw.on::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 7px;
+  box-shadow: 0 0 0 2px var(--bg) inset;
+}
+
+.export-studio .tg {
+  width: 40px;
+  height: 24px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  border: 1px solid var(--hair-2);
+  position: relative;
+  transition: 0.18s;
+  flex: none;
+  cursor: pointer;
+}
+
+.export-studio .tg::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--muted);
+  transition: 0.18s;
+}
+
+.export-studio .tg.on {
+  background: var(--mint);
+  border-color: var(--mint);
+}
+
+.export-studio .tg.on::after {
+  background: var(--mint-ink);
+  transform: translateX(16px);
+}
+
+.export-studio .selectish {
+  width: 100%;
+  height: 40px;
+  background: var(--bg);
+  border: 1px solid var(--hair-2);
+  border-radius: 9px;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 13px;
+  padding: 0 12px;
+}
+
+.export-studio .cfg-foot {
+  padding: 14px 18px;
+  border-top: 1px solid var(--hair);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+.export-studio .cfg-foot .btn-row {
+  display: flex;
+  gap: 8px;
+}
+
+.export-studio .cfg-foot .btn-row .btn {
+  flex: 1;
+}
+
+.export-studio .stage {
+  position: relative;
+  min-height: 0;
+  min-width: 0;
+  height: 100%;
+  max-height: var(--export-studio-height);
+  display: flex;
+  flex-direction: column;
+  background:
+    radial-gradient(800px 400px at 80% -10%, rgba(95, 233, 184, 0.05), transparent 60%),
+    repeating-linear-gradient(45deg, #060809 0 12px, #070a0b 12px 24px);
+}
+
+.export-studio .sidebar-toggle {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  z-index: 3;
+  width: 28px;
+  height: 52px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--hair-2);
+  border-left: none;
+  border-radius: 0 10px 10px 0;
+  background: linear-gradient(180deg, var(--surface), var(--bg));
+  color: var(--muted);
+  cursor: pointer;
+  transform: translateY(-50%);
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+
+.export-studio .sidebar-toggle:hover {
+  color: var(--text);
+  border-color: var(--hair-strong);
+}
+
+.export-studio .sidebar-collapsed .sidebar-toggle {
+  left: 0;
+  border-left: 1px solid var(--hair-2);
+  border-radius: 0 10px 10px 0;
+}
+
+.export-studio .stage-scroll {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+  padding: 24px 28px;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+}
+
+.export-studio .stage-scroll::-webkit-scrollbar {
+  width: 11px;
+}
+
+.export-studio .stage-scroll::-webkit-scrollbar-thumb {
+  background: #1a2225;
+  border-radius: 6px;
+  border: 3px solid #070a0b;
+}
+
+.export-studio .stage-inner {
+  width: 100%;
+  min-width: 0;
+  max-width: 816px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 30px;
+  padding-bottom: 12px;
+}
+
+.export-studio .doc-fit {
+  width: 100%;
+  min-width: 0;
+}
+
+.export-studio .export-history {
+  grid-column: 1 / -1;
+  border-top: 1px solid var(--hair);
+  padding: 22px 24px 26px;
+  background: rgba(255, 255, 255, 0.008);
+}
+
+.export-studio .export-history h3 {
+  font-size: 16px;
+  margin-bottom: 6px;
+}
+
+/* Document preview styles (mirrors exported HTML) */
+.export-doc {
+  --p-accent: #5fe9b8;
+  --p-accent-ink: #06231b;
+  --p-accent-soft: color-mix(in srgb, var(--p-accent) 13%, transparent);
+  --p-accent-line: color-mix(in srgb, var(--p-accent) 32%, transparent);
+  width: 100%;
+  max-width: 816px;
+  box-sizing: border-box;
+  font-size: 15px;
+  line-height: 1.6;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.export-doc.size-a4 {
+  max-width: 794px;
+}
+
+.export-doc.theme-dark {
+  --p-bg: #0c1113;
+  --p-ink: #eaf1ef;
+  --p-muted: #9aa6a3;
+  --p-dim: #69746f;
+  --p-line: rgba(150, 175, 170, 0.14);
+  --p-card: rgba(255, 255, 255, 0.022);
+  --p-shadow: 0 40px 90px -30px rgba(0, 0, 0, 0.8);
+}
+
+.export-doc.theme-light {
+  --p-bg: #ffffff;
+  --p-ink: #13201c;
+  --p-muted: #5d6b66;
+  --p-dim: #97a39d;
+  --p-line: #e8ece9;
+  --p-card: #f6f9f7;
+  --p-shadow: 0 40px 90px -30px rgba(0, 0, 0, 0.5);
+}
+
+.export-doc.mode-pdf .export-sheet {
+  background: var(--p-bg);
+  color: var(--p-ink);
+  border-radius: 4px;
+  box-shadow: var(--p-shadow);
+  overflow: hidden;
+  border: 1px solid var(--p-line);
+}
+
+.export-doc.mode-html {
+  width: 100%;
+  max-width: 760px;
+  background: var(--p-bg);
+  color: var(--p-ink);
+  border: 1px solid var(--p-line);
+  border-radius: 16px;
+  box-shadow: var(--p-shadow);
+  overflow: hidden;
+}
+
+.export-doc.mode-html .export-sheet {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+}
+
+.export-doc .sheet-pad {
+  padding: clamp(28px, 4vw, 56px) clamp(20px, 4vw, 60px) clamp(24px, 3vw, 40px);
+  box-sizing: border-box;
+}
+
+.export-doc.mode-html .sheet-pad {
+  padding: 48px 52px;
+}
+
+.export-doc .run-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px clamp(20px, 4vw, 60px);
+  border-top: 1px solid var(--p-line);
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--p-dim);
+  box-sizing: border-box;
+}
+
+.export-doc .cover-band {
+  background: linear-gradient(135deg, #0c1a16, #0a1411 70%);
+  padding: clamp(28px, 4vw, 46px) clamp(20px, 4vw, 60px) clamp(24px, 3vw, 42px);
+  position: relative;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.export-doc .cover-band::after {
+  content: "";
+  position: absolute;
+  right: -80px;
+  top: -80px;
+  width: 300px;
+  height: 300px;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle,
+    color-mix(in srgb, var(--p-accent) 22%, transparent),
+    transparent 65%
+  );
+  pointer-events: none;
+}
+
+.export-doc .cover-brand,
+.export-doc .cover-kicker,
+.export-doc .cover h1,
+.export-doc .cover .lede,
+.export-doc .cover-meta {
+  position: relative;
+}
+
+.export-doc.mode-html .cover-band {
+  border-radius: 16px 16px 0 0;
+}
+
+.export-doc .cover-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.export-doc .cover-brand .bn {
+  font-size: 15px;
+  font-weight: 650;
+  color: #fff;
+}
+
+.export-doc .cover-brand .bt {
+  font-size: 11.5px;
+  color: rgba(255, 255, 255, 0.5);
+  font-family: var(--mono);
+}
+
+.export-doc .cover-kicker {
+  margin-top: 30px;
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--p-accent);
+}
+
+.export-doc .cover h1 {
+  color: #fff;
+  font-size: clamp(26px, 4vw, 38px);
+  line-height: 1.08;
+  margin-top: 14px;
+  max-width: none;
+  letter-spacing: -0.025em;
+}
+
+.export-doc .cover .lede {
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 15.5px;
+  margin-top: 16px;
+  max-width: 62ch;
+  line-height: 1.6;
+}
+
+.export-doc .cover-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-top: 26px;
+}
+
+.export-doc .cmeta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.export-doc .cmeta svg {
+  width: 14px;
+  height: 14px;
+  color: var(--p-accent);
+}
+
+.export-doc .callout {
+  display: flex;
+  gap: 14px;
+  padding: 18px 20px;
+  border-radius: 12px;
+  background: var(--p-accent-soft);
+  border: 1px solid var(--p-accent-line);
+  margin-bottom: 36px;
+}
+
+.export-doc .callout svg {
+  width: 20px;
+  height: 20px;
+  color: var(--p-accent);
+  flex: none;
+}
+
+.export-doc .callout .ct {
+  font-size: 14px;
+  color: var(--p-ink);
+  line-height: 1.55;
+}
+
+.export-doc .steps-title {
+  font-size: 13px;
+  font-family: var(--mono);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--p-muted);
+  margin-bottom: 6px;
+}
+
+.export-doc .step {
+  display: grid;
+  gap: 18px;
+  padding: 26px 0;
+  border-bottom: 1px solid var(--p-line);
+}
+
+.export-doc .step:last-child {
+  border-bottom: 0;
+}
+
+.export-doc .step-n {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: var(--p-accent);
+  color: var(--p-accent-ink);
+  font-family: var(--mono);
+  font-weight: 600;
+  font-size: 15px;
+  display: grid;
+  place-items: center;
+}
+
+.export-doc .step-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.export-doc .step h3 {
+  font-size: 19px;
+  color: var(--p-ink);
+  letter-spacing: -0.015em;
+  margin: 0;
+}
+
+.export-doc .step .ts {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--p-dim);
+  margin-left: auto;
+}
+
+.export-doc .step p {
+  color: var(--p-muted);
+  margin-top: 10px;
+  font-size: 14.5px;
+  line-height: 1.65;
+}
+
+.export-doc .step p b {
+  color: var(--p-ink);
+  font-weight: 600;
+}
+
+.export-doc .step code {
+  font-family: var(--mono);
+  font-size: 0.88em;
+  background: var(--p-accent-soft);
+  color: var(--p-accent);
+  padding: 1px 6px;
+  border-radius: 5px;
+}
+
+.export-doc .shot {
+  margin-top: 18px;
+  border-radius: 12px;
+  border: 1px solid var(--p-line);
+  overflow: hidden;
+  background: #0a0d18;
+}
+
+.export-doc .shot-img {
+  aspect-ratio: 16 / 9;
+  background: linear-gradient(135deg, #22245e, #3a3f8f 55%, #1a1b34);
+  position: relative;
+  overflow: hidden;
+}
+
+.export-doc .shot-img img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: left top;
+}
+
+.export-doc .shot .ring {
+  position: absolute;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 2.5px solid var(--p-accent);
+  box-shadow: 0 0 0 5px color-mix(in srgb, var(--p-accent) 22%, transparent);
+  transform: translate(-50%, -50%);
+}
+
+.export-doc .shot .cur {
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.5));
+}
+
+.export-doc .shot-cap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 14px;
+  background: var(--p-card);
+  border-top: 1px solid var(--p-line);
+  font-size: 12px;
+  color: var(--p-muted);
+}
+
+.export-doc .shot-cap svg {
+  width: 14px;
+  height: 14px;
+  color: var(--p-accent);
+}
+
+.export-doc .lbg {
+  fill: var(--p-accent);
+}
+
+.export-doc .lfg {
+  stroke: var(--p-accent-ink);
+}
+
+.export-doc .lfg2 {
+  fill: var(--p-accent-ink);
+}
+
+.export-doc.no-brand [data-brand] {
+  display: none !important;
+}
+
+.export-doc .is-hidden {
+  display: none !important;
+}
+
+.export-studio .dimmed {
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+@media (max-width: 1100px) {
+  .export-studio {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto var(--export-studio-height) auto;
+  }
+
+  .export-studio .config {
+    max-height: none;
+    height: auto;
+  }
+
+  .export-studio.sidebar-collapsed .config {
+    display: none;
+  }
+
+  .export-studio .stage {
+    max-height: var(--export-studio-height);
+  }
+
+  .export-studio .config {
+    border-right: 0;
+    border-bottom: 1px solid var(--hair);
+  }
+}

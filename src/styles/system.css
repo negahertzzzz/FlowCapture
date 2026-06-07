@@ -1,0 +1,157 @@
+/* ============================================================
+   FlowCapture — Design System
+   Evolved mint-on-dark. Dev-tool register (Linear/Vercel/Raycast).
+   ============================================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700;800&family=Geist+Mono:wght@400;500;600&display=swap');
+
+:root {
+  /* --- Canvas & surfaces --- */
+  --bg:          #07090a;
+  --bg-2:        #0a0d0f;
+  --surface:     #0e1315;
+  --surface-2:   #121a1c;
+  --surface-3:   #182225;
+  --elevated:    #141c1f;
+
+  /* --- Lines --- */
+  --hair:        rgba(150, 175, 170, 0.10);
+  --hair-2:      rgba(150, 175, 170, 0.16);
+  --hair-strong: rgba(150, 175, 170, 0.26);
+
+  /* --- Text --- */
+  --text:        #eaf1ef;
+  --text-2:      #aeb9b6;
+  --muted:       #7e8b88;
+  --dim:         #56615e;
+
+  /* --- Accent (evolved mint) --- */
+  --mint:        #5fe9b8;
+  --mint-bright: #84f4cf;
+  --mint-deep:   #2bcf97;
+  --mint-ink:    #052b20;
+  --mint-12:     rgba(95, 233, 184, 0.12);
+  --mint-18:     rgba(95, 233, 184, 0.18);
+  --mint-30:     rgba(95, 233, 184, 0.30);
+  --mint-glow:   rgba(95, 233, 184, 0.42);
+
+  /* secondary cool tint, used sparingly for data viz */
+  --ice:         #6cc6ff;
+  --ice-12:      rgba(108, 198, 255, 0.12);
+  --amber:       #f4c66a;
+  --rose:        #ff8a8a;
+
+  /* --- Type --- */
+  --sans: 'Geist', ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --mono: 'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+
+  /* --- Radii --- */
+  --r-sm: 8px;
+  --r:    12px;
+  --r-lg: 18px;
+  --r-xl: 26px;
+
+  /* --- Shadows --- */
+  --shadow-sm: 0 1px 2px rgba(0,0,0,.4);
+  --shadow:    0 18px 48px -18px rgba(0,0,0,.7);
+  --shadow-lg: 0 40px 120px -30px rgba(0,0,0,.85);
+  --glow:      0 0 0 1px var(--mint-30), 0 12px 40px -8px var(--mint-glow);
+
+  --maxw: 1180px;
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 16px;
+  line-height: 1.55;
+  font-feature-settings: "ss01", "cv01", "cv03";
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+::selection { background: var(--mint-30); color: #fff; }
+
+h1,h2,h3,h4 { margin: 0; font-weight: 600; letter-spacing: -0.02em; line-height: 1.05; text-wrap: balance; }
+p { margin: 0; }
+a { color: inherit; text-decoration: none; }
+img, svg { display: block; }
+button { font-family: inherit; cursor: pointer; }
+
+.mono { font-family: var(--mono); font-feature-settings: "ss01"; }
+
+/* --- Layout helpers --- */
+.wrap { max-width: var(--maxw); margin-inline: auto; padding-inline: 28px; }
+.eyebrow {
+  font-family: var(--mono);
+  font-size: 12px; font-weight: 500;
+  letter-spacing: 0.18em; text-transform: uppercase;
+  color: var(--mint);
+}
+
+/* --- Buttons --- */
+.btn {
+  display: inline-flex; align-items: center; gap: 9px;
+  height: 44px; padding: 0 20px;
+  border-radius: var(--r-sm);
+  font-size: 14.5px; font-weight: 540;
+  border: 1px solid transparent;
+  transition: transform .15s ease, background .2s ease, box-shadow .2s ease, border-color .2s ease;
+  white-space: nowrap;
+}
+.btn svg { width: 17px; height: 17px; }
+.btn-primary {
+  background: var(--mint); color: var(--mint-ink);
+  box-shadow: 0 1px 0 rgba(255,255,255,.25) inset, 0 10px 30px -10px var(--mint-glow);
+}
+.btn-primary:hover { background: var(--mint-bright); transform: translateY(-1px); box-shadow: 0 1px 0 rgba(255,255,255,.3) inset, 0 16px 40px -12px var(--mint-glow); }
+.btn-ghost {
+  background: rgba(255,255,255,.025); color: var(--text);
+  border-color: var(--hair-2);
+}
+.btn-ghost:hover { background: rgba(255,255,255,.06); border-color: var(--hair-strong); transform: translateY(-1px); }
+.btn-sm { height: 36px; padding: 0 14px; font-size: 13.5px; }
+
+/* --- Pills / badges --- */
+.pill {
+  display: inline-flex; align-items: center; gap: 8px;
+  height: 30px; padding: 0 12px 0 10px;
+  border-radius: 999px;
+  border: 1px solid var(--hair-2);
+  background: rgba(255,255,255,.022);
+  font-size: 12.5px; color: var(--text-2);
+}
+.dot { width: 6px; height: 6px; border-radius: 50%; background: var(--mint); box-shadow: 0 0 0 4px var(--mint-12); }
+
+/* --- Cards --- */
+.card {
+  background: linear-gradient(180deg, var(--surface) 0%, var(--bg-2) 100%);
+  border: 1px solid var(--hair);
+  border-radius: var(--r-lg);
+}
+
+/* --- Frozen-timeline failsafe: if CSS animations/transitions never advance
+   (some capture/screenshot environments freeze the timeline at 0), force the
+   resting (visible) state so content is never blank. --- */
+html.no-anim-fallback .stagger > *,
+html.no-anim-fallback .reveal {
+  animation: none !important;
+  transition: none !important;
+  opacity: 1 !important;
+  transform: none !important;
+}
+
+/* --- Reveal on scroll --- */
+.reveal { opacity: 0; transform: translateY(18px); transition: opacity .7s cubic-bezier(.2,.7,.2,1), transform .7s cubic-bezier(.2,.7,.2,1); }
+.reveal.in { opacity: 1; transform: none; }
+@media (prefers-reduced-motion: reduce) {
+  .reveal { opacity: 1 !important; transform: none !important; transition: none; }
+  .stagger > * { opacity: 1 !important; transform: none !important; animation: none !important; }
+  * { animation-duration: .001ms !important; animation-iteration-count: 1 !important; }
+}
+
+/* --- Logo mark --- */
+.fc-mark { display: inline-grid; place-items: center; }
