@@ -255,6 +255,17 @@ impl Database {
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
+    pub fn session_preview_screenshot_path(&self, session_id: &str) -> Result<Option<String>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT path FROM screenshots WHERE session_id = ?1 ORDER BY timestamp_ms ASC",
+        )?;
+        let paths = stmt
+            .query_map(params![session_id], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(preview_screenshot_path(&paths))
+    }
+
     pub fn delete_screenshot(&self, screenshot_id: &str) -> Result<()> {
         self.conn.lock().execute(
             "DELETE FROM screenshots WHERE id = ?1",
@@ -401,4 +412,20 @@ impl Database {
         let rows = stmt.query_map(params![session_id], |row| AiJob::from_row(row))?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
+}
+
+fn preview_screenshot_path(paths: &[String]) -> Option<String> {
+    if paths.is_empty() {
+        return None;
+    }
+
+    let index = if paths.len() >= 4 {
+        3
+    } else if paths.len() >= 3 {
+        2
+    } else {
+        paths.len() - 1
+    };
+
+    paths.get(index).cloned()
 }

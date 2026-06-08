@@ -35,6 +35,8 @@ pub struct Session {
     pub documentation_md: Option<String>,
     pub steps_json: Option<String>,
     pub compressed_events_json: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preview_screenshot_path: Option<String>,
 }
 
 impl Session {
@@ -50,6 +52,7 @@ impl Session {
             documentation_md: row.get(7)?,
             steps_json: row.get(8)?,
             compressed_events_json: row.get(9)?,
+            preview_screenshot_path: None,
         })
     }
 }

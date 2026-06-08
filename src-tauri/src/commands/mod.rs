@@ -73,7 +73,15 @@ pub fn get_platform_name(state: State<'_, Arc<AppState>>) -> Result<String, Stri
 
 #[tauri::command]
 pub fn list_sessions(state: State<'_, Arc<AppState>>) -> Result<Vec<Session>, String> {
-    state.db.list_sessions().map_err(|err| err.to_string())
+    let mut sessions = state.db.list_sessions().map_err(|err| err.to_string())?;
+    for session in &mut sessions {
+        session.preview_screenshot_path = state
+            .db
+            .session_preview_screenshot_path(&session.id)
+            .ok()
+            .flatten();
+    }
+    Ok(sessions)
 }
 
 #[tauri::command]

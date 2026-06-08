@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { AppButton } from "@/components/ui/AppButton";
 import { Icon } from "@/components/ui/Icon";
 import { PermissionsBanner } from "@/components/recording/PermissionsBanner";
+import { SessionThumbnail } from "@/components/sessions/SessionThumbnail";
 import { useRecordingContext } from "@/context/RecordingContext";
 import { api, type Session } from "@/lib/api";
 import { statusBadgeClass } from "@/lib/icons";
@@ -14,6 +15,7 @@ export function HomePage() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [platform, setPlatform] = useState("");
   const [canRecord, setCanRecord] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
 
   function handlePermissionsChange(
     permissions: Awaited<ReturnType<typeof api.getRecordingPermissions>>,
@@ -22,12 +24,19 @@ export function HomePage() {
   }
 
   async function refresh() {
-    const [nextSessions, nextPlatform] = await Promise.all([
-      api.listSessions(),
-      api.getPlatformName(),
-    ]);
-    setSessions(nextSessions.filter((session) => session.status !== "recording"));
-    setPlatform(nextPlatform);
+    setRefreshing(true);
+    try {
+      const [nextSessions, nextPlatform] = await Promise.all([
+        api.listSessions(),
+        api.getPlatformName(),
+      ]);
+      setSessions(nextSessions.filter((session) => session.status !== "recording"));
+      setPlatform(nextPlatform);
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setRefreshing(false);
+    }
   }
 
   useEffect(() => {
@@ -102,10 +111,15 @@ export function HomePage() {
 
       <div className="sec-row">
         <h2>Recent Sessions</h2>
-        <button className="linkish" onClick={() => refresh()}>
-          <Icon name="refresh" size={15} style={{ verticalAlign: "-3px", marginRight: 6 }} />
-          Refresh
-        </button>
+        <AppButton
+          size="sm"
+          icon="refresh"
+          className={refreshing ? "is-spinning" : undefined}
+          disabled={refreshing}
+          onClick={() => refresh()}
+        >
+          {refreshing ? "Refreshing…" : "Refresh"}
+        </AppButton>
       </div>
       <div className="sess-list">
         {sessions.length === 0 ? (
@@ -129,7 +143,7 @@ export function HomePage() {
                 }
               }}
             >
-              <div className="sthumb" />
+              <SessionThumbnail path={session.preview_screenshot_path} />
               <div className="sinfo">
                 <div className="stt">{session.title}</div>
                 <div className="stm">

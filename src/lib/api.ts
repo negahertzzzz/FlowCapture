@@ -12,6 +12,7 @@ export interface Session {
   documentation_md?: string | null;
   steps_json?: string | null;
   compressed_events_json?: string | null;
+  preview_screenshot_path?: string | null;
 }
 
 export interface StoredEvent {
