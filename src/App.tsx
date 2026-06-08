@@ -4,6 +4,7 @@ import { Routes, Route } from "react-router-dom";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { RecordingHUD } from "@/components/recording/RecordingHUD";
 import { RecordingProvider, useRecordingContext } from "@/context/RecordingContext";
+import { SessionsProvider } from "@/context/SessionsContext";
 import { HomePage } from "@/pages/HomePage";
 import { SessionPage } from "@/pages/SessionPage";
 import { SettingsPage } from "@/pages/SettingsPage";
@@ -65,7 +66,9 @@ function AppShell() {
 export default function App() {
   return (
     <RecordingProvider>
-      <AppShell />
+      <SessionsProvider>
+        <AppShell />
+      </SessionsProvider>
     </RecordingProvider>
   );
 }

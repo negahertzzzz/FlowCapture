@@ -1,34 +1,14 @@
-import { useEffect, useState } from "react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { Icon } from "@/components/ui/Icon";
 import { Logo } from "@/components/ui/Logo";
-import { api, type Session } from "@/lib/api";
+import { useSessionsContext } from "@/context/SessionsContext";
 import { statusDotClass } from "@/lib/icons";
 import { formatDuration } from "@/lib/utils";
-import { useRecordingContext } from "@/context/RecordingContext";
 
 export function Sidebar() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { recording } = useRecordingContext();
-  const [sessions, setSessions] = useState<Session[]>([]);
-
-  async function refreshSessions() {
-    const next = await api.listSessions();
-    setSessions(next.filter((session) => session.status !== "recording"));
-  }
-
-  useEffect(() => {
-    refreshSessions().catch(() => undefined);
-  }, [recording?.id]);
-
-  useEffect(() => {
-    function onFocus() {
-      refreshSessions().catch(() => undefined);
-    }
-    window.addEventListener("focus", onFocus);
-    return () => window.removeEventListener("focus", onFocus);
-  }, []);
+  const { sessions } = useSessionsContext();
 
   return (
     <aside className="side">

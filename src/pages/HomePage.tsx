@@ -5,14 +5,15 @@ import { Icon } from "@/components/ui/Icon";
 import { PermissionsBanner } from "@/components/recording/PermissionsBanner";
 import { SessionThumbnail } from "@/components/sessions/SessionThumbnail";
 import { useRecordingContext } from "@/context/RecordingContext";
-import { api, type Session } from "@/lib/api";
+import { useSessionsContext } from "@/context/SessionsContext";
+import { api } from "@/lib/api";
 import { statusBadgeClass } from "@/lib/icons";
 import { formatDuration, formatTimestamp } from "@/lib/utils";
 
 export function HomePage() {
   const navigate = useNavigate();
   const { loading, error, setError, start } = useRecordingContext();
-  const [sessions, setSessions] = useState<Session[]>([]);
+  const { sessions, refreshSessions } = useSessionsContext();
   const [platform, setPlatform] = useState("");
   const [canRecord, setCanRecord] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -26,11 +27,8 @@ export function HomePage() {
   async function refresh() {
     setRefreshing(true);
     try {
-      const [nextSessions, nextPlatform] = await Promise.all([
-        api.listSessions(),
-        api.getPlatformName(),
-      ]);
-      setSessions(nextSessions.filter((session) => session.status !== "recording"));
+      const nextPlatform = await api.getPlatformName();
+      await refreshSessions();
       setPlatform(nextPlatform);
     } catch (err) {
       setError(String(err));

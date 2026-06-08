@@ -1,6 +1,6 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import { ProcessingPanel } from "@/components/ai/ProcessingPanel";
 import { MarkdownPreview } from "@/components/documentation/MarkdownPreview";
@@ -8,6 +8,7 @@ import { ExportPanel } from "@/components/export/ExportPanel";
 import { AppButton } from "@/components/ui/AppButton";
 import { Icon } from "@/components/ui/Icon";
 import { Toast } from "@/components/ui/Toast";
+import { useSessionTitle } from "@/hooks/useSessionTitle";
 import {
   api,
   type ExportOptionsPayload,
@@ -51,7 +52,21 @@ export function SessionPage() {
   const [replayIndex, setReplayIndex] = useState(0);
   const [tab, setTab] = useState<TabName>("Timeline");
   const [docMode, setDocMode] = useState<"preview" | "edit">("preview");
-  const [title, setTitle] = useState("");
+
+  const handleTitleError = useCallback((message: string) => {
+    setError(message);
+  }, []);
+
+  const handleTitleSaved = useCallback((nextTitle: string) => {
+    setSession((current) => (current ? { ...current, title: nextTitle } : current));
+  }, []);
+
+  const { title, setTitle, saving } = useSessionTitle({
+    sessionId,
+    initialTitle: session?.id === sessionId ? session.title : "",
+    onError: handleTitleError,
+    onSaved: handleTitleSaved,
+  });
 
   async function refresh() {
     const [nextSession, nextEvents, nextScreenshots, nextExports, nextSteps] =
@@ -68,7 +83,6 @@ export function SessionPage() {
     setExports(nextExports);
     setSteps(nextSteps);
     setMarkdown(nextSession?.documentation_md ?? "");
-    setTitle(nextSession?.title ?? "");
   }
 
   useEffect(() => {
@@ -222,11 +236,6 @@ export function SessionPage() {
     }
   }
 
-  async function handleSaveTitle(nextTitle: string) {
-    await api.updateSessionTitle(sessionId, nextTitle);
-    await refresh();
-  }
-
   if (!session) {
     return (
       <div className="page">
@@ -255,8 +264,9 @@ export function SessionPage() {
         <input
           value={title}
           onChange={(event) => setTitle(event.target.value)}
-          onBlur={(event) => handleSaveTitle(event.target.value)}
+          aria-label="Session title"
         />
+        {saving ? <span className="sd-title-status">Saving…</span> : null}
       </div>
       <div className="sd-meta">
         {session.status} · {formatDuration(session.duration)} · {events.length} timeline
