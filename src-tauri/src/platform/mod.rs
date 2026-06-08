@@ -19,6 +19,8 @@ pub use permissions::{
 pub use macos::refresh_dev_dock_icon;
 pub use traits::*;
 
+pub use common::SharedScreenshotCapturer;
+
 use anyhow::Result;
 
 pub fn create_platform_services() -> Result<PlatformServices> {
@@ -44,6 +46,5 @@ pub struct PlatformServices {
     pub recorder: Box<dyn ScreenRecorder>,
     pub input: Box<dyn InputEventSource>,
     pub windows: Box<dyn WindowTracker>,
-    pub screenshots: Box<dyn ScreenshotCapturer>,
     pub platform_name: String,
 }

@@ -11,8 +11,10 @@ use image::{ExtendedColorType, RgbaImage, imageops::FilterType};
 use xcap::Monitor;
 
 use super::traits::ScreenRecorder;
+use crate::thread_util::join_thread_with_timeout;
 
 const TARGET_FRAME_INTERVAL: Duration = Duration::from_millis(100);
+const RECORDER_JOIN_TIMEOUT: Duration = Duration::from_secs(3);
 const MAX_FRAME_WIDTH: u32 = 1920;
 const JPEG_QUALITY: u8 = 82;
 
@@ -87,7 +89,9 @@ impl ScreenRecorder for MacScreenRecorder {
 
         self.request_stop();
         if let Some(handle) = self.handle.lock().unwrap().take() {
-            let _ = handle.join();
+            if !join_thread_with_timeout(handle, RECORDER_JOIN_TIMEOUT) {
+                eprintln!("FlowCapture: video frame capture thread did not stop within timeout");
+            }
         }
         self.recording.store(false, Ordering::SeqCst);
         self.output_dir.lock().unwrap().take();

@@ -10,8 +10,10 @@ mod screenshots;
 mod security;
 mod state;
 mod storage;
+mod thread_util;
 
 use std::sync::Arc;
+use std::thread;
 
 use tauri::Manager;
 
@@ -34,13 +36,15 @@ pub fn run() {
                 .map_err(|err| anyhow::anyhow!(err))?;
             let db = Arc::new(Database::new(app_data_dir)?);
             let platform = create_platform_services()?;
-            let state = AppState::new(db, platform)?;
+            let state = Arc::new(AppState::new(db, platform)?);
             state.cleanup_stale_recordings()?;
             app.manage(state);
 
             #[cfg(target_os = "macos")]
             {
-                let _ = prepare_recording_permissions();
+                thread::spawn(|| {
+                    let _ = prepare_recording_permissions();
+                });
             }
 
             Ok(())

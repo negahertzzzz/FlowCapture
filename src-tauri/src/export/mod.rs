@@ -2,6 +2,7 @@ mod styled_html;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -199,41 +200,89 @@ fn rewrite_markdown_for_export(markdown: &str, screenshots: &[Screenshot]) -> St
 fn try_print_pdf(html_path: &str, pdf_path: &Path) -> Result<()> {
     let html_url = path_to_file_url(html_path)?;
     let pdf_arg = pdf_path.to_string_lossy().to_string();
+    const PDF_TIMEOUT: Duration = Duration::from_secs(45);
 
     for chrome in chrome_binary_candidates() {
-        let output = std::process::Command::new(&chrome)
-            .args([
-                "--headless=new",
-                "--disable-gpu",
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-                "--no-pdf-header-footer",
-                "--run-all-compositor-stages-before-draw",
-                "--virtual-time-budget=10000",
-                &format!("--print-to-pdf={pdf_arg}"),
-                &html_url,
-            ])
-            .output()
-            .with_context(|| format!("failed to launch {chrome}"))?;
+        let mut command = std::process::Command::new(&chrome);
+        command.args([
+            "--headless=new",
+            "--disable-gpu",
+            "--no-sandbox",
+            "--disable-dev-shm-usage",
+            "--disable-background-networking",
+            "--disable-sync",
+            "--no-pdf-header-footer",
+            "--run-all-compositor-stages-before-draw",
+            "--virtual-time-budget=5000",
+            &format!("--print-to-pdf={pdf_arg}"),
+            &html_url,
+        ]);
 
-        if output.status.success() && pdf_path.is_file() {
-            return Ok(());
+        match run_command_with_timeout(command, PDF_TIMEOUT) {
+            Ok(output) if output.status.success() && pdf_path.is_file() => return Ok(()),
+            Ok(_) => continue,
+            Err(err) => {
+                eprintln!("FlowCapture: PDF render with {chrome} failed: {err}");
+            }
         }
     }
 
-    let wkhtml_status = std::process::Command::new("wkhtmltopdf")
+    let mut wkhtml = std::process::Command::new("wkhtmltopdf");
+    wkhtml
         .args([html_path, pdf_path.to_string_lossy().as_ref()])
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
+        .stderr(std::process::Stdio::null());
 
-    if matches!(wkhtml_status, Ok(status) if status.success() && pdf_path.is_file()) {
+    if matches!(
+        run_command_with_timeout(wkhtml, PDF_TIMEOUT),
+        Ok(output) if output.status.success() && pdf_path.is_file()
+    ) {
         return Ok(());
     }
 
     anyhow::bail!(
         "Could not render PDF. Install Google Chrome, Chromium, Microsoft Edge, or wkhtmltopdf."
     )
+}
+
+fn run_command_with_timeout(
+    mut command: std::process::Command,
+    timeout: Duration,
+) -> Result<std::process::Output> {
+    use std::io::Read;
+    use std::process::{Stdio, Output};
+    use std::thread;
+    use std::time::Instant;
+
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command.spawn()?;
+    let start = Instant::now();
+
+    loop {
+        if let Some(status) = child.try_wait()? {
+            let mut stdout = Vec::new();
+            let mut stderr = Vec::new();
+            if let Some(mut pipe) = child.stdout.take() {
+                let _ = pipe.read_to_end(&mut stdout);
+            }
+            if let Some(mut pipe) = child.stderr.take() {
+                let _ = pipe.read_to_end(&mut stderr);
+            }
+            return Ok(Output {
+                status,
+                stdout,
+                stderr,
+            });
+        }
+
+        if start.elapsed() >= timeout {
+            let _ = child.kill();
+            let _ = child.wait();
+            anyhow::bail!("command timed out after {} seconds", timeout.as_secs());
+        }
+
+        thread::sleep(Duration::from_millis(50));
+    }
 }
 
 fn chrome_binary_candidates() -> Vec<String> {

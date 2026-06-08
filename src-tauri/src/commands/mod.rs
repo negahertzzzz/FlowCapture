@@ -40,8 +40,10 @@ pub fn get_recording_permissions(app: AppHandle) -> Result<RecordingPermissions,
 }
 
 #[tauri::command]
-pub fn prepare_recording_permissions(app: AppHandle) -> Result<RecordingPermissions, String> {
-    run_on_main_thread(&app, prepare_recording_permissions_impl)
+pub async fn prepare_recording_permissions(app: AppHandle) -> Result<RecordingPermissions, String> {
+    tauri::async_runtime::spawn_blocking(move || run_on_main_thread(&app, prepare_recording_permissions_impl))
+        .await
+        .map_err(|err| err.to_string())?
 }
 
 #[tauri::command]
@@ -65,17 +67,17 @@ pub fn reveal_executable_in_finder() -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn get_platform_name(state: State<'_, AppState>) -> Result<String, String> {
+pub fn get_platform_name(state: State<'_, Arc<AppState>>) -> Result<String, String> {
     Ok(state.platform.lock().platform_name.clone())
 }
 
 #[tauri::command]
-pub fn list_sessions(state: State<'_, AppState>) -> Result<Vec<Session>, String> {
+pub fn list_sessions(state: State<'_, Arc<AppState>>) -> Result<Vec<Session>, String> {
     state.db.list_sessions().map_err(|err| err.to_string())
 }
 
 #[tauri::command]
-pub fn get_session(state: State<'_, AppState>, session_id: String) -> Result<Option<Session>, String> {
+pub fn get_session(state: State<'_, Arc<AppState>>, session_id: String) -> Result<Option<Session>, String> {
     let mut session = state
         .db
         .get_session(&session_id)
@@ -101,7 +103,7 @@ pub fn get_session(state: State<'_, AppState>, session_id: String) -> Result<Opt
 
 #[tauri::command]
 pub fn update_session_title(
-    state: State<'_, AppState>,
+    state: State<'_, Arc<AppState>>,
     session_id: String,
     title: String,
 ) -> Result<(), String> {
@@ -112,18 +114,30 @@ pub fn update_session_title(
 }
 
 #[tauri::command]
-pub fn start_recording(
-    state: State<'_, AppState>,
+pub async fn start_recording(
+    state: State<'_, Arc<AppState>>,
     title: Option<String>,
 ) -> Result<Session, String> {
-    state.start_recording(title).map_err(|err| err.to_string())
+    let state = Arc::clone(state.inner());
+    tauri::async_runtime::spawn_blocking(move || state.start_recording(title))
+        .await
+        .map_err(|err| err.to_string())?
+        .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
-pub fn stop_recording(state: State<'_, AppState>, app: AppHandle) -> Result<Session, String> {
-    let session = state.stop_recording().map_err(|err| err.to_string())?;
+pub async fn stop_recording(
+    state: State<'_, Arc<AppState>>,
+    app: AppHandle,
+) -> Result<Session, String> {
+    let db = Arc::clone(&state.db);
+    let state = Arc::clone(state.inner());
+    let session = tauri::async_runtime::spawn_blocking(move || state.stop_recording())
+        .await
+        .map_err(|err| err.to_string())?
+        .map_err(|err| err.to_string())?;
     spawn_session_video_encode(
-        Arc::clone(&state.db),
+        db,
         app,
         session.id.clone(),
         session.duration.max(1),
@@ -132,15 +146,17 @@ pub fn stop_recording(state: State<'_, AppState>, app: AppHandle) -> Result<Sess
 }
 
 #[tauri::command]
-pub fn capture_manual_screenshot(state: State<'_, AppState>) -> Result<(), String> {
-    state
-        .capture_manual_screenshot()
+pub async fn capture_manual_screenshot(state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    let state = Arc::clone(state.inner());
+    tauri::async_runtime::spawn_blocking(move || state.capture_manual_screenshot())
+        .await
+        .map_err(|err| err.to_string())?
         .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
 pub fn list_events(
-    state: State<'_, AppState>,
+    state: State<'_, Arc<AppState>>,
     session_id: String,
 ) -> Result<Vec<StoredEvent>, String> {
     state
@@ -151,7 +167,7 @@ pub fn list_events(
 
 #[tauri::command]
 pub fn list_screenshots(
-    state: State<'_, AppState>,
+    state: State<'_, Arc<AppState>>,
     session_id: String,
 ) -> Result<Vec<Screenshot>, String> {
     state
@@ -162,7 +178,7 @@ pub fn list_screenshots(
 
 #[tauri::command]
 pub fn delete_screenshot(
-    state: State<'_, AppState>,
+    state: State<'_, Arc<AppState>>,
     screenshot_id: String,
 ) -> Result<(), String> {
     state
@@ -172,13 +188,13 @@ pub fn delete_screenshot(
 }
 
 #[tauri::command]
-pub fn list_providers(state: State<'_, AppState>) -> Result<Vec<ProviderConfig>, String> {
+pub fn list_providers(state: State<'_, Arc<AppState>>) -> Result<Vec<ProviderConfig>, String> {
     state.db.list_providers().map_err(|err| err.to_string())
 }
 
 #[tauri::command]
 pub fn update_provider(
-    state: State<'_, AppState>,
+    state: State<'_, Arc<AppState>>,
     provider: ProviderConfig,
 ) -> Result<(), String> {
     if provider.enabled == 1 {
@@ -198,7 +214,7 @@ pub fn update_provider(
 
 #[tauri::command]
 pub fn update_session_documentation(
-    state: State<'_, AppState>,
+    state: State<'_, Arc<AppState>>,
     session_id: String,
     markdown: String,
 ) -> Result<(), String> {
@@ -211,7 +227,7 @@ pub fn update_session_documentation(
 #[tauri::command]
 pub async fn generate_documentation(
     app: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, Arc<AppState>>,
     session_id: String,
 ) -> Result<GenerateDocumentationResult, String> {
     let pipeline = AiPipeline::new(Arc::clone(&state.db));
@@ -232,7 +248,7 @@ pub struct GenerateDocumentationResult {
 }
 
 #[tauri::command]
-pub fn list_ai_jobs(state: State<'_, AppState>, session_id: String) -> Result<Vec<AiJob>, String> {
+pub fn list_ai_jobs(state: State<'_, Arc<AppState>>, session_id: String) -> Result<Vec<AiJob>, String> {
     state
         .db
         .list_ai_jobs(&session_id)
@@ -240,26 +256,33 @@ pub fn list_ai_jobs(state: State<'_, AppState>, session_id: String) -> Result<Ve
 }
 
 #[tauri::command]
-pub fn export_session(
-    state: State<'_, AppState>,
+pub async fn export_session(
+    state: State<'_, Arc<AppState>>,
     session_id: String,
     format: String,
     options: Option<crate::export::ExportOptions>,
 ) -> Result<ExportRecord, String> {
-    let engine = ExportEngine::new(Arc::clone(&state.db));
-    match format.as_str() {
-        "markdown" => engine.export_markdown(&session_id, options),
-        "html" => engine.export_html(&session_id, options),
-        "pdf" => engine.export_pdf(&session_id, options),
-        "video" => engine.export_video(&session_id),
-        other => Err(anyhow!("unsupported export format: {other}")),
-    }
+    let db = Arc::clone(&state.db);
+    let session_id = session_id.clone();
+    let format = format.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let engine = ExportEngine::new(db);
+        match format.as_str() {
+            "markdown" => engine.export_markdown(&session_id, options),
+            "html" => engine.export_html(&session_id, options),
+            "pdf" => engine.export_pdf(&session_id, options),
+            "video" => engine.export_video(&session_id),
+            other => Err(anyhow!("unsupported export format: {other}")),
+        }
+    })
+    .await
+    .map_err(|err| err.to_string())?
     .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
 pub fn list_exports(
-    state: State<'_, AppState>,
+    state: State<'_, Arc<AppState>>,
     session_id: String,
 ) -> Result<Vec<ExportRecord>, String> {
     state
@@ -269,12 +292,12 @@ pub fn list_exports(
 }
 
 #[tauri::command]
-pub fn get_setting(state: State<'_, AppState>, key: String) -> Result<Option<String>, String> {
+pub fn get_setting(state: State<'_, Arc<AppState>>, key: String) -> Result<Option<String>, String> {
     state.db.get_setting(&key).map_err(|err| err.to_string())
 }
 
 #[tauri::command]
-pub fn set_setting(state: State<'_, AppState>, key: String, value: String) -> Result<(), String> {
+pub fn set_setting(state: State<'_, Arc<AppState>>, key: String, value: String) -> Result<(), String> {
     state
         .db
         .set_setting(&key, &value)
@@ -283,7 +306,7 @@ pub fn set_setting(state: State<'_, AppState>, key: String, value: String) -> Re
 
 #[tauri::command]
 pub fn get_compressed_timeline(
-    state: State<'_, AppState>,
+    state: State<'_, Arc<AppState>>,
     session_id: String,
 ) -> Result<Vec<crate::storage::models::SessionEvent>, String> {
     let events = state
@@ -303,7 +326,7 @@ pub fn get_compressed_timeline(
 
 #[tauri::command]
 pub fn get_replay_steps(
-    state: State<'_, AppState>,
+    state: State<'_, Arc<AppState>>,
     session_id: String,
 ) -> Result<Vec<crate::storage::models::WorkflowStep>, String> {
     let session = state

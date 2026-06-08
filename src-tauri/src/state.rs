@@ -10,11 +10,15 @@ use parking_lot::Mutex;
 use uuid::Uuid;
 
 use crate::events::{should_trigger_screenshot, EventCollector};
-use crate::platform::{preflight_recording_start, PlatformServices};
+use crate::platform::{preflight_recording_start, PlatformServices, SharedScreenshotCapturer};
 use crate::recorder::RecorderEngine;
-use crate::screenshots::ScreenshotEngine;
+use crate::screenshots::{run_capture, PendingCapture, ScreenshotEngine};
 use crate::storage::Database;
 use crate::storage::models::{Session, SessionStatus, StoredEvent};
+use crate::thread_util::join_thread_with_timeout;
+
+const COLLECTOR_JOIN_TIMEOUT: Duration = Duration::from_secs(5);
+const PLATFORM_STOP_TIMEOUT: Duration = Duration::from_secs(3);
 
 pub struct AppState {
     pub db: Arc<Database>,
@@ -122,7 +126,9 @@ impl AppState {
         self.screenshot_engine.lock().stop(&session_id)?;
         signal_platform_stop(self);
 
-        let _ = active.collector_handle.join();
+        if !join_thread_with_timeout(active.collector_handle, COLLECTOR_JOIN_TIMEOUT) {
+            eprintln!("FlowCapture: recording collector did not stop within timeout");
+        }
         let _ = stop_platform_services(self);
 
         let mut pending_events = Vec::new();
@@ -159,12 +165,13 @@ impl AppState {
             .ok_or_else(|| anyhow::anyhow!("no active recording"))?;
 
         let session_dir = self.db.session_dir(&session_id);
-        let platform = self.platform.lock();
-        self.screenshot_engine.lock().capture_manual(
-            &session_id,
-            session_dir,
-            &*platform.screenshots,
-        )?;
+        let pending = self
+            .screenshot_engine
+            .lock()
+            .prepare_manual(&session_id, session_dir)?;
+        let capturer = SharedScreenshotCapturer;
+        run_capture(&capturer, &pending)?;
+        self.screenshot_engine.lock().finish_capture(pending)?;
         Ok(())
     }
 
@@ -195,7 +202,8 @@ fn signal_platform_stop(state: &AppState) {
 }
 
 fn stop_platform_services(state: &AppState) -> Result<Option<String>> {
-    for _ in 0..200 {
+    let deadline = Instant::now() + PLATFORM_STOP_TIMEOUT;
+    while Instant::now() < deadline {
         if let Some(mut platform) = state.platform.try_lock() {
             platform.input.stop()?;
             platform.windows.stop()?;
@@ -216,6 +224,7 @@ fn spawn_recording_collector(
     session_id: String,
     session_dir: PathBuf,
 ) -> JoinHandle<()> {
+    let capturer = SharedScreenshotCapturer;
     thread::spawn(move || {
         while !stop_flag.load(Ordering::SeqCst) {
             let (input_events, window_events) = {
@@ -233,34 +242,28 @@ fn spawn_recording_collector(
                 break;
             }
 
-            let mut batch = Vec::new();
-
-            if !input_events.is_empty() || !window_events.is_empty() {
-                let platform = platform.lock();
-                if stop_flag.load(Ordering::SeqCst) {
-                    break;
-                }
-
-                let mut screenshot_engine = screenshot_engine.lock();
-                if screenshot_engine.is_active() {
-                    let capturer = &*platform.screenshots;
-                    let _ = screenshot_engine.process_pending(
-                        &session_id,
-                        session_dir.clone(),
-                        capturer,
-                    );
+            let mut pending_captures = Vec::new();
+            {
+                let mut engine = screenshot_engine.lock();
+                if engine.is_active() {
+                    if let Ok(Some(pending)) =
+                        engine.prepare_pending_post(&session_id, session_dir.clone())
+                    {
+                        pending_captures.push(pending);
+                    }
 
                     for input in &input_events {
                         if stop_flag.load(Ordering::SeqCst) {
                             break;
                         }
                         if should_trigger_screenshot(input) {
-                            let _ = screenshot_engine.process_input_event(
+                            if let Ok(Some(pending)) = engine.prepare_input_event(
                                 &session_id,
                                 session_dir.clone(),
-                                capturer,
-                                input.clone(),
-                            );
+                                input,
+                            ) {
+                                pending_captures.push(pending);
+                            }
                         }
                     }
 
@@ -268,18 +271,27 @@ fn spawn_recording_collector(
                         if stop_flag.load(Ordering::SeqCst) {
                             break;
                         }
-                        let _ = screenshot_engine.process_window_change(
+                        if let Ok(Some(pending)) = engine.prepare_window_change(
                             &session_id,
                             session_dir.clone(),
-                            capturer,
                             &window.app_name,
                             &window.title,
                             window.timestamp_ms,
-                        );
+                        ) {
+                            pending_captures.push(pending);
+                        }
                     }
                 }
             }
 
+            for pending in pending_captures {
+                if stop_flag.load(Ordering::SeqCst) {
+                    break;
+                }
+                execute_pending_capture(&screenshot_engine, &capturer, pending);
+            }
+
+            let mut batch = Vec::new();
             for input in input_events {
                 if should_persist_event(&input.event_type) {
                     batch.push(stored_from_input(&session_id, input));
@@ -300,6 +312,19 @@ fn spawn_recording_collector(
             thread::sleep(Duration::from_millis(150));
         }
     })
+}
+
+fn execute_pending_capture(
+    screenshot_engine: &Arc<Mutex<ScreenshotEngine>>,
+    capturer: &SharedScreenshotCapturer,
+    pending: PendingCapture,
+) {
+    if run_capture(capturer, &pending).is_err() {
+        return;
+    }
+    if let Some(engine) = screenshot_engine.try_lock_for(Duration::from_millis(500)) {
+        let _ = engine.finish_capture(pending);
+    }
 }
 
 fn should_persist_event(event_type: &str) -> bool {

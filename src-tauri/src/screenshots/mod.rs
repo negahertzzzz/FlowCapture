@@ -18,6 +18,14 @@ struct PendingPostCapture {
     timestamp_ms: i64,
 }
 
+pub struct PendingCapture {
+    pub id: String,
+    pub path: PathBuf,
+    pub session_id: String,
+    pub timestamp_ms: i64,
+    pub trigger: String,
+}
+
 pub struct ScreenshotEngine {
     db: Arc<Database>,
     session_id: Option<String>,
@@ -54,27 +62,19 @@ impl ScreenshotEngine {
         self.session_id.is_some()
     }
 
-    pub fn capture_manual(
-        &mut self,
+    pub fn prepare_manual(
+        &self,
         session_id: &str,
         session_dir: PathBuf,
-        capturer: &dyn ScreenshotCapturer,
-    ) -> Result<Screenshot> {
-        self.capture(
-            session_id,
-            session_dir,
-            capturer,
-            "manual_marker",
-            now_ms(),
-        )
+    ) -> Result<PendingCapture> {
+        self.plan_capture(session_id, session_dir, "manual_marker", now_ms())
     }
 
-    pub fn process_pending(
+    pub fn prepare_pending_post(
         &mut self,
         session_id: &str,
         session_dir: PathBuf,
-        capturer: &dyn ScreenshotCapturer,
-    ) -> Result<Option<Screenshot>> {
+    ) -> Result<Option<PendingCapture>> {
         if !self.is_active() {
             return Ok(None);
         }
@@ -93,35 +93,28 @@ impl ScreenshotEngine {
             .take()
             .expect("pending capture checked above");
 
-        Ok(Some(self.capture(
+        Ok(Some(self.plan_capture(
             session_id,
             session_dir,
-            capturer,
             &pending.trigger,
             pending.timestamp_ms,
         )?))
     }
 
-    pub fn process_input_event(
+    pub fn prepare_input_event(
         &mut self,
         session_id: &str,
         session_dir: PathBuf,
-        capturer: &dyn ScreenshotCapturer,
-        event: CapturedInputEvent,
-    ) -> Result<Option<Screenshot>> {
-        if !self.is_active() {
+        event: &CapturedInputEvent,
+    ) -> Result<Option<PendingCapture>> {
+        if !self.is_active() || !should_trigger_screenshot(event) {
             return Ok(None);
         }
 
-        if !should_trigger_screenshot(&event) {
-            return Ok(None);
-        }
-
-        let trigger = screenshot_trigger_label(&event);
-        let screenshot = self.capture(
+        let trigger = screenshot_trigger_label(event);
+        let capture = self.plan_capture(
             session_id,
             session_dir,
-            capturer,
             &trigger,
             event.timestamp_ms,
         )?;
@@ -134,18 +127,17 @@ impl ScreenshotEngine {
             });
         }
 
-        Ok(Some(screenshot))
+        Ok(Some(capture))
     }
 
-    pub fn process_window_change(
+    pub fn prepare_window_change(
         &mut self,
         session_id: &str,
         session_dir: PathBuf,
-        capturer: &dyn ScreenshotCapturer,
         app_name: &str,
         window_title: &str,
         timestamp_ms: i64,
-    ) -> Result<Option<Screenshot>> {
+    ) -> Result<Option<PendingCapture>> {
         if !self.is_active() {
             return Ok(None);
         }
@@ -155,23 +147,31 @@ impl ScreenshotEngine {
             return Ok(None);
         }
         self.last_window_key = Some(window_key);
-        Ok(Some(self.capture(
-            session_id,
-            session_dir,
-            capturer,
-            "window_change",
-            timestamp_ms,
-        )?))
+        Ok(Some(
+            self.plan_capture(session_id, session_dir, "window_change", timestamp_ms)?,
+        ))
     }
 
-    fn capture(
+    pub fn finish_capture(&self, pending: PendingCapture) -> Result<Screenshot> {
+        let screenshot = Screenshot {
+            id: pending.id,
+            session_id: pending.session_id,
+            path: pending.path.to_string_lossy().to_string(),
+            timestamp_ms: pending.timestamp_ms,
+            trigger: Some(pending.trigger),
+            selected: 0,
+        };
+        self.db.insert_screenshot(&screenshot)?;
+        Ok(screenshot)
+    }
+
+    fn plan_capture(
         &self,
         session_id: &str,
         session_dir: PathBuf,
-        capturer: &dyn ScreenshotCapturer,
         trigger: &str,
         timestamp_ms: i64,
-    ) -> Result<Screenshot> {
+    ) -> Result<PendingCapture> {
         if self.session_id.is_none() {
             anyhow::bail!("recording is not active");
         }
@@ -179,19 +179,22 @@ impl ScreenshotEngine {
         let screenshots_dir = session_dir.join("screenshots");
         std::fs::create_dir_all(&screenshots_dir)?;
         let path = screenshots_dir.join(format!("{id}.png"));
-        capturer.capture_primary_monitor(path.clone())?;
-
-        let screenshot = Screenshot {
-            id: id.clone(),
+        Ok(PendingCapture {
+            id,
+            path,
             session_id: session_id.to_string(),
-            path: path.to_string_lossy().to_string(),
             timestamp_ms,
-            trigger: Some(trigger.to_string()),
-            selected: 0,
-        };
-        self.db.insert_screenshot(&screenshot)?;
-        Ok(screenshot)
+            trigger: trigger.to_string(),
+        })
     }
+}
+
+pub fn run_capture(
+    capturer: &dyn ScreenshotCapturer,
+    pending: &PendingCapture,
+) -> Result<()> {
+    capturer.capture_primary_monitor(pending.path.clone())?;
+    Ok(())
 }
 
 fn now_ms() -> i64 {

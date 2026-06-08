@@ -8,6 +8,7 @@ use anyhow::{Context, Result};
 use device_query::{DeviceQuery, DeviceState, Keycode};
 use xcap::Monitor;
 
+use crate::thread_util::join_thread_with_timeout;
 use super::traits::{
     CapturedInputEvent, InputEventSource, ScreenshotCapturer, WindowInfo, WindowTracker,
 };
@@ -21,7 +22,6 @@ pub struct SharedPlatform {
     recorder: SharedRecorder,
     input: SharedInputSource,
     windows: SharedWindowTracker,
-    screenshots: SharedScreenshotCapturer,
     platform_name: String,
 }
 
@@ -32,7 +32,6 @@ impl SharedPlatform {
             recorder: SharedRecorder::default(),
             input: SharedInputSource::default(),
             windows: SharedWindowTracker::default(),
-            screenshots: SharedScreenshotCapturer,
             platform_name: platform_name.to_string(),
         })
     }
@@ -42,11 +41,12 @@ impl SharedPlatform {
             recorder: Box::new(self.recorder),
             input: Box::new(self.input),
             windows: Box::new(self.windows),
-            screenshots: Box::new(self.screenshots),
             platform_name: self.platform_name,
         }
     }
 }
+
+const SERVICE_JOIN_TIMEOUT: Duration = Duration::from_secs(3);
 
 fn now_ms() -> i64 {
     SystemTime::now()
@@ -109,7 +109,9 @@ impl ScreenRecorder for SharedRecorder {
 
         self.request_stop();
         if let Some(handle) = self.handle.lock().unwrap().take() {
-            let _ = handle.join();
+            if !join_thread_with_timeout(handle, SERVICE_JOIN_TIMEOUT) {
+                eprintln!("FlowCapture: shared recorder thread did not stop within timeout");
+            }
         }
 
         self.recording.store(false, Ordering::SeqCst);
@@ -224,7 +226,9 @@ impl InputEventSource for SharedInputSource {
         }
         self.request_stop();
         if let Some(handle) = self.handle.lock().unwrap().take() {
-            let _ = handle.join();
+            if !join_thread_with_timeout(handle, SERVICE_JOIN_TIMEOUT) {
+                eprintln!("FlowCapture: shared recorder thread did not stop within timeout");
+            }
         }
         self.running.store(false, Ordering::SeqCst);
         Ok(())
@@ -292,7 +296,9 @@ impl WindowTracker for SharedWindowTracker {
         }
         self.request_stop();
         if let Some(handle) = self.handle.lock().unwrap().take() {
-            let _ = handle.join();
+            if !join_thread_with_timeout(handle, SERVICE_JOIN_TIMEOUT) {
+                eprintln!("FlowCapture: shared recorder thread did not stop within timeout");
+            }
         }
         self.running.store(false, Ordering::SeqCst);
         Ok(())

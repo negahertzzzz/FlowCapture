@@ -178,7 +178,7 @@ pub fn render_styled_export_html(
 </body>
 </html>"#,
         doc_title = html_escape(&title),
-        styles = EXPORT_DOC_STYLES,
+        styles = export_doc_styles(mode),
         theme = options.theme,
         mode = mode,
         size_class = size_class,
@@ -316,9 +316,8 @@ const ICON_MONITOR: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="curre
 const ICON_INFO: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 16v-4M12 8h.01"/></svg>"#;
 const ICON_WINDOW: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18"/></svg>"#;
 
-const EXPORT_DOC_STYLES: &str = r#"
-@import url('https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap');
-:root { --sans:'Geist',ui-sans-serif,system-ui,sans-serif; --mono:'Geist Mono',ui-monospace,Menlo,monospace; }
+const EXPORT_DOC_STYLES_BASE: &str = r#"
+:root { --sans:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; --mono:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; }
 body { margin:0; font-family:var(--sans); background:#07090a; }
 .doc {
   --p-accent-soft: color-mix(in srgb, var(--p-accent) 13%, transparent);
@@ -378,3 +377,16 @@ body { margin:0; font-family:var(--sans); background:#07090a; }
   * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
 }
 "#;
+
+const EXPORT_DOC_STYLES_WEB_FONTS: &str = r#"
+@import url('https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap');
+:root { --sans:'Geist',ui-sans-serif,system-ui,sans-serif; --mono:'Geist Mono',ui-monospace,Menlo,monospace; }
+"#;
+
+fn export_doc_styles(mode: &str) -> String {
+    if mode == "html" {
+        format!("{EXPORT_DOC_STYLES_WEB_FONTS}{EXPORT_DOC_STYLES_BASE}")
+    } else {
+        EXPORT_DOC_STYLES_BASE.to_string()
+    }
+}

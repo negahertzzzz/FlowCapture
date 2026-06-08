@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use super::common::{SharedInputSource, SharedScreenshotCapturer, SharedWindowTracker};
+use super::common::{SharedInputSource, SharedWindowTracker};
 use super::macos_recorder::MacScreenRecorder;
 use super::PlatformServices;
 
@@ -12,7 +12,6 @@ impl MacPlatform {
             recorder: Box::new(MacScreenRecorder::default()),
             input: Box::new(SharedInputSource::default()),
             windows: Box::new(SharedWindowTracker::default()),
-            screenshots: Box::new(SharedScreenshotCapturer),
             platform_name: "macOS".to_string(),
         })
     }
