@@ -353,24 +353,63 @@ function checkLinux() {
   }
 }
 
+function windowsMsvcInstalled() {
+  const msvcRoots = [
+    "C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools\\VC\\Tools\\MSVC",
+    "C:\\Program Files\\Microsoft Visual Studio\\2022\\BuildTools\\VC\\Tools\\MSVC",
+    "C:\\Program Files\\Microsoft Visual Studio\\2022\\Community\\VC\\Tools\\MSVC",
+    "C:\\Program Files\\Microsoft Visual Studio\\2022\\Professional\\VC\\Tools\\MSVC",
+    "C:\\Program Files\\Microsoft Visual Studio\\2022\\Enterprise\\VC\\Tools\\MSVC",
+  ];
+
+  return (
+    commandSucceeded("where cl") ||
+    commandSucceeded("where link") ||
+    msvcRoots.some((root) => existsSync(root))
+  );
+}
+
+function windowsRustHostTriple() {
+  try {
+    const version = execSync("rustc -vV", { encoding: "utf8" });
+    return version.match(/^host: (.+)$/m)?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+
 function checkWindows() {
   if (!hasCommand("cargo")) {
     return;
   }
 
-  const hasMsvc =
-    commandSucceeded("where cl") ||
-    commandSucceeded("where link") ||
-    existsSync(
-      "C:\\Program Files (x86)\\Microsoft Visual Studio\\2022\\BuildTools\\VC\\Tools\\MSVC",
+  const host = windowsRustHostTriple();
+  if (host?.endsWith("-pc-windows-gnu")) {
+    fail(
+      "Rust is using the MinGW (GNU) toolchain, which is not supported for Tauri on Windows.\n" +
+        "Switch to MSVC:\n" +
+        "  rustup toolchain install stable-x86_64-pc-windows-msvc\n" +
+        "  rustup default stable-x86_64-pc-windows-msvc\n" +
+        "Then install Visual Studio Build Tools with the \"Desktop development with C++\" workload.",
     );
+    return;
+  }
 
-  if (!hasMsvc) {
-    warn(
-      "MSVC build tools not detected. Install \"Desktop development with C++\" from Visual Studio Build Tools.",
+  if (!windowsMsvcInstalled()) {
+    fail(
+      "MSVC build tools not detected. Install \"Desktop development with C++\" from Visual Studio Build Tools:\n" +
+        "  https://visualstudio.microsoft.com/visual-cpp-build-tools/\n" +
+        "Or run:\n" +
+        '  winget install Microsoft.VisualStudio.2022.BuildTools --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"',
     );
-  } else {
+    return;
+  }
+
+  if (!checkOnly) {
     log("ok MSVC build tools");
+    if (host) {
+      log(`ok Rust host ${host}`);
+    }
   }
 
   warn(
