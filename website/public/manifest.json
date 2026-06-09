@@ -1,0 +1,22 @@
+{
+  "name": "FlowCapture",
+  "short_name": "FlowCapture",
+  "description": "Turn real workflows into documentation — locally, with your own AI key.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0a0f14",
+  "theme_color": "#0a0f14",
+  "icons": [
+    {
+      "src": "/favicon.png",
+      "sizes": "64x64",
+      "type": "image/png"
+    },
+    {
+      "src": "/logo.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

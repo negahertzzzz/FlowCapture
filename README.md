@@ -12,17 +12,25 @@
   <a href="https://github.com/Abhi6722/FlowCapture/releases"><img src="https://img.shields.io/github/v/release/Abhi6722/FlowCapture?label=release&style=flat-square" alt="Release" /></a>
   <a href="https://github.com/Abhi6722/FlowCapture/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/Abhi6722/FlowCapture/ci.yml?branch=main&style=flat-square" alt="CI" /></a>
   <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License" />
-  <img src="https://img.shields.io/badge/platform-macOS%20(Apple%20Silicon)-000?style=flat-square" alt="Platform" />
+  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-000?style=flat-square" alt="Platform" />
 </p>
 
 <p align="center">
+  <a href="https://flow-capture.vercel.app/">Website</a>
+  ·
   <a href="https://github.com/Abhi6722/FlowCapture/releases/latest">Download</a>
   ·
-  <a href="https://github.com/Abhi6722/FlowCapture#quick-start">Quick start</a>
+  <a href="https://flow-capture.vercel.app/docs/getting-started/quick-start">Quick start</a>
   ·
-  <a href="website/docs/intro.md">Documentation</a>
+  <a href="https://flow-capture.vercel.app/docs/intro">Documentation</a>
   ·
   <a href="https://github.com/Abhi6722/FlowCapture/issues">Report a bug</a>
+</p>
+
+<p align="center">
+  <a href="https://flow-capture.vercel.app/">
+    <img src="website/public/hero.png" alt="FlowCapture landing page — record workflows and generate documentation with your own AI key" width="800" />
+  </a>
 </p>
 
 ---
@@ -36,7 +44,8 @@ No cloud account required. Sessions stay on your machine in SQLite. You bring th
 | Platform | Status | Link |
 | --- | --- | --- |
 | **macOS** (Apple Silicon) | Available | [Download v0.1.0 `.dmg`](https://github.com/Abhi6722/FlowCapture/releases/download/v0.1.0/FlowCapture_0.1.0_aarch64.dmg) |
-| Windows / Linux | Build from source | See [Build from source](#build-from-source) |
+| **Windows** (x64) | Available | [Download v0.1.0 `.exe`](https://github.com/Abhi6722/FlowCapture/releases/download/v0.1.0/FlowCapture_0.1.0.exe) |
+| **Linux** | Build from source | See [Build from source](#build-from-source) |
 
 > macOS may show an “unidentified developer” warning for unsigned builds. Open **System Settings → Privacy & Security** and choose **Open Anyway**, or right-click the app and select **Open**.
 
@@ -63,7 +72,7 @@ No cloud account required. Sessions stay on your machine in SQLite. You bring th
 4. Use the overlay to **Mark Step** (`Cmd+Shift+M` on macOS) or **Stop** when finished.
 5. Open the session, click **Generate Documentation**, review the output, and export.
 
-For a full walkthrough, see [website/docs/getting-started/quick-start.md](website/docs/getting-started/quick-start.md).
+For a full walkthrough, see the [Quick start guide](https://flow-capture.vercel.app/docs/getting-started/quick-start).
 
 ## Build from source
 
@@ -96,7 +105,7 @@ npm run setup:install
 npm run tauri:dev
 ```
 
-**Runtime:** Screen Recording and Accessibility permissions are required. See [permissions docs](website/docs/getting-started/permissions.md).
+**Runtime:** Screen Recording and Accessibility permissions are required. See [permissions docs](https://flow-capture.vercel.app/docs/getting-started/permissions).
 
 ### Linux
 
@@ -185,12 +194,12 @@ FlowCapture/
 
 ## Documentation
 
-Full docs live in [`website/docs/`](website/docs/intro.md):
+Full docs are hosted at **[flow-capture.vercel.app/docs](https://flow-capture.vercel.app/docs/intro)**:
 
-- [Installation](website/docs/getting-started/installation.md)
-- [User guide](website/docs/guide/recording.md)
-- [AI providers](website/docs/reference/ai-providers.md)
-- [Development setup](website/docs/development/local-setup.md)
+- [Installation](https://flow-capture.vercel.app/docs/getting-started/installation)
+- [User guide](https://flow-capture.vercel.app/docs/guide/recording)
+- [AI providers](https://flow-capture.vercel.app/docs/reference/ai-providers)
+- [Development setup](https://flow-capture.vercel.app/docs/development/local-setup)
 
 Run the docs locally:
 
@@ -207,7 +216,7 @@ Contributions are welcome. To get started:
 2. Make your changes and run `npm run build` and `npm run test:rust`.
 3. Open a pull request with a clear description of what changed and why.
 
-See [website/docs/development/local-setup.md](website/docs/development/local-setup.md) for environment details.
+See the [development setup guide](https://flow-capture.vercel.app/docs/development/local-setup) for environment details.
 
 ## Platform notes
 
@@ -226,5 +235,7 @@ This project is licensed under the MIT License.
 ---
 
 <p align="center">
+  <a href="https://flow-capture.vercel.app/">Website</a>
+  ·
   Built with <a href="https://tauri.app">Tauri</a> · React · Rust
 </p>

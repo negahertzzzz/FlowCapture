@@ -11,9 +11,16 @@ import { HowItWorks } from "../components/sections/HowItWorks";
 import { OpenSource } from "../components/sections/OpenSource";
 import { Providers } from "../components/sections/Providers";
 import { useAnimationFallback } from "../hooks/useAnimationFallback";
+import { usePageMeta } from "../hooks/usePageMeta";
 import { useScrollReveal } from "../hooks/useScrollReveal";
+import { SITE_DESCRIPTION, SITE_TITLE, SITE_URL } from "../lib/site";
 
 export default function LandingPage() {
+  usePageMeta({
+    title: SITE_TITLE,
+    description: SITE_DESCRIPTION,
+    url: `${SITE_URL}/`,
+  });
   useAnimationFallback();
   useScrollReveal();
 
