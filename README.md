@@ -67,32 +67,79 @@ For a full walkthrough, see [website/docs/getting-started/quick-start.md](websit
 
 ## Build from source
 
-### Prerequisites
-
-| Tool | Version |
-| --- | --- |
-| [Node.js](https://nodejs.org/) | 20+ |
-| [Rust](https://rustup.rs/) | stable |
-| macOS | Xcode Command Line Tools |
-
-### Setup
+All platforms require [Node.js 20+](https://nodejs.org/) and [Rust stable](https://rustup.rs/).
 
 ```bash
 git clone https://github.com/Abhi6722/FlowCapture.git
 cd FlowCapture
-npm run setup
-npm run tauri:dev
 ```
 
-`npm run setup` checks Node.js, Rust, and platform-specific dependencies, then installs npm packages. On Linux (Ubuntu 22.04+), install system libraries automatically with:
+Then follow the steps for your OS below. The first `tauri:dev` run compiles the Rust backend and may take several minutes.
+
+### macOS
+
+| Requirement | Notes |
+| --- | --- |
+| Node.js 20+ | Required |
+| Rust (stable) | Installed by `setup:install` if missing |
+| Xcode Command Line Tools | `xcode-select --install` |
+
+```bash
+npm run setup          # check deps + npm install
+npm run tauri:dev      # run the app
+```
+
+If Rust is not installed yet:
 
 ```bash
 npm run setup:install
+npm run tauri:dev
 ```
 
-First launch compiles the Rust backend and may take several minutes.
+**Runtime:** Screen Recording and Accessibility permissions are required. See [permissions docs](website/docs/getting-started/permissions.md).
 
-### Production build
+### Linux
+
+| Requirement | Notes |
+| --- | --- |
+| Node.js 20+ | Required |
+| Rust (stable) | Installed by `setup:install` if missing |
+| Ubuntu 22.04+ | Or any distro with **WebKitGTK 4.1** (`libwebkit2gtk-4.1-dev`) |
+| System libraries | WebKitGTK, GTK, build tools — installed by `setup:install` |
+
+```bash
+npm run setup:install       # Rust + system libs (needs sudo) + npm install
+source "$HOME/.cargo/env"   # load cargo into current shell
+npm run tauri:dev
+```
+
+Add this to `~/.bashrc` or `~/.zshrc` so `cargo` is available in new terminals:
+
+```bash
+. "$HOME/.cargo/env"
+```
+
+**Runtime:** PipeWire or X11 compositor support recommended. ffmpeg is downloaded automatically on first build. Screen capture permissions vary by desktop environment.
+
+### Windows
+
+| Requirement | Notes |
+| --- | --- |
+| Node.js 20+ | Required |
+| Rust (stable) | Installed by `setup:install` if missing |
+| [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) | Install the **Desktop development with C++** workload |
+| WebView2 | Usually preinstalled on Windows 10/11 |
+
+```bash
+npm run setup:install
+npm run tauri:dev
+```
+
+Restart your terminal after Rust installs so `cargo` is on your PATH.
+
+**Runtime:** Periodic frame capture encoded to MP4 via bundled ffmpeg.
+
+### Production build (all platforms)
 
 ```bash
 npm run tauri:build
@@ -109,7 +156,7 @@ src-tauri/target/release/bundle/
 | Command | Description |
 | --- | --- |
 | `npm run setup` | Check prerequisites and install npm deps |
-| `npm run setup:install` | Same as setup, plus install system packages (Linux) / Rust |
+| `npm run setup:install` | Same as setup, plus install Rust / Linux system packages |
 | `npm run tauri:dev` | Run the desktop app with hot reload |
 | `npm run build` | Build the app frontend |
 | `npm run tauri:build` | Build a production desktop bundle |
@@ -155,10 +202,13 @@ See [website/docs/development/local-setup.md](website/docs/development/local-set
 
 ## Platform notes
 
-- **macOS** — in-app screen recording at 15 fps; requires Screen Recording and Accessibility permissions.
-- **Linux** — requires **Ubuntu 22.04+** (or equivalent with WebKitGTK 4.1). Run `npm run setup:install` for system libraries. ffmpeg is downloaded automatically on first build.
-- **Windows** — supported in development builds; install [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with the C++ workload and ensure WebView2 is available.
-- **PDF export** — uses headless Chrome or `wkhtmltopdf` when installed on the system.
+| Platform | Recording | Export extras |
+| --- | --- | --- |
+| **macOS** | In-app video at ~15 fps | PDF via headless Chrome |
+| **Linux** | ffmpeg MP4; PipeWire/X11 dependent | PDF via Chrome or wkhtmltopdf |
+| **Windows** | ffmpeg MP4 via periodic frame capture | PDF via Chrome or wkhtmltopdf |
+
+All platforms store sessions locally in SQLite. PDF export uses headless Chrome or `wkhtmltopdf` when available on the system.
 
 ## License
 

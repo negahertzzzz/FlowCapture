@@ -17,6 +17,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const args = new Set(process.argv.slice(2));
 const install = args.has("--install") || args.has("-y");
 const skipNpm = args.has("--skip-npm");
+const checkOnly = args.has("--check-only");
 
 const LINUX_APT_PACKAGES = [
   "libwebkit2gtk-4.1-dev",
@@ -137,7 +138,9 @@ function checkNode() {
     fail(`Node.js 20+ required (found ${version}). Install from https://nodejs.org/`);
     return;
   }
-  log(`ok Node.js ${version}`);
+  if (!checkOnly) {
+    log(`ok Node.js ${version}`);
+  }
 }
 
 function installRust() {
@@ -156,21 +159,49 @@ function installRust() {
   log("ok Rust installed");
 }
 
+function cargoBinDir() {
+  return path.join(os.homedir(), ".cargo", "bin");
+}
+
+function rustInstalledButNotOnPath() {
+  return (
+    !hasCommand("cargo") &&
+    existsSync(path.join(cargoBinDir(), "cargo"))
+  );
+}
+
 function checkRust() {
   if (hasCommand("cargo") && hasCommand("rustc")) {
-    const version = execSync("rustc --version", { encoding: "utf8" }).trim();
-    log(`ok ${version}`);
+    if (!checkOnly) {
+      const version = execSync("rustc --version", { encoding: "utf8" }).trim();
+      log(`ok ${version}`);
+    }
+    return;
+  }
+
+  if (rustInstalledButNotOnPath()) {
+    fail(
+      "Rust is installed at ~/.cargo/bin but cargo is not in your PATH.\n" +
+        'Run: source "$HOME/.cargo/env"\n' +
+        'Then add to ~/.bashrc or ~/.zshrc: . "$HOME/.cargo/env"',
+    );
     return;
   }
 
   if (install) {
     installRust();
+    log(
+      '\nRust was installed. Run this once in your shell, then retry:\n  source "$HOME/.cargo/env"',
+    );
     return;
   }
 
   fail(
-    "Rust is not installed. Run: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh\n" +
-      "Or rerun with: npm run setup -- --install",
+    "Rust (cargo) is not installed — Tauri cannot build without it.\n" +
+      "Quick fix:\n" +
+      '  curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y\n' +
+      '  source "$HOME/.cargo/env"\n' +
+      "Or run: npm run setup:install",
   );
 }
 
@@ -188,11 +219,13 @@ function checkMacOS() {
     );
     return;
   }
-  log("ok Xcode Command Line Tools");
+  if (!checkOnly) {
+    log("ok Xcode Command Line Tools");
+  }
 
   if (!hasCommand("curl")) {
     fail("curl is required (used to download ffmpeg during builds)");
-  } else {
+  } else if (!checkOnly) {
     log("ok curl");
   }
 }
@@ -238,10 +271,12 @@ function installLinuxDeps(distro) {
 
 function checkLinux() {
   const distro = readLinuxDistro();
-  if (distro) {
-    log(`detected Linux distro: ${distro}`);
-  } else {
-    warn("could not detect Linux distro from /etc/os-release");
+  if (!checkOnly) {
+    if (distro) {
+      log(`detected Linux distro: ${distro}`);
+    } else {
+      warn("could not detect Linux distro from /etc/os-release");
+    }
   }
 
   if (!hasCommand("pkg-config")) {
@@ -278,11 +313,13 @@ function checkLinux() {
 
   if (!hasCommand("curl")) {
     fail("curl is required (used to download ffmpeg during builds)");
-  } else {
+  } else if (!checkOnly) {
     log("ok curl");
   }
 
-  log("ok Linux system libraries (webkit2gtk-4.1)");
+  if (!checkOnly) {
+    log("ok Linux system libraries (webkit2gtk-4.1)");
+  }
 }
 
 function checkWindows() {
@@ -322,7 +359,9 @@ function runNpmInstall() {
 }
 
 function main() {
-  log("FlowCapture dev setup\n");
+  if (!checkOnly) {
+    log("FlowCapture dev setup\n");
+  }
 
   checkNode();
   checkRust();
@@ -333,13 +372,20 @@ function main() {
     checkLinux();
   } else if (process.platform === "win32") {
     checkWindows();
-  } else {
+  } else if (!checkOnly) {
     warn(`unsupported platform "${process.platform}" — setup checks are limited`);
   }
 
   if (failed) {
-    console.error("\nSetup incomplete. Fix the errors above and rerun npm run setup.");
+    const hint = checkOnly
+      ? "\nPrerequisites missing. Run: npm run setup:install"
+      : "\nSetup incomplete. Fix the errors above and rerun npm run setup.";
+    console.error(hint);
     process.exit(1);
+  }
+
+  if (checkOnly) {
+    return;
   }
 
   runNpmInstall();

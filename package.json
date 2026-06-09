@@ -13,7 +13,7 @@
     "setup": "node scripts/setup-dev.mjs",
     "setup:install": "node scripts/setup-dev.mjs --install",
     "tauri": "tauri",
-    "tauri:dev": "tauri dev",
+    "tauri:dev": "node scripts/setup-dev.mjs --check-only && tauri dev",
     "tauri:build": "npm run tauri build",
     "test:rust": "cd src-tauri && cargo test",
     "website:dev": "npm run dev --prefix website",
