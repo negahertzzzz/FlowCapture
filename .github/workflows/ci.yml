@@ -64,6 +64,9 @@ jobs:
             libclang-dev \
             libxcb1-dev \
             libxrandr-dev \
-            libdbus-1-dev
+            libdbus-1-dev \
+            gnome-screenshot
       - run: npm ci
+      - run: npm run build
       - run: npm run test:rust
+      - run: cd src-tauri && cargo build

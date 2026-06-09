@@ -168,6 +168,8 @@ src-tauri/target/release/bundle/
 | `npm run build` | Build the app frontend |
 | `npm run tauri:build` | Build a production desktop bundle |
 | `npm run test:rust` | Run Rust tests |
+| `npm run build:linux` | Build/test in Ubuntu 22.04 Docker (requires Docker) |
+| `npm run build:linux:bundle` | Linux installers → `dist-linux/` (`.deb`, AppImage, etc.) |
 | `npm run website:dev` | Run the marketing site and docs (port 4321) |
 | `npm run website:build` | Build the static website |
 
