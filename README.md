@@ -80,8 +80,14 @@ For a full walkthrough, see [website/docs/getting-started/quick-start.md](websit
 ```bash
 git clone https://github.com/Abhi6722/FlowCapture.git
 cd FlowCapture
-npm install
-npm run tauri dev
+npm run setup
+npm run tauri:dev
+```
+
+`npm run setup` checks Node.js, Rust, and platform-specific dependencies, then installs npm packages. On Linux (Ubuntu 22.04+), install system libraries automatically with:
+
+```bash
+npm run setup:install
 ```
 
 First launch compiles the Rust backend and may take several minutes.
@@ -102,7 +108,9 @@ src-tauri/target/release/bundle/
 
 | Command | Description |
 | --- | --- |
-| `npm run tauri dev` | Run the desktop app with hot reload |
+| `npm run setup` | Check prerequisites and install npm deps |
+| `npm run setup:install` | Same as setup, plus install system packages (Linux) / Rust |
+| `npm run tauri:dev` | Run the desktop app with hot reload |
 | `npm run build` | Build the app frontend |
 | `npm run tauri:build` | Build a production desktop bundle |
 | `npm run test:rust` | Run Rust tests |
@@ -148,7 +156,8 @@ See [website/docs/development/local-setup.md](website/docs/development/local-set
 ## Platform notes
 
 - **macOS** — in-app screen recording at 15 fps; requires Screen Recording and Accessibility permissions.
-- **Windows / Linux** — supported in development builds; periodic frame capture to MP4 when ffmpeg is available.
+- **Linux** — requires **Ubuntu 22.04+** (or equivalent with WebKitGTK 4.1). Run `npm run setup:install` for system libraries. ffmpeg is downloaded automatically on first build.
+- **Windows** — supported in development builds; install [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with the C++ workload and ensure WebView2 is available.
 - **PDF export** — uses headless Chrome or `wkhtmltopdf` when installed on the system.
 
 ## License

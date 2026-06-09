@@ -34,11 +34,11 @@ regex = "1"
 base64 = "0.22"
 dirs = "6"
 device_query = "3.0"
-macos-accessibility-client = "0.0.1"
 async-trait = "0.1"
 pulldown-cmark = "0.13"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+macos-accessibility-client = "0.0.1"
 core-graphics = "0.24"
 image = "0.25"
 objc2 = "0.6"

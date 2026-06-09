@@ -10,13 +10,21 @@ title: Local Setup
 ```bash
 git clone https://github.com/flowcapture/flowcapture.git
 cd flowcapture
-npm install
+npm run setup
 ```
+
+On **Linux**, install system libraries (WebKitGTK 4.1, build tools, etc.) with:
+
+```bash
+npm run setup:install
+```
+
+Requires **Ubuntu 22.04+** or a distro that ships `libwebkit2gtk-4.1-dev`. See [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for other distributions.
 
 ## Run the app
 
 ```bash
-npm run tauri dev
+npm run tauri:dev
 ```
 
 This starts the Vite dev server (`localhost:1420`) and the Tauri shell with hot reload for the frontend.
@@ -37,6 +45,9 @@ No `.env` is required for core app functionality. AI keys are entered in the UI 
 
 | Command | Purpose |
 | --- | --- |
+| `npm run setup` | Check prerequisites and install npm deps |
+| `npm run setup:install` | Also install system packages (Linux) / Rust |
+| `npm run tauri:dev` | Run desktop app with hot reload |
 | `npm run build` | Build frontend only |
 | `npm run tauri:build` | Production desktop bundle |
 | `npm run test:rust` | Rust unit/integration tests |

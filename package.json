@@ -3,11 +3,17 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
+    "setup": "node scripts/setup-dev.mjs",
+    "setup:install": "node scripts/setup-dev.mjs --install",
     "tauri": "tauri",
+    "tauri:dev": "tauri dev",
     "tauri:build": "npm run tauri build",
     "test:rust": "cd src-tauri && cargo test",
     "website:dev": "npm run dev --prefix website",
