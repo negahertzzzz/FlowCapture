@@ -66,7 +66,7 @@ fn try_gnome_shell_screenshot(output_path: &Path) -> Result<()> {
         .to_string();
 
     proxy
-        .method_call(
+        .method_call::<(), (bool, String), &str, &str>(
             "org.gnome.Shell.Screenshot",
             "Screenshot",
             (false, filename),
@@ -160,7 +160,7 @@ fn try_portal_screenshot(output_path: &Path) -> Result<()> {
     options.insert("interactive".to_string(), Variant(Box::new(false)));
     options.insert("modal".to_string(), Variant(Box::new(false)));
 
-    proxy.method_call(
+    proxy.method_call::<(), (&str, PropMap), &str, &str>(
         "org.freedesktop.portal.Screenshot",
         "Screenshot",
         ("", options),
@@ -235,7 +235,7 @@ fn image_has_content(path: &Path) -> bool {
         return false;
     }
 
-    let step = ((width * height) / 512).max(1);
+    let step = ((width as usize * height as usize) / 512).max(1);
     let mut samples = Vec::new();
     for (index, pixel) in rgba.pixels().enumerate() {
         if index % step == 0 {

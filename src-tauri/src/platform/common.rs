@@ -4,6 +4,9 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+#[cfg(target_os = "linux")]
+use anyhow::Result;
+#[cfg(not(target_os = "linux"))]
 use anyhow::{Context, Result};
 use device_query::{DeviceQuery, DeviceState, Keycode};
 #[cfg(not(target_os = "linux"))]
