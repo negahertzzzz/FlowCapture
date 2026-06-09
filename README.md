@@ -12,17 +12,25 @@
   <a href="https://github.com/Abhi6722/FlowCapture/releases"><img src="https://img.shields.io/github/v/release/Abhi6722/FlowCapture?label=release&style=flat-square" alt="Release" /></a>
   <a href="https://github.com/Abhi6722/FlowCapture/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/Abhi6722/FlowCapture/ci.yml?branch=main&style=flat-square" alt="CI" /></a>
   <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License" />
-  <img src="https://img.shields.io/badge/platform-macOS%20(Apple%20Silicon)-000?style=flat-square" alt="Platform" />
+  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-000?style=flat-square" alt="Platform" />
 </p>
 
 <p align="center">
+  <a href="https://flow-capture.vercel.app/">Website</a>
+  ·
   <a href="https://github.com/Abhi6722/FlowCapture/releases/latest">Download</a>
   ·
-  <a href="https://github.com/Abhi6722/FlowCapture#quick-start">Quick start</a>
+  <a href="https://flow-capture.vercel.app/docs/getting-started/quick-start">Quick start</a>
   ·
-  <a href="website/docs/intro.md">Documentation</a>
+  <a href="https://flow-capture.vercel.app/docs/intro">Documentation</a>
   ·
   <a href="https://github.com/Abhi6722/FlowCapture/issues">Report a bug</a>
+</p>
+
+<p align="center">
+  <a href="https://flow-capture.vercel.app/">
+    <img src="website/public/hero.png" alt="FlowCapture landing page — record workflows and generate documentation with your own AI key" width="800" />
+  </a>
 </p>
 
 ---
@@ -36,7 +44,8 @@ No cloud account required. Sessions stay on your machine in SQLite. You bring th
 | Platform | Status | Link |
 | --- | --- | --- |
 | **macOS** (Apple Silicon) | Available | [Download v0.1.0 `.dmg`](https://github.com/Abhi6722/FlowCapture/releases/download/v0.1.0/FlowCapture_0.1.0_aarch64.dmg) |
-| Windows / Linux | Build from source | See [Build from source](#build-from-source) |
+| **Windows** (x64) | Available | [Download v0.1.0 `.exe`](https://github.com/Abhi6722/FlowCapture/releases/download/v0.1.0/FlowCapture_0.1.0.exe) |
+| **Linux** | Build from source | See [Build from source](#build-from-source) |
 
 > macOS may show an “unidentified developer” warning for unsigned builds. Open **System Settings → Privacy & Security** and choose **Open Anyway**, or right-click the app and select **Open**.
 
@@ -63,30 +72,90 @@ No cloud account required. Sessions stay on your machine in SQLite. You bring th
 4. Use the overlay to **Mark Step** (`Cmd+Shift+M` on macOS) or **Stop** when finished.
 5. Open the session, click **Generate Documentation**, review the output, and export.
 
-For a full walkthrough, see [website/docs/getting-started/quick-start.md](website/docs/getting-started/quick-start.md).
+For a full walkthrough, see the [Quick start guide](https://flow-capture.vercel.app/docs/getting-started/quick-start).
 
 ## Build from source
 
-### Prerequisites
-
-| Tool | Version |
-| --- | --- |
-| [Node.js](https://nodejs.org/) | 20+ |
-| [Rust](https://rustup.rs/) | stable |
-| macOS | Xcode Command Line Tools |
-
-### Setup
+All platforms require [Node.js 20+](https://nodejs.org/) and [Rust stable](https://rustup.rs/).
 
 ```bash
 git clone https://github.com/Abhi6722/FlowCapture.git
 cd FlowCapture
-npm install
-npm run tauri dev
 ```
 
-First launch compiles the Rust backend and may take several minutes.
+Then follow the steps for your OS below. The first `tauri:dev` run compiles the Rust backend and may take several minutes.
 
-### Production build
+### macOS
+
+| Requirement | Notes |
+| --- | --- |
+| Node.js 20+ | Required |
+| Rust (stable) | Installed by `setup:install` if missing |
+| Xcode Command Line Tools | `xcode-select --install` |
+
+```bash
+npm run setup          # check deps + npm install
+npm run tauri:dev      # run the app
+```
+
+If Rust is not installed yet:
+
+```bash
+npm run setup:install
+npm run tauri:dev
+```
+
+**Runtime:** Screen Recording and Accessibility permissions are required. See [permissions docs](https://flow-capture.vercel.app/docs/getting-started/permissions).
+
+### Linux
+
+| Requirement | Notes |
+| --- | --- |
+| Node.js 20+ | Required |
+| Rust (stable) | Installed by `setup:install` if missing |
+| Ubuntu 22.04+ | Or any distro with **WebKitGTK 4.1** (`libwebkit2gtk-4.1-dev`) |
+| System libraries | Tauri (WebKitGTK) + X11 screen capture (xcb, dbus) — installed by `setup:install` |
+
+```bash
+npm run setup:install       # Rust + system libs (needs sudo) + npm install
+source "$HOME/.cargo/env"   # load cargo into current shell
+npm run tauri:dev
+```
+
+Add this to `~/.bashrc` or `~/.zshrc` so `cargo` is available in new terminals:
+
+```bash
+. "$HOME/.cargo/env"
+```
+
+**Runtime:** On **Wayland** (Ubuntu 22.04 default), screenshots use GNOME Shell / portal capture. If captures are blank, install `gnome-screenshot` (`sudo apt install gnome-screenshot`) or log into an **X11** session. ffmpeg is downloaded automatically on first build.
+
+**Common compile errors on Linux:**
+
+| Error | Fix |
+| --- | --- |
+| `webkit2gtk-4.1` / `xcb` / `dbus-1` not found | Run `npm run setup:install` |
+| `spa_video_info_raw has no field named flags` | Pull latest — Linux uses xcap 0.4.x without PipeWire. Run `cargo clean` in `src-tauri` and rebuild. |
+
+### Windows
+
+| Requirement | Notes |
+| --- | --- |
+| Node.js 20+ | Required |
+| Rust (stable) | Installed by `setup:install` if missing |
+| [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) | Install the **Desktop development with C++** workload |
+| WebView2 | Usually preinstalled on Windows 10/11 |
+
+```bash
+npm run setup:install
+npm run tauri:dev
+```
+
+Restart your terminal after Rust installs so `cargo` is on your PATH.
+
+**Runtime:** Periodic frame capture encoded to MP4 via bundled ffmpeg.
+
+### Production build (all platforms)
 
 ```bash
 npm run tauri:build
@@ -102,10 +171,14 @@ src-tauri/target/release/bundle/
 
 | Command | Description |
 | --- | --- |
-| `npm run tauri dev` | Run the desktop app with hot reload |
+| `npm run setup` | Check prerequisites and install npm deps |
+| `npm run setup:install` | Same as setup, plus install Rust / Linux system packages |
+| `npm run tauri:dev` | Run the desktop app with hot reload |
 | `npm run build` | Build the app frontend |
 | `npm run tauri:build` | Build a production desktop bundle |
 | `npm run test:rust` | Run Rust tests |
+| `npm run build:linux` | Build/test in Ubuntu 22.04 Docker (requires Docker) |
+| `npm run build:linux:bundle` | Linux installers → `dist-linux/` (`.deb`, AppImage, etc.) |
 | `npm run website:dev` | Run the marketing site and docs (port 4321) |
 | `npm run website:build` | Build the static website |
 
@@ -121,12 +194,12 @@ FlowCapture/
 
 ## Documentation
 
-Full docs live in [`website/docs/`](website/docs/intro.md):
+Full docs are hosted at **[flow-capture.vercel.app/docs](https://flow-capture.vercel.app/docs/intro)**:
 
-- [Installation](website/docs/getting-started/installation.md)
-- [User guide](website/docs/guide/recording.md)
-- [AI providers](website/docs/reference/ai-providers.md)
-- [Development setup](website/docs/development/local-setup.md)
+- [Installation](https://flow-capture.vercel.app/docs/getting-started/installation)
+- [User guide](https://flow-capture.vercel.app/docs/guide/recording)
+- [AI providers](https://flow-capture.vercel.app/docs/reference/ai-providers)
+- [Development setup](https://flow-capture.vercel.app/docs/development/local-setup)
 
 Run the docs locally:
 
@@ -143,13 +216,17 @@ Contributions are welcome. To get started:
 2. Make your changes and run `npm run build` and `npm run test:rust`.
 3. Open a pull request with a clear description of what changed and why.
 
-See [website/docs/development/local-setup.md](website/docs/development/local-setup.md) for environment details.
+See the [development setup guide](https://flow-capture.vercel.app/docs/development/local-setup) for environment details.
 
 ## Platform notes
 
-- **macOS** — in-app screen recording at 15 fps; requires Screen Recording and Accessibility permissions.
-- **Windows / Linux** — supported in development builds; periodic frame capture to MP4 when ffmpeg is available.
-- **PDF export** — uses headless Chrome or `wkhtmltopdf` when installed on the system.
+| Platform | Recording | Export extras |
+| --- | --- | --- |
+| **macOS** | In-app video at ~15 fps | PDF via headless Chrome |
+| **Linux** | ffmpeg MP4; PipeWire/X11 dependent | PDF via Chrome or wkhtmltopdf |
+| **Windows** | ffmpeg MP4 via periodic frame capture | PDF via Chrome or wkhtmltopdf |
+
+All platforms store sessions locally in SQLite. PDF export uses headless Chrome or `wkhtmltopdf` when available on the system.
 
 ## License
 
@@ -158,5 +235,7 @@ This project is licensed under the MIT License.
 ---
 
 <p align="center">
+  <a href="https://flow-capture.vercel.app/">Website</a>
+  ·
   Built with <a href="https://tauri.app">Tauri</a> · React · Rust
 </p>

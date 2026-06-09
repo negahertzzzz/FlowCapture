@@ -4,8 +4,12 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+#[cfg(target_os = "linux")]
+use anyhow::Result;
+#[cfg(not(target_os = "linux"))]
 use anyhow::{Context, Result};
 use device_query::{DeviceQuery, DeviceState, Keycode};
+#[cfg(not(target_os = "linux"))]
 use xcap::Monitor;
 
 use crate::thread_util::join_thread_with_timeout;
@@ -60,6 +64,7 @@ fn now_ms() -> i64 {
 pub struct SharedRecorder {
     recording: AtomicBool,
     output_dir: Mutex<Option<PathBuf>>,
+    #[allow(dead_code)]
     video_path: Mutex<Option<PathBuf>>,
     handle: Mutex<Option<JoinHandle<()>>>,
     stop_flag: Arc<AtomicBool>,
@@ -85,14 +90,24 @@ impl ScreenRecorder for SharedRecorder {
         let handle = thread::spawn(move || {
             let mut frame_index = 0u64;
             while !stop_flag.load(Ordering::SeqCst) {
-                if let Ok(monitors) = Monitor::all() {
-                    if let Some(monitor) = monitors.into_iter().next() {
-                        let path = frames_dir_clone.join(format!("frame_{frame_index:06}.png"));
-                        if let Ok(image) = monitor.capture_image() {
-                            let _ = image.save(&path);
-                            frame_index += 1;
-                        }
+                let path = frames_dir_clone.join(format!("frame_{frame_index:06}.png"));
+                let captured = {
+                    #[cfg(target_os = "linux")]
+                    {
+                        super::linux_capture::capture_primary_monitor(path.clone()).is_ok()
                     }
+                    #[cfg(not(target_os = "linux"))]
+                    {
+                        Monitor::all()
+                            .ok()
+                            .and_then(|monitors| monitors.into_iter().next())
+                            .and_then(|monitor| monitor.capture_image().ok())
+                            .and_then(|image| image.save(&path).ok())
+                            .is_some()
+                    }
+                };
+                if captured {
+                    frame_index += 1;
                 }
                 thread::sleep(Duration::from_millis(500));
             }
@@ -318,17 +333,25 @@ pub struct SharedScreenshotCapturer;
 
 impl ScreenshotCapturer for SharedScreenshotCapturer {
     fn capture_primary_monitor(&self, output_path: PathBuf) -> Result<PathBuf> {
-        if let Some(parent) = output_path.parent() {
-            std::fs::create_dir_all(parent)?;
+        #[cfg(target_os = "linux")]
+        {
+            return super::linux_capture::capture_primary_monitor(output_path);
         }
-        let monitor = Monitor::all()?
-            .into_iter()
-            .next()
-            .context("no monitor found")?;
-        let image = monitor.capture_image()?;
-        image
-            .save(&output_path)
-            .map_err(|err| anyhow::anyhow!("failed to save screenshot: {err}"))?;
-        Ok(output_path)
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            if let Some(parent) = output_path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let monitor = Monitor::all()?
+                .into_iter()
+                .next()
+                .context("no monitor found")?;
+            let image = monitor.capture_image()?;
+            image
+                .save(&output_path)
+                .map_err(|err| anyhow::anyhow!("failed to save screenshot: {err}"))?;
+            Ok(output_path)
+        }
     }
 }

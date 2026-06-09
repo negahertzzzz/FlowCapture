@@ -13,7 +13,9 @@ FlowCapture is a **Tauri 2** desktop app (Rust backend + React frontend). You ca
 | --- | --- |
 | Node.js | 20+ |
 | Rust | stable (via [rustup](https://rustup.rs)) |
-| macOS | Xcode Command Line Tools (for building on Mac) |
+| macOS | Xcode Command Line Tools |
+| Linux | Ubuntu 22.04+ with WebKitGTK 4.1 and X11 capture deps (xcb, dbus) |
+| Windows | Visual Studio Build Tools (C++ workload) |
 
 Platform-specific recording dependencies (ffmpeg, Chrome for PDF) are bundled or downloaded automatically when possible.
 
@@ -24,11 +26,13 @@ From the repository root:
 ```bash
 git clone https://github.com/flowcapture/flowcapture.git
 cd flowcapture
-npm install
-npm run tauri dev
+npm run setup
+npm run tauri:dev
 ```
 
-The first `tauri dev` run compiles the Rust crate and may take several minutes.
+On Linux, install system libraries with `npm run setup:install` before the first build.
+
+The first `tauri:dev` run compiles the Rust crate and may take several minutes.
 
 ## Release build
 
