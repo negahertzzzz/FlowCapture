@@ -19,7 +19,7 @@ On **Linux**, install system libraries (WebKitGTK 4.1, build tools, etc.) with:
 npm run setup:install
 ```
 
-Requires **Ubuntu 22.04+** or a distro that ships `libwebkit2gtk-4.1-dev`. See [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for other distributions.
+Requires **Ubuntu 22.04+** or a distro that ships `libwebkit2gtk-4.1-dev` and `libpipewire-0.3-dev` (screen capture via [xcap](https://github.com/nashaofu/xcap)). `npm run setup:install` installs both Tauri and xcap build dependencies. See [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/) for other distributions.
 
 ## Run the app
 

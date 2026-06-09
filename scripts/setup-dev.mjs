@@ -19,6 +19,7 @@ const install = args.has("--install") || args.has("-y");
 const skipNpm = args.has("--skip-npm");
 const checkOnly = args.has("--check-only");
 
+// Tauri (WebKitGTK) + xcap screen capture (PipeWire, X11/Wayland) — see xcap README
 const LINUX_APT_PACKAGES = [
   "libwebkit2gtk-4.1-dev",
   "build-essential",
@@ -30,6 +31,13 @@ const LINUX_APT_PACKAGES = [
   "libayatana-appindicator3-dev",
   "librsvg2-dev",
   "pkg-config",
+  "libclang-dev",
+  "libxcb1-dev",
+  "libxrandr-dev",
+  "libdbus-1-dev",
+  "libpipewire-0.3-dev",
+  "libwayland-dev",
+  "libegl-dev",
 ];
 
 const LINUX_DNF_PACKAGES = [
@@ -42,6 +50,13 @@ const LINUX_DNF_PACKAGES = [
   "librsvg2-devel",
   "libxdo-devel",
   "@development-tools",
+  "clang-devel",
+  "libxcb-devel",
+  "libXrandr-devel",
+  "dbus-devel",
+  "pipewire-devel",
+  "wayland-devel",
+  "mesa-libEGL-devel",
 ];
 
 const LINUX_PACMAN_PACKAGES = [
@@ -55,6 +70,13 @@ const LINUX_PACMAN_PACKAGES = [
   "librsvg",
   "xdotool",
   "pkgconf",
+  "clang",
+  "libxcb",
+  "libxrandr",
+  "dbus",
+  "libpipewire",
+  "wayland",
+  "mesa",
 ];
 
 let failed = false;
@@ -230,8 +252,19 @@ function checkMacOS() {
   }
 }
 
+function missingLinuxDeps() {
+  const missing = [];
+  if (!commandSucceeded("pkg-config --exists webkit2gtk-4.1")) {
+    missing.push("webkit2gtk-4.1 (Tauri UI)");
+  }
+  if (!commandSucceeded("pkg-config --exists libpipewire-0.3")) {
+    missing.push("libpipewire-0.3 (screen capture via xcap)");
+  }
+  return missing;
+}
+
 function linuxDepsSatisfied() {
-  return commandSucceeded("pkg-config --exists webkit2gtk-4.1");
+  return missingLinuxDeps().length === 0;
 }
 
 function installLinuxDeps(distro) {
@@ -296,18 +329,21 @@ function checkLinux() {
     if (install && distro) {
       installLinuxDeps(distro);
     } else {
+      const missing = missingLinuxDeps().join(", ");
       fail(
-        "WebKitGTK 4.1 dev libraries are missing (required by Tauri 2 on Linux).\n" +
+        `Linux build libraries are missing: ${missing}.\n` +
           "Ubuntu 22.04+ example:\n" +
           `  sudo apt-get install -y ${LINUX_APT_PACKAGES.join(" ")}\n` +
-          "Or rerun with: npm run setup -- --install",
+          "Or rerun with: npm run setup:install",
       );
       return;
     }
   }
 
   if (!linuxDepsSatisfied()) {
-    fail("Linux WebKitGTK dependencies are still missing after install attempt");
+    fail(
+      `Linux dependencies still missing after install attempt: ${missingLinuxDeps().join(", ")}`,
+    );
     return;
   }
 
@@ -318,7 +354,7 @@ function checkLinux() {
   }
 
   if (!checkOnly) {
-    log("ok Linux system libraries (webkit2gtk-4.1)");
+    log("ok Linux system libraries (webkit2gtk-4.1, libpipewire-0.3)");
   }
 }
 

@@ -105,7 +105,7 @@ npm run tauri:dev
 | Node.js 20+ | Required |
 | Rust (stable) | Installed by `setup:install` if missing |
 | Ubuntu 22.04+ | Or any distro with **WebKitGTK 4.1** (`libwebkit2gtk-4.1-dev`) |
-| System libraries | WebKitGTK, GTK, build tools — installed by `setup:install` |
+| System libraries | Tauri (WebKitGTK) + screen capture (PipeWire, X11/Wayland) — installed by `setup:install` |
 
 ```bash
 npm run setup:install       # Rust + system libs (needs sudo) + npm install
@@ -120,6 +120,14 @@ Add this to `~/.bashrc` or `~/.zshrc` so `cargo` is available in new terminals:
 ```
 
 **Runtime:** PipeWire or X11 compositor support recommended. ffmpeg is downloaded automatically on first build. Screen capture permissions vary by desktop environment.
+
+If you see `libpipewire-0.3 was not found` during compile, install capture deps:
+
+```bash
+sudo apt-get install -y libpipewire-0.3-dev libxcb1-dev libxrandr-dev libdbus-1-dev libwayland-dev libegl-dev libclang-dev
+```
+
+Or rerun `npm run setup:install` to install everything.
 
 ### Windows
 
