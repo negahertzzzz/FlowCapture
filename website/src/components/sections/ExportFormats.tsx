@@ -11,7 +11,8 @@ export function ExportFormats() {
         <h2>One session. Every format you ship.</h2>
         <p>
           Generate once, then export to whatever your team reads — and tweak the
-          Markdown source before it goes out.
+          Markdown source before it goes out. Try the{" "}
+          <a href="#pdf-export">live PDF studio</a> below.
         </p>
       </div>
       <div className="reveal">
