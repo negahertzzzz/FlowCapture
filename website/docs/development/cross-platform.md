@@ -22,7 +22,9 @@ FlowCapture targets **macOS**, **Windows**, and **Linux** with platform-specific
 
 ## Linux
 
-- Requires compositor support (**PipeWire** preferred, X11 supported in many setups)
+- **Ubuntu 22.04+** with WebKitGTK 4.1
+- Screen capture uses **xcap 0.4.x** (X11 + dbus) — no PipeWire 1.0+ required at build time
+- **X11 session** recommended; Wayland capture is limited
 - ffmpeg for video encoding
 - Test on target distro before release — portal permissions vary
 

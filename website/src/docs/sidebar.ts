@@ -76,6 +76,10 @@ export function flattenDocLinks(items: DocNavItem[] = docsSidebar): DocLink[] {
   return links;
 }
 
+export function getDocLabel(slug: string): string | undefined {
+  return flattenDocLinks().find((link) => link.slug === slug)?.label;
+}
+
 export function getDocNeighbors(slug: string): { prev?: DocLink; next?: DocLink } {
   const links = flattenDocLinks();
   const index = links.findIndex((link) => link.slug === slug);

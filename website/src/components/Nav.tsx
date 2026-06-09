@@ -27,6 +27,7 @@ export function Nav({ variant = "landing" }: NavProps) {
           <a href={`${root}#how`}>How it works</a>
           <a href={`${root}#features`}>Features</a>
           <a href={`${root}#formats`}>Exports</a>
+          <a href={`${root}#pdf-export`}>PDF Studio</a>
           <a href={`${root}#replay`}>AI Replay</a>
           <a href={`${root}#opensource`}>Open source</a>
           <Link className={onDocs ? "nav-docs active" : "nav-docs"} to="/docs/intro">

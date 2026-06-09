@@ -25,7 +25,7 @@ Restart the app after granting Screen Recording if capture still fails.
 
 ### Dev vs production
 
-When running `npm run tauri dev`, the Dock may show the dev binary name. Production `.app` bundles use the **FlowCapture** name and icon from `Info.plist`.
+When running `npm run tauri:dev`, the Dock may show the dev binary name. Production `.app` bundles use the **FlowCapture** name and icon from `Info.plist`.
 
 ## Windows
 

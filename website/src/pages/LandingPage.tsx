@@ -9,11 +9,19 @@ import { Features } from "../components/sections/Features";
 import { Hero } from "../components/sections/Hero";
 import { HowItWorks } from "../components/sections/HowItWorks";
 import { OpenSource } from "../components/sections/OpenSource";
+import { PdfExportDemo } from "../components/sections/PdfExportDemo";
 import { Providers } from "../components/sections/Providers";
 import { useAnimationFallback } from "../hooks/useAnimationFallback";
+import { usePageMeta } from "../hooks/usePageMeta";
 import { useScrollReveal } from "../hooks/useScrollReveal";
+import { SITE_DESCRIPTION, SITE_TITLE, SITE_URL } from "../lib/site";
 
 export default function LandingPage() {
+  usePageMeta({
+    title: SITE_TITLE,
+    description: SITE_DESCRIPTION,
+    url: `${SITE_URL}/`,
+  });
   useAnimationFallback();
   useScrollReveal();
 
@@ -28,6 +36,7 @@ export default function LandingPage() {
         <HowItWorks />
         <Features />
         <ExportFormats />
+        <PdfExportDemo />
         <AiReplay />
         <OpenSource />
         <DownloadCta />

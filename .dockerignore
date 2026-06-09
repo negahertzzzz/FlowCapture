@@ -1,0 +1,9 @@
+node_modules
+src-tauri/target
+dist
+website/node_modules
+website/dist
+.git
+.github
+*.dmg
+*.app
