@@ -35,6 +35,7 @@ const LINUX_APT_PACKAGES = [
   "libxcb1-dev",
   "libxrandr-dev",
   "libdbus-1-dev",
+  "gnome-screenshot",
 ];
 
 const LINUX_DNF_PACKAGES = [

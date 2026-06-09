@@ -39,6 +39,9 @@ pulldown-cmark = "0.13"
 # Linux uses xcap 0.4.x (X11/dbus) to avoid PipeWire 1.0+ required by xcap 0.5+ on Ubuntu 22.04.
 [target.'cfg(target_os = "linux")'.dependencies]
 xcap = "=0.4.1"
+dbus = "0.9"
+image = { version = "0.25", default-features = false, features = ["png"] }
+percent-encoding = "2.3"
 
 [target.'cfg(not(target_os = "linux"))'.dependencies]
 xcap = "0.9.6"

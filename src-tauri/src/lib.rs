@@ -13,13 +13,13 @@ mod storage;
 mod thread_util;
 
 use std::sync::Arc;
-use std::thread;
 
 use tauri::Manager;
 
 use crate::platform::create_platform_services;
-use crate::platform::prepare_recording_permissions;
 use crate::state::AppState;
+#[cfg(target_os = "macos")]
+use crate::platform::prepare_recording_permissions;
 use crate::storage::Database;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -42,7 +42,7 @@ pub fn run() {
 
             #[cfg(target_os = "macos")]
             {
-                thread::spawn(|| {
+                std::thread::spawn(|| {
                     let _ = prepare_recording_permissions();
                 });
             }

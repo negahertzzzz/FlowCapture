@@ -119,7 +119,7 @@ Add this to `~/.bashrc` or `~/.zshrc` so `cargo` is available in new terminals:
 . "$HOME/.cargo/env"
 ```
 
-**Runtime:** X11 session recommended for screen capture on Ubuntu 22.04 (Wayland support is limited). ffmpeg is downloaded automatically on first build. Screen capture permissions vary by desktop environment.
+**Runtime:** On **Wayland** (Ubuntu 22.04 default), screenshots use GNOME Shell / portal capture. If captures are blank, install `gnome-screenshot` (`sudo apt install gnome-screenshot`) or log into an **X11** session. ffmpeg is downloaded automatically on first build.
 
 **Common compile errors on Linux:**
 
