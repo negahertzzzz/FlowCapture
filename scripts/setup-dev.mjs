@@ -19,7 +19,7 @@ const install = args.has("--install") || args.has("-y");
 const skipNpm = args.has("--skip-npm");
 const checkOnly = args.has("--check-only");
 
-// Tauri (WebKitGTK) + xcap screen capture (PipeWire, X11/Wayland) — see xcap README
+// Tauri (WebKitGTK) + xcap 0.4.x screen capture (X11/dbus, no PipeWire) — see xcap README
 const LINUX_APT_PACKAGES = [
   "libwebkit2gtk-4.1-dev",
   "build-essential",
@@ -35,9 +35,6 @@ const LINUX_APT_PACKAGES = [
   "libxcb1-dev",
   "libxrandr-dev",
   "libdbus-1-dev",
-  "libpipewire-0.3-dev",
-  "libwayland-dev",
-  "libegl-dev",
 ];
 
 const LINUX_DNF_PACKAGES = [
@@ -54,9 +51,6 @@ const LINUX_DNF_PACKAGES = [
   "libxcb-devel",
   "libXrandr-devel",
   "dbus-devel",
-  "pipewire-devel",
-  "wayland-devel",
-  "mesa-libEGL-devel",
 ];
 
 const LINUX_PACMAN_PACKAGES = [
@@ -74,9 +68,6 @@ const LINUX_PACMAN_PACKAGES = [
   "libxcb",
   "libxrandr",
   "dbus",
-  "libpipewire",
-  "wayland",
-  "mesa",
 ];
 
 let failed = false;
@@ -257,8 +248,11 @@ function missingLinuxDeps() {
   if (!commandSucceeded("pkg-config --exists webkit2gtk-4.1")) {
     missing.push("webkit2gtk-4.1 (Tauri UI)");
   }
-  if (!commandSucceeded("pkg-config --exists libpipewire-0.3")) {
-    missing.push("libpipewire-0.3 (screen capture via xcap)");
+  if (!commandSucceeded("pkg-config --exists xcb")) {
+    missing.push("xcb (screen capture via xcap on X11)");
+  }
+  if (!commandSucceeded("pkg-config --exists dbus-1")) {
+    missing.push("dbus-1 (screen capture via xcap)");
   }
   return missing;
 }
@@ -354,7 +348,7 @@ function checkLinux() {
   }
 
   if (!checkOnly) {
-    log("ok Linux system libraries (webkit2gtk-4.1, libpipewire-0.3)");
+    log("ok Linux system libraries (webkit2gtk-4.1, xcb, dbus)");
   }
 }
 
