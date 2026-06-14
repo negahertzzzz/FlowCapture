@@ -9,16 +9,15 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/Abhi6722/FlowCapture/releases"><img src="https://img.shields.io/github/v/release/Abhi6722/FlowCapture?label=release&style=flat-square" alt="Release" /></a>
-  <a href="https://github.com/Abhi6722/FlowCapture/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/Abhi6722/FlowCapture/ci.yml?branch=main&style=flat-square" alt="CI" /></a>
+  <a href="https://github.com/Abhi6722/FlowCapture/releases"><img src="https://img.shields.io/github/v/release/Abhi6722/FlowCapture?include_prereleases&label=release&style=flat-square" alt="Release" /></a>
   <img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="License" />
-  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows-000?style=flat-square" alt="Platform" />
+  <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Windows%20%7C%20Linux-000?style=flat-square" alt="Platform" />
 </p>
 
 <p align="center">
   <a href="https://flow-capture.vercel.app/">Website</a>
   ·
-  <a href="https://github.com/Abhi6722/FlowCapture/releases/latest">Download</a>
+  <a href="https://github.com/Abhi6722/FlowCapture/releases/tag/v0.1.0">Download</a>
   ·
   <a href="https://flow-capture.vercel.app/docs/getting-started/quick-start">Quick start</a>
   ·
