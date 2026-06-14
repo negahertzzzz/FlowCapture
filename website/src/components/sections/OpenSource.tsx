@@ -1,6 +1,9 @@
-import { GITHUB_REPO_URL, MACOS_DMG_URL } from "../../lib/site";
+import { GITHUB_REPO_URL } from "../../lib/site";
+import { DownloadButton } from "../DownloadButton";
+import { usePlatformDownload } from "../../hooks/usePlatformDownload";
 
 export function OpenSource() {
+  const download = usePlatformDownload();
   return (
     <section className="blk wrap" id="opensource">
       <div className="sec-head center reveal">
@@ -29,14 +32,9 @@ export function OpenSource() {
             <PricingFeature>Interactive AI Replay</PricingFeature>
             <PricingFeature>Local SQLite storage & redaction</PricingFeature>
           </ul>
-          <a
-            className="btn btn-primary"
-            href={MACOS_DMG_URL}
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Download free
-          </a>
+          <DownloadButton
+            label={download.platform === "linux" ? download.label : "Download free"}
+          />
         </div>
         <div className="price soon reveal">
           <div className="pname">

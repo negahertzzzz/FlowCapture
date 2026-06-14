@@ -2,7 +2,8 @@ import { useRef } from "react";
 import { Link, useLocation } from "react-router-dom";
 import { BrandLogo } from "./BrandLogo";
 import { useNavScroll } from "../hooks/useNavScroll";
-import { GITHUB_REPO_URL, MACOS_DMG_URL } from "../lib/site";
+import { GITHUB_REPO_URL } from "../lib/site";
+import { usePlatformDownload } from "../hooks/usePlatformDownload";
 
 type NavProps = {
   variant?: "landing" | "docs";
@@ -12,9 +13,10 @@ export function Nav({ variant = "landing" }: NavProps) {
   const navRef = useRef<HTMLElement>(null);
   useNavScroll(navRef);
   const location = useLocation();
+  const download = usePlatformDownload();
   const onDocs = variant === "docs" || location.pathname.startsWith("/docs");
   const root = onDocs ? "/" : "";
-  const downloadHref = onDocs ? MACOS_DMG_URL : `${root}#download`;
+  const downloadHref = onDocs ? download.href : `${root}#download`;
 
   return (
     <nav className="top" id="nav" ref={navRef}>

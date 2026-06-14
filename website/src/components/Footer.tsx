@@ -1,12 +1,14 @@
 import { Link } from "react-router-dom";
 import { BrandLogo } from "./BrandLogo";
-import { GITHUB_REPO_URL, MACOS_DMG_URL } from "../lib/site";
+import { GITHUB_REPO_URL } from "../lib/site";
+import { usePlatformDownload } from "../hooks/usePlatformDownload";
 
 type FooterProps = {
   variant?: "landing" | "docs";
 };
 
 export function Footer({ variant = "landing" }: FooterProps) {
+  const download = usePlatformDownload();
   const root = variant === "docs" ? "/" : "";
 
   return (
@@ -29,8 +31,8 @@ export function Footer({ variant = "landing" }: FooterProps) {
             <a href={`${root}#features`}>Features</a>
             <a href={`${root}#formats`}>Exports</a>
             <a href={`${root}#replay`}>AI Replay</a>
-            <a href={MACOS_DMG_URL} target="_blank" rel="noopener noreferrer">
-              Download
+            <a href={download.href} target="_blank" rel="noopener noreferrer">
+              {download.label}
             </a>
           </div>
           <div className="foot-col">
