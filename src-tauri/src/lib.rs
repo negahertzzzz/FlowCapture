@@ -85,6 +85,8 @@ pub fn run() {
             commands::save_session_audio,
             commands::transcribe_session_audio,
             commands::delete_session,
+            commands::export_session_bundle,
+            commands::import_session_bundle,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

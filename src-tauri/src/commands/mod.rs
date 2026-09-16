@@ -506,3 +506,26 @@ pub fn delete_session(
     state.remove_ai_cancellation(&session_id);
     state.db.delete_session(&session_id).map_err(|err| err.to_string())
 }
+
+#[tauri::command]
+pub fn export_session_bundle(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+    target_path: String,
+) -> Result<String, String> {
+    let path = std::path::Path::new(&target_path);
+    let result_path = crate::storage::bundle::export_session_bundle(&state.db, &session_id, path)
+        .map_err(|err| err.to_string())?;
+    Ok(result_path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub fn import_session_bundle(
+    state: State<'_, Arc<AppState>>,
+    archive_path: String,
+) -> Result<Session, String> {
+    let path = std::path::Path::new(&archive_path);
+    crate::storage::bundle::import_session_bundle(&state.db, path)
+        .map_err(|err| err.to_string())
+}
+

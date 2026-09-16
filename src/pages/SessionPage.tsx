@@ -1,5 +1,6 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { save } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { ProcessingPanel } from "@/components/ai/ProcessingPanel";
@@ -50,6 +51,7 @@ export function SessionPage() {
   const [markdown, setMarkdown] = useState("");
   const [busy, setBusy] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
+  const [exportingBundle, setExportingBundle] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [redactionSummary, setRedactionSummary] = useState<RedactionSummary | null>(null);
@@ -249,6 +251,35 @@ export function SessionPage() {
     }
   }
 
+  async function handleExportBundle() {
+    if (!session) return;
+    try {
+      const sanitizedTitle = (session.title || "session").replace(/[/\\?%*:|"<>]/g, "_");
+      const defaultName = `${sanitizedTitle}.flowcapture`;
+      const targetPath = await save({
+        defaultPath: defaultName,
+        title: "Salva archivio completo sessione FlowCapture",
+        filters: [
+          {
+            name: "FlowCapture Session (*.flowcapture)",
+            extensions: ["flowcapture", "zip"],
+          },
+        ],
+      });
+
+      if (!targetPath) return;
+
+      setExportingBundle(true);
+      setError(null);
+      await api.exportSessionBundle(session.id, targetPath);
+      setToast(`Sessione esportata con successo in: ${targetPath}`);
+    } catch (err) {
+      setError(`Errore durante l'esportazione: ${err}`);
+    } finally {
+      setExportingBundle(false);
+    }
+  }
+
   if (!session) {
     return (
       <div className="page">
@@ -294,6 +325,14 @@ export function SessionPage() {
         </AppButton>
         <AppButton icon="download" disabled={busy} onClick={() => setTab("Exports")}>
           Export
+        </AppButton>
+        <AppButton
+          icon="folder"
+          disabled={busy || exportingBundle}
+          onClick={handleExportBundle}
+          title="Esporta l'intera sessione (eventi, screenshot, audio, video e documenti) in un file compresso trasferibile"
+        >
+          {exportingBundle ? "Esportazione…" : "Esporta Sessione (.flowcapture)"}
         </AppButton>
         <AppButton
           kind="ghost"

@@ -11,6 +11,7 @@ use crate::storage::models::{
     Screenshot, StoredEvent,
 };
 
+pub mod bundle;
 pub mod models;
 
 pub struct Database {
@@ -444,6 +445,107 @@ impl Database {
         )?;
         let rows = stmt.query_map(params![session_id], |row| AiJob::from_row(row))?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+    }
+
+    pub fn insert_imported_session(
+        &self,
+        session: &Session,
+        events: &[StoredEvent],
+        screenshots: &[Screenshot],
+        ai_jobs: &[AiJob],
+        exports: &[ExportRecord],
+    ) -> Result<()> {
+        let mut conn = self.conn.lock();
+        let tx = conn.transaction()?;
+
+        tx.execute(
+            "INSERT INTO sessions (
+                id, title, status, started_at, ended_at, video_path, duration,
+                documentation_md, steps_json, compressed_events_json, audio_path, audio_transcript
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            params![
+                session.id,
+                session.title,
+                session.status,
+                session.started_at,
+                session.ended_at,
+                session.video_path,
+                session.duration,
+                session.documentation_md,
+                session.steps_json,
+                session.compressed_events_json,
+                session.audio_path,
+                session.audio_transcript,
+            ],
+        )?;
+
+        for event in events {
+            tx.execute(
+                "INSERT INTO events (id, session_id, event_type, app_name, payload, created_at, timestamp_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                params![
+                    event.id,
+                    event.session_id,
+                    event.event_type,
+                    event.app_name,
+                    event.payload,
+                    event.created_at,
+                    event.timestamp_ms,
+                ],
+            )?;
+        }
+
+        for screenshot in screenshots {
+            tx.execute(
+                "INSERT INTO screenshots (id, session_id, path, timestamp_ms, trigger, selected, click_x, click_y)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                params![
+                    screenshot.id,
+                    screenshot.session_id,
+                    screenshot.path,
+                    screenshot.timestamp_ms,
+                    screenshot.trigger,
+                    screenshot.selected,
+                    screenshot.click_x,
+                    screenshot.click_y,
+                ],
+            )?;
+        }
+
+        for job in ai_jobs {
+            tx.execute(
+                "INSERT INTO ai_jobs (id, session_id, stage, status, input_json, output_json, error, created_at, completed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    job.id,
+                    job.session_id,
+                    job.stage.as_str(),
+                    job.status.as_str(),
+                    job.input_json,
+                    job.output_json,
+                    job.error,
+                    job.created_at,
+                    job.completed_at,
+                ],
+            )?;
+        }
+
+        for export in exports {
+            tx.execute(
+                "INSERT INTO exports (id, session_id, format, path, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    export.id,
+                    export.session_id,
+                    export.format,
+                    export.path,
+                    export.created_at,
+                ],
+            )?;
+        }
+
+        tx.commit()?;
+        Ok(())
     }
 }
 

@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { open } from "@tauri-apps/plugin-dialog";
 import { AppButton } from "@/components/ui/AppButton";
 import { Icon } from "@/components/ui/Icon";
+import { Toast } from "@/components/ui/Toast";
 import { PermissionsBanner } from "@/components/recording/PermissionsBanner";
 import { SessionThumbnail } from "@/components/sessions/SessionThumbnail";
 import { useRecordingContext } from "@/context/RecordingContext";
@@ -37,6 +39,41 @@ export function HomePage() {
   const [canRecord, setCanRecord] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [captureAllEvents, setCaptureAllEvents] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  async function handleImportSession() {
+    try {
+      const selected = await open({
+        multiple: false,
+        directory: false,
+        title: "Seleziona sessione FlowCapture da importare",
+        filters: [
+          {
+            name: "FlowCapture Session (*.flowcapture, *.zip)",
+            extensions: ["flowcapture", "zip"],
+          },
+        ],
+      });
+
+      if (!selected) return;
+      const filePath = typeof selected === "string" ? selected : selected[0];
+      if (!filePath) return;
+
+      setImporting(true);
+      setError(null);
+
+      const imported = await api.importSessionBundle(filePath);
+      await refreshSessions();
+      setToastMessage(`Sessione "${imported.title}" importata con successo!`);
+      setTimeout(() => setToastMessage(null), 4000);
+      navigate(`/sessions/${imported.id}`);
+    } catch (err) {
+      setError(`Errore durante l'importazione della sessione: ${err}`);
+    } finally {
+      setImporting(false);
+    }
+  }
 
   useEffect(() => {
     api.getSetting("capture_all_events").then((val) => {
@@ -335,7 +372,7 @@ export function HomePage() {
           </div>
         </div>
 
-        <div className="rec-actions">
+        <div className="rec-actions" style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
           <AppButton
             kind="primary"
             icon="play"
@@ -343,6 +380,13 @@ export function HomePage() {
             onClick={() => start().catch(() => undefined)}
           >
             Start Recording
+          </AppButton>
+          <AppButton
+            icon="folder"
+            disabled={importing}
+            onClick={handleImportSession}
+          >
+            {importing ? "Importazione…" : "Importa Sessione (.flowcapture)"}
           </AppButton>
           <span style={{ fontFamily: "var(--mono)", fontSize: 12.5, color: "var(--dim)" }}>
             ⌘⇧R
@@ -442,6 +486,8 @@ export function HomePage() {
           ))
         )}
       </div>
+
+      <Toast message={toastMessage} onDismiss={() => setToastMessage(null)} />
     </div>
   );
 }

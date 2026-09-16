@@ -211,6 +211,10 @@ export const api = {
     invoke<string>("transcribe_session_audio", { sessionId }),
   deleteSession: (sessionId: string) =>
     invoke<void>("delete_session", { sessionId }),
+  exportSessionBundle: (sessionId: string, targetPath: string) =>
+    invoke<string>("export_session_bundle", { sessionId, targetPath }),
+  importSessionBundle: (archivePath: string) =>
+    invoke<Session>("import_session_bundle", { archivePath }),
   onAiProgress: (
     sessionId: string,
     handler: (event: AiProgressEvent) => void,
