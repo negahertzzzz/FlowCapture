@@ -12,11 +12,37 @@ import { formatDuration, formatTimestamp } from "@/lib/utils";
 
 export function HomePage() {
   const navigate = useNavigate();
-  const { loading, error, setError, start } = useRecordingContext();
+  const {
+    loading,
+    error,
+    setError,
+    start,
+    audioDevices,
+    selectedMicId,
+    setSelectedMicId,
+    recordAudio,
+    setRecordAudio,
+    transcribeAudio,
+    setTranscribeAudio,
+    highlightClicks,
+    setHighlightClicks,
+    refreshAudioDevices,
+    monitors,
+    selectedMonitorId,
+    setSelectedMonitorId,
+    refreshMonitors,
+  } = useRecordingContext();
   const { sessions, refreshSessions } = useSessionsContext();
   const [platform, setPlatform] = useState("");
   const [canRecord, setCanRecord] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
+  const [captureAllEvents, setCaptureAllEvents] = useState(false);
+
+  useEffect(() => {
+    api.getSetting("capture_all_events").then((val) => {
+      setCaptureAllEvents(val === "true");
+    }).catch(() => undefined);
+  }, []);
 
   function handlePermissionsChange(
     permissions: Awaited<ReturnType<typeof api.getRecordingPermissions>>,
@@ -30,6 +56,7 @@ export function HomePage() {
       const nextPlatform = await api.getPlatformName();
       await refreshSessions();
       setPlatform(nextPlatform);
+      await refreshAudioDevices();
     } catch (err) {
       setError(String(err));
     } finally {
@@ -83,6 +110,231 @@ export function HomePage() {
           Start a new session to record your screen, mouse activity, keyboard input, and
           window changes.
         </p>
+
+        <div
+          style={{
+            margin: "18px 0",
+            padding: "14px 16px",
+            background: "rgba(255,255,255,0.03)",
+            border: "1px solid var(--border)",
+            borderRadius: "8px",
+            display: "flex",
+            flexDirection: "column",
+            gap: "12px",
+          }}
+        >
+          {/* Schermo da registrare */}
+          <div style={{ borderBottom: "1px solid var(--border)", paddingBottom: "12px" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "10px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <span style={{ fontSize: "16px" }}>🖥️</span>
+                <div>
+                  <div style={{ fontWeight: 500, fontSize: "13.5px" }}>
+                    Schermo da registrare {monitors.length > 1 ? `(${monitors.length} schermi rilevati)` : ""}
+                  </div>
+                  <div style={{ fontSize: "12px", color: "var(--dim)" }}>
+                    Scegli quale monitor catturare durante la sessione di lavoro
+                  </div>
+                </div>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <select
+                  id="home-monitor-select"
+                  value={selectedMonitorId}
+                  onChange={(e) => setSelectedMonitorId(e.target.value)}
+                  style={{
+                    background: "var(--bg-3, #151b23)",
+                    color: "var(--text-1)",
+                    border: "1px solid var(--border)",
+                    borderRadius: "6px",
+                    padding: "5px 10px",
+                    fontSize: "12.5px",
+                    maxWidth: "280px",
+                  }}
+                >
+                  {monitors.map((mon, idx) => (
+                    <option key={mon.id || idx} value={mon.id}>
+                      {mon.name} {mon.is_primary ? "(Principale)" : ""} · {mon.width}x{mon.height}
+                    </option>
+                  ))}
+                  {monitors.length === 0 && (
+                    <option value="">Schermo Principale (Predefinito)</option>
+                  )}
+                </select>
+                <AppButton
+                  size="sm"
+                  kind="ghost"
+                  onClick={() => refreshMonitors()}
+                  title="Rileva schermi"
+                >
+                  <Icon name="refresh" size={13} />
+                </AppButton>
+              </div>
+            </div>
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "10px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <span style={{ fontSize: "16px" }}>🎯</span>
+              <div>
+                <div style={{ fontWeight: 500, fontSize: "13.5px" }}>Evidenzia click negli screenshot</div>
+                <div style={{ fontSize: "12px", color: "var(--dim)" }}>Disegna un indicatore visivo ad alto contrasto dove viene premuto il mouse</div>
+              </div>
+            </div>
+            <div className="seg">
+              <button
+                type="button"
+                className={highlightClicks ? "on" : ""}
+                onClick={() => setHighlightClicks(true)}
+              >
+                On
+              </button>
+              <button
+                type="button"
+                className={!highlightClicks ? "on" : ""}
+                onClick={() => setHighlightClicks(false)}
+              >
+                Off
+              </button>
+            </div>
+          </div>
+
+          <div style={{ borderTop: "1px solid var(--border)", paddingTop: "12px" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "10px" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                <span style={{ fontSize: "16px" }}>🎙️</span>
+                <div>
+                  <div style={{ fontWeight: 500, fontSize: "13.5px" }}>Registra audio microfono</div>
+                  <div style={{ fontSize: "12px", color: "var(--dim)" }}>Cattura la tua voce e le spiegazioni durante la registrazione</div>
+                </div>
+              </div>
+              <div className="seg">
+                <button
+                  type="button"
+                  className={recordAudio ? "on" : ""}
+                  onClick={() => setRecordAudio(true)}
+                >
+                  On
+                </button>
+                <button
+                  type="button"
+                  className={!recordAudio ? "on" : ""}
+                  onClick={() => setRecordAudio(false)}
+                >
+                  Off
+                </button>
+              </div>
+            </div>
+
+            {recordAudio ? (
+              <div style={{ marginTop: "12px", paddingLeft: "26px", display: "flex", flexDirection: "column", gap: "10px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+                  <label htmlFor="mic-select" style={{ fontSize: "12.5px", color: "var(--text-2)", minWidth: "120px" }}>
+                    Scelta Microfono:
+                  </label>
+                  <select
+                    id="mic-select"
+                    value={selectedMicId}
+                    onChange={(e) => setSelectedMicId(e.target.value)}
+                    style={{
+                      background: "var(--bg-3, #151b23)",
+                      color: "var(--text-1)",
+                      border: "1px solid var(--border)",
+                      padding: "6px 12px",
+                      borderRadius: "6px",
+                      fontSize: "13px",
+                      minWidth: "220px",
+                    }}
+                  >
+                    <option value="">Microfono Predefinito</option>
+                    {audioDevices.map((device, idx) => (
+                      <option key={device.deviceId || idx} value={device.deviceId}>
+                        {device.label || `Microfono ${idx + 1}`}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.mediaDevices
+                        ?.getUserMedia({ audio: true })
+                        .then((stream) => {
+                          stream.getTracks().forEach((t) => t.stop());
+                          return refreshAudioDevices();
+                        })
+                        .catch(() => undefined);
+                    }}
+                    style={{
+                      background: "transparent",
+                      border: "none",
+                      color: "var(--color-primary, #60a5fa)",
+                      fontSize: "12px",
+                      cursor: "pointer",
+                      textDecoration: "underline",
+                    }}
+                  >
+                    Aggiorna lista
+                  </button>
+                </div>
+
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "10px" }}>
+                  <div style={{ fontSize: "12.5px", color: "var(--text-2)" }}>
+                    Trascrizione audio automatica (AI):
+                  </div>
+                  <div className="seg">
+                    <button
+                      type="button"
+                      className={transcribeAudio ? "on" : ""}
+                      onClick={() => setTranscribeAudio(true)}
+                    >
+                      Attiva
+                    </button>
+                    <button
+                      type="button"
+                      className={!transcribeAudio ? "on" : ""}
+                      onClick={() => setTranscribeAudio(false)}
+                    >
+                      Disattiva
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+          </div>
+
+          <div style={{ borderTop: "1px solid var(--border)", paddingTop: "12px", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "10px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+              <span style={{ fontSize: "16px" }}>📸</span>
+              <div>
+                <div style={{ fontWeight: 500, fontSize: "13.5px" }}>Screenshot su ogni evento (Modalità densa)</div>
+                <div style={{ fontSize: "12px", color: "var(--dim)" }}>Cattura uno screenshot non solo ai click ma anche per tastiera e scroll</div>
+              </div>
+            </div>
+            <div className="seg">
+              <button
+                type="button"
+                className={captureAllEvents ? "on" : ""}
+                onClick={async () => {
+                  setCaptureAllEvents(true);
+                  await api.setSetting("capture_all_events", "true");
+                }}
+              >
+                On
+              </button>
+              <button
+                type="button"
+                className={!captureAllEvents ? "on" : ""}
+                onClick={async () => {
+                  setCaptureAllEvents(false);
+                  await api.setSetting("capture_all_events", "false");
+                }}
+              >
+                Off
+              </button>
+            </div>
+          </div>
+        </div>
+
         <div className="rec-actions">
           <AppButton
             kind="primary"
@@ -140,6 +392,7 @@ export function HomePage() {
                   navigate(`/sessions/${session.id}`);
                 }
               }}
+              style={{ position: "relative" }}
             >
               <SessionThumbnail path={session.preview_screenshot_path} />
               <div className="sinfo">
@@ -153,6 +406,38 @@ export function HomePage() {
                 </div>
               </div>
               <div className="sdur">{formatDuration(session.duration)}</div>
+              <button
+                type="button"
+                title="Elimina sessione"
+                onClick={async (e) => {
+                  e.stopPropagation();
+                  if (window.confirm(`Sei sicuro di voler eliminare la sessione "${session.title}"?`)) {
+                    try {
+                      await api.deleteSession(session.id);
+                      await refreshSessions();
+                    } catch (delErr) {
+                      setError(String(delErr));
+                    }
+                  }
+                }}
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  color: "#ef4444",
+                  padding: "6px",
+                  cursor: "pointer",
+                  borderRadius: "4px",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  opacity: 0.7,
+                  transition: "opacity 0.2s",
+                }}
+                onMouseEnter={(e) => ((e.currentTarget as HTMLElement).style.opacity = "1")}
+                onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.opacity = "0.7")}
+              >
+                <Icon name="trash" size={16} />
+              </button>
             </div>
           ))
         )}

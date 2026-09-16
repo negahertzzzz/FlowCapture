@@ -128,16 +128,29 @@ pub fn encode_session_video(session_dir: &Path, duration_secs: i64) -> Result<Op
         return Ok(None);
     }
 
+    let audio_file = find_session_audio(session_dir);
     let duration = duration_secs.max(1) as f64;
-    if encode_frames_to_mp4(&frames_dir, &output, duration)? {
+    if encode_frames_to_mp4(&frames_dir, audio_file.as_deref(), &output, duration)? {
         Ok(Some(output))
     } else {
         Ok(None)
     }
 }
 
+pub fn find_session_audio(session_dir: &Path) -> Option<PathBuf> {
+    let audio_dir = session_dir.join("audio");
+    for ext in ["webm", "wav", "mp3", "ogg", "m4a"] {
+        let path = audio_dir.join(format!("recording.{ext}"));
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    None
+}
+
 pub fn encode_frames_to_mp4(
     frames_dir: &Path,
+    audio_path: Option<&Path>,
     output_path: &Path,
     duration_secs: f64,
 ) -> Result<bool> {
@@ -157,30 +170,47 @@ pub fn encode_frames_to_mp4(
     let fps = (frame_count as f64 / duration_secs.max(1.0)).clamp(1.0, 30.0);
     let fps_arg = format!("{fps:.3}");
 
-    let status = Command::new(ffmpeg)
-        .args([
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-y",
-            "-start_number",
-            "0",
-            "-framerate",
-            &fps_arg,
+    let mut cmd = Command::new(ffmpeg);
+    cmd.args([
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-y",
+        "-start_number",
+        "0",
+        "-framerate",
+        &fps_arg,
+        "-i",
+        &input_pattern,
+    ]);
+
+    if let Some(audio) = audio_path {
+        cmd.args([
             "-i",
-            &input_pattern,
-            "-c:v",
-            "libx264",
-            "-preset",
-            "veryfast",
-            "-crf",
-            "23",
-            "-pix_fmt",
-            "yuv420p",
-            "-movflags",
-            "+faststart",
-            &output_path.to_string_lossy(),
-        ])
+            &audio.to_string_lossy(),
+            "-c:a",
+            "aac",
+            "-b:a",
+            "128k",
+            "-shortest",
+        ]);
+    }
+
+    cmd.args([
+        "-c:v",
+        "libx264",
+        "-preset",
+        "veryfast",
+        "-crf",
+        "23",
+        "-pix_fmt",
+        "yuv420p",
+        "-movflags",
+        "+faststart",
+        &output_path.to_string_lossy(),
+    ]);
+
+    let status = cmd
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .status()

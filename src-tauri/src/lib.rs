@@ -61,8 +61,12 @@ pub fn run() {
             commands::get_session,
             commands::update_session_title,
             commands::update_session_documentation,
+            commands::list_monitors,
             commands::start_recording,
             commands::stop_recording,
+            commands::pause_recording,
+            commands::resume_recording,
+            commands::switch_recording_monitor,
             commands::capture_manual_screenshot,
             commands::list_events,
             commands::list_screenshots,
@@ -70,6 +74,7 @@ pub fn run() {
             commands::list_providers,
             commands::update_provider,
             commands::generate_documentation,
+            commands::cancel_documentation_generation,
             commands::list_ai_jobs,
             commands::export_session,
             commands::list_exports,
@@ -77,6 +82,9 @@ pub fn run() {
             commands::set_setting,
             commands::get_compressed_timeline,
             commands::get_replay_steps,
+            commands::save_session_audio,
+            commands::transcribe_session_audio,
+            commands::delete_session,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

@@ -39,7 +39,12 @@ impl Database {
 
     fn run_migrations(&self) -> Result<()> {
         let migration = include_str!("../../migrations/001_initial.sql");
-        self.conn.lock().execute_batch(migration)?;
+        let conn = self.conn.lock();
+        conn.execute_batch(migration)?;
+        let _ = conn.execute("ALTER TABLE sessions ADD COLUMN audio_path TEXT", []);
+        let _ = conn.execute("ALTER TABLE sessions ADD COLUMN audio_transcript TEXT", []);
+        let _ = conn.execute("ALTER TABLE screenshots ADD COLUMN click_x INTEGER", []);
+        let _ = conn.execute("ALTER TABLE screenshots ADD COLUMN click_y INTEGER", []);
         Ok(())
     }
 
@@ -176,10 +181,36 @@ impl Database {
         Ok(())
     }
 
+    pub fn update_session_audio(&self, session_id: &str, audio_path: &str) -> Result<()> {
+        self.conn.lock().execute(
+            "UPDATE sessions SET audio_path = ?1 WHERE id = ?2",
+            params![audio_path, session_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_session_audio_transcript(&self, session_id: &str, transcript: &str) -> Result<()> {
+        self.conn.lock().execute(
+            "UPDATE sessions SET audio_transcript = ?1 WHERE id = ?2",
+            params![transcript, session_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_session(&self, session_id: &str) -> Result<()> {
+        let session_dir = self.session_dir(session_id);
+        let _ = std::fs::remove_dir_all(&session_dir);
+        self.conn.lock().execute(
+            "DELETE FROM sessions WHERE id = ?1",
+            params![session_id],
+        )?;
+        Ok(())
+    }
+
     pub fn list_sessions(&self) -> Result<Vec<Session>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, title, status, started_at, ended_at, video_path, duration, documentation_md, steps_json, compressed_events_json FROM sessions ORDER BY started_at DESC",
+            "SELECT id, title, status, started_at, ended_at, video_path, duration, documentation_md, steps_json, compressed_events_json, audio_path, audio_transcript FROM sessions ORDER BY started_at DESC",
         )?;
         let rows = stmt.query_map([], |row| Session::from_row(row))?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -188,7 +219,7 @@ impl Database {
     pub fn get_session(&self, session_id: &str) -> Result<Option<Session>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, title, status, started_at, ended_at, video_path, duration, documentation_md, steps_json, compressed_events_json FROM sessions WHERE id = ?1",
+            "SELECT id, title, status, started_at, ended_at, video_path, duration, documentation_md, steps_json, compressed_events_json, audio_path, audio_transcript FROM sessions WHERE id = ?1",
         )?;
         let mut rows = stmt.query(params![session_id])?;
         if let Some(row) = rows.next()? {
@@ -233,14 +264,16 @@ impl Database {
 
     pub fn insert_screenshot(&self, screenshot: &Screenshot) -> Result<()> {
         self.conn.lock().execute(
-            "INSERT INTO screenshots (id, session_id, path, timestamp_ms, trigger, selected) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            "INSERT INTO screenshots (id, session_id, path, timestamp_ms, trigger, selected, click_x, click_y) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 screenshot.id,
                 screenshot.session_id,
                 screenshot.path,
                 screenshot.timestamp_ms,
                 screenshot.trigger,
-                screenshot.selected
+                screenshot.selected,
+                screenshot.click_x,
+                screenshot.click_y
             ],
         )?;
         Ok(())
@@ -249,7 +282,7 @@ impl Database {
     pub fn list_screenshots(&self, session_id: &str) -> Result<Vec<Screenshot>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, session_id, path, timestamp_ms, trigger, selected FROM screenshots WHERE session_id = ?1 ORDER BY timestamp_ms ASC",
+            "SELECT id, session_id, path, timestamp_ms, trigger, selected, click_x, click_y FROM screenshots WHERE session_id = ?1 ORDER BY timestamp_ms ASC",
         )?;
         let rows = stmt.query_map(params![session_id], |row| Screenshot::from_row(row))?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)

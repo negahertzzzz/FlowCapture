@@ -20,6 +20,8 @@ use crate::thread_util::join_thread_with_timeout;
 const COLLECTOR_JOIN_TIMEOUT: Duration = Duration::from_secs(5);
 const PLATFORM_STOP_TIMEOUT: Duration = Duration::from_secs(3);
 
+use std::collections::HashMap;
+
 pub struct AppState {
     pub db: Arc<Database>,
     pub platform: Arc<Mutex<PlatformServices>>,
@@ -27,11 +29,14 @@ pub struct AppState {
     pub event_collector: Mutex<EventCollector>,
     pub screenshot_engine: Arc<Mutex<ScreenshotEngine>>,
     pub active_session: Mutex<Option<ActiveRecording>>,
+    pub active_ai_cancellations: Mutex<HashMap<String, Arc<AtomicBool>>>,
 }
 
 pub struct ActiveRecording {
     pub session: Session,
     pub started_at: Instant,
+    pub monitor_id: Option<String>,
+    pub is_paused: Arc<AtomicBool>,
     collector_stop: Arc<AtomicBool>,
     collector_handle: JoinHandle<()>,
 }
@@ -45,7 +50,30 @@ impl AppState {
             event_collector: Mutex::new(EventCollector::new()),
             screenshot_engine: Arc::new(Mutex::new(ScreenshotEngine::new(db.clone()))),
             active_session: Mutex::new(None),
+            active_ai_cancellations: Mutex::new(HashMap::new()),
         })
+    }
+
+    pub fn register_ai_cancellation(&self, session_id: &str) -> Arc<AtomicBool> {
+        let flag = Arc::new(AtomicBool::new(false));
+        self.active_ai_cancellations
+            .lock()
+            .insert(session_id.to_string(), flag.clone());
+        flag
+    }
+
+    pub fn cancel_ai_job(&self, session_id: &str) -> bool {
+        let map = self.active_ai_cancellations.lock();
+        if let Some(flag) = map.get(session_id) {
+            flag.store(true, Ordering::Relaxed);
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn remove_ai_cancellation(&self, session_id: &str) {
+        self.active_ai_cancellations.lock().remove(session_id);
     }
 
     pub fn cleanup_stale_recordings(&self) -> Result<()> {
@@ -57,7 +85,7 @@ impl AppState {
         Ok(())
     }
 
-    pub fn start_recording(&self, title: Option<String>) -> Result<Session> {
+    pub fn start_recording(&self, title: Option<String>, monitor_id: Option<String>) -> Result<Session> {
         let mut active = self.active_session.lock();
         if active.is_some() {
             anyhow::bail!("a recording is already in progress");
@@ -65,25 +93,37 @@ impl AppState {
 
         preflight_recording_start()?;
 
+        let effective_monitor_id = monitor_id
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| self.db.get_setting("selected_monitor_id").ok().flatten());
+
+        if let Some(ref mid) = effective_monitor_id {
+            let _ = self.db.set_setting("selected_monitor_id", mid);
+        }
+
         let session = self.db.create_session(title)?;
         let session_id = session.id.clone();
         let session_dir = self.db.session_dir(&session_id);
 
+        let mon_id = effective_monitor_id.clone();
+        let collector_paused = Arc::new(AtomicBool::new(false));
+        let collector_paused_clone = collector_paused.clone();
         let start_result = (|| -> Result<(JoinHandle<()>, Arc<AtomicBool>)> {
             let mut platform = self.platform.lock();
             platform.input.start()?;
             platform.windows.start()?;
             self.recorder
                 .lock()
-                .start_with_platform(session_dir.clone(), &mut platform)?;
+                .start_with_platform(session_dir.clone(), &mut platform, mon_id.clone())?;
             self.event_collector.lock().start(&session_id)?;
             self.screenshot_engine
                 .lock()
-                .start(&session_id, session_dir.clone())?;
+                .start(&session_id, session_dir.clone(), mon_id)?;
 
             let collector_stop = Arc::new(AtomicBool::new(false));
             let handle = spawn_recording_collector(
                 collector_stop.clone(),
+                collector_paused_clone,
                 self.db.clone(),
                 self.platform.clone(),
                 self.screenshot_engine.clone(),
@@ -99,6 +139,8 @@ impl AppState {
                 *active = Some(ActiveRecording {
                     session: session.clone(),
                     started_at: Instant::now(),
+                    monitor_id: effective_monitor_id,
+                    is_paused: collector_paused,
                     collector_stop,
                     collector_handle,
                 });
@@ -157,21 +199,55 @@ impl AppState {
     }
 
     pub fn capture_manual_screenshot(&self) -> Result<()> {
-        let session_id = self
-            .active_session
-            .lock()
-            .as_ref()
-            .map(|active| active.session.id.clone())
-            .ok_or_else(|| anyhow::anyhow!("no active recording"))?;
+        let (session_id, monitor_id) = {
+            let active = self.active_session.lock();
+            let recording = active.as_ref().ok_or_else(|| anyhow::anyhow!("no active recording"))?;
+            (recording.session.id.clone(), recording.monitor_id.clone())
+        };
 
         let session_dir = self.db.session_dir(&session_id);
-        let pending = self
+        let mut pending = self
             .screenshot_engine
             .lock()
             .prepare_manual(&session_id, session_dir)?;
+        if pending.monitor_id.is_none() {
+            pending.monitor_id = monitor_id;
+        }
         let capturer = SharedScreenshotCapturer;
         run_capture(&capturer, &pending)?;
         self.screenshot_engine.lock().finish_capture(pending)?;
+        Ok(())
+    }
+
+    pub fn pause_recording(&self) -> Result<()> {
+        let guard = self.active_session.lock();
+        let active = guard.as_ref().ok_or_else(|| anyhow::anyhow!("no active recording"))?;
+        active.is_paused.store(true, Ordering::SeqCst);
+        if let Some(platform) = self.platform.try_lock() {
+            self.recorder.lock().pause_with_platform(&platform);
+        }
+        Ok(())
+    }
+
+    pub fn resume_recording(&self) -> Result<()> {
+        let guard = self.active_session.lock();
+        let active = guard.as_ref().ok_or_else(|| anyhow::anyhow!("no active recording"))?;
+        active.is_paused.store(false, Ordering::SeqCst);
+        if let Some(platform) = self.platform.try_lock() {
+            self.recorder.lock().resume_with_platform(&platform);
+        }
+        Ok(())
+    }
+
+    pub fn switch_recording_monitor(&self, monitor_id: String) -> Result<()> {
+        let mut guard = self.active_session.lock();
+        let active = guard.as_mut().ok_or_else(|| anyhow::anyhow!("no active recording"))?;
+        active.monitor_id = Some(monitor_id.clone());
+        self.screenshot_engine.lock().set_monitor_id(Some(monitor_id.clone()));
+        if let Some(platform) = self.platform.try_lock() {
+            let _ = self.recorder.lock().switch_monitor_with_platform(&platform, Some(monitor_id.clone()));
+        }
+        let _ = self.db.set_setting("selected_monitor_id", &monitor_id);
         Ok(())
     }
 
@@ -183,8 +259,7 @@ impl AppState {
             let _ = platform.windows.stop();
             let _ = self.recorder.lock().stop_with_platform(&mut platform);
         }
-        self.db
-            .update_session_status(session_id, SessionStatus::Ready)?;
+        let _ = self.db.delete_session(session_id);
         Ok(())
     }
 }
@@ -218,6 +293,7 @@ fn stop_platform_services(state: &AppState) -> Result<Option<String>> {
 
 fn spawn_recording_collector(
     stop_flag: Arc<AtomicBool>,
+    is_paused: Arc<AtomicBool>,
     db: Arc<Database>,
     platform: Arc<Mutex<PlatformServices>>,
     screenshot_engine: Arc<Mutex<ScreenshotEngine>>,
@@ -227,6 +303,16 @@ fn spawn_recording_collector(
     let capturer = SharedScreenshotCapturer;
     thread::spawn(move || {
         while !stop_flag.load(Ordering::SeqCst) {
+            if is_paused.load(Ordering::SeqCst) {
+                // Drain and discard any events while paused to avoid backlog
+                if let Some(mut plat) = platform.try_lock() {
+                    let _ = plat.input.drain_events();
+                    let _ = plat.windows.drain_events();
+                }
+                thread::sleep(Duration::from_millis(150));
+                continue;
+            }
+
             let (input_events, window_events) = {
                 let mut platform = platform.lock();
                 if stop_flag.load(Ordering::SeqCst) {
@@ -238,9 +324,16 @@ fn spawn_recording_collector(
                 )
             };
 
-            if stop_flag.load(Ordering::SeqCst) {
+            if stop_flag.load(Ordering::SeqCst) || is_paused.load(Ordering::SeqCst) {
                 break;
             }
+
+            let capture_all = db
+                .get_setting("capture_all_events")
+                .ok()
+                .flatten()
+                .map(|val| val == "true")
+                .unwrap_or(false);
 
             let mut pending_captures = Vec::new();
             {
@@ -253,10 +346,10 @@ fn spawn_recording_collector(
                     }
 
                     for input in &input_events {
-                        if stop_flag.load(Ordering::SeqCst) {
+                        if stop_flag.load(Ordering::SeqCst) || is_paused.load(Ordering::SeqCst) {
                             break;
                         }
-                        if should_trigger_screenshot(input) {
+                        if capture_all || should_trigger_screenshot(input) {
                             if let Ok(Some(pending)) = engine.prepare_input_event(
                                 &session_id,
                                 session_dir.clone(),

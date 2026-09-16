@@ -13,6 +13,8 @@ export interface Session {
   steps_json?: string | null;
   compressed_events_json?: string | null;
   preview_screenshot_path?: string | null;
+  audio_path?: string | null;
+  audio_transcript?: string | null;
 }
 
 export interface StoredEvent {
@@ -39,6 +41,8 @@ export interface Screenshot {
   timestamp_ms: number;
   trigger?: string | null;
   selected: number;
+  click_x?: number | null;
+  click_y?: number | null;
 }
 
 export interface ProviderConfig {
@@ -58,6 +62,15 @@ export interface ExportRecord {
   format: string;
   path: string;
   created_at: string;
+}
+
+export interface MonitorInfo {
+  id: string;
+  name: string;
+  is_primary: boolean;
+  width: number;
+  height: number;
+  scale_factor: number;
 }
 
 export interface AiJob {
@@ -94,6 +107,12 @@ export interface AiProgressEvent {
   session_id: string;
   stage: string;
   status: string;
+}
+
+export interface AiLogEvent {
+  session_id: string;
+  message: string;
+  timestamp_ms: number;
 }
 
 export interface GenerateDocumentationResult {
@@ -145,9 +164,17 @@ export const api = {
     invoke<void>("update_session_title", { sessionId, title }),
   updateSessionDocumentation: (sessionId: string, markdown: string) =>
     invoke<void>("update_session_documentation", { sessionId, markdown }),
-  startRecording: (title?: string) =>
-    invoke<Session>("start_recording", { title }),
+  listMonitors: () => invoke<MonitorInfo[]>("list_monitors"),
+  startRecording: (title?: string, monitorId?: string) =>
+    invoke<Session>("start_recording", {
+      title: title ?? null,
+      monitor_id: monitorId ?? null,
+    }),
   stopRecording: () => invoke<Session>("stop_recording"),
+  pauseRecording: () => invoke<void>("pause_recording"),
+  resumeRecording: () => invoke<void>("resume_recording"),
+  switchRecordingMonitor: (monitorId: string) =>
+    invoke<void>("switch_recording_monitor", { monitorId }),
   captureManualScreenshot: () => invoke<void>("capture_manual_screenshot"),
   listEvents: (sessionId: string) =>
     invoke<StoredEvent[]>("list_events", { sessionId }),
@@ -160,6 +187,8 @@ export const api = {
     invoke<void>("update_provider", { provider }),
   generateDocumentation: (sessionId: string) =>
     invoke<GenerateDocumentationResult>("generate_documentation", { sessionId }),
+  cancelDocumentation: (sessionId: string) =>
+    invoke<boolean>("cancel_documentation_generation", { sessionId }),
   listAiJobs: (sessionId: string) =>
     invoke<AiJob[]>("list_ai_jobs", { sessionId }),
   exportSession: (
@@ -176,11 +205,26 @@ export const api = {
   getSetting: (key: string) => invoke<string | null>("get_setting", { key }),
   setSetting: (key: string, value: string) =>
     invoke<void>("set_setting", { key, value }),
+  saveSessionAudio: (sessionId: string, audioBase64: string, mimeType: string) =>
+    invoke<string>("save_session_audio", { sessionId, audioBase64, mimeType }),
+  transcribeSessionAudio: (sessionId: string) =>
+    invoke<string>("transcribe_session_audio", { sessionId }),
+  deleteSession: (sessionId: string) =>
+    invoke<void>("delete_session", { sessionId }),
   onAiProgress: (
     sessionId: string,
     handler: (event: AiProgressEvent) => void,
   ): Promise<UnlistenFn> =>
     listen<AiProgressEvent>("ai-progress", (event) => {
+      if (event.payload.session_id === sessionId) {
+        handler(event.payload);
+      }
+    }),
+  onAiLog: (
+    sessionId: string,
+    handler: (event: AiLogEvent) => void,
+  ): Promise<UnlistenFn> =>
+    listen<AiLogEvent>("ai-log", (event) => {
       if (event.payload.session_id === sessionId) {
         handler(event.payload);
       }

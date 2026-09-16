@@ -19,7 +19,8 @@ fn ensure_bundled_ffmpeg() -> PathBuf {
     let target = std::env::var("TARGET").unwrap_or_default();
     let manifest_dir = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap_or_default());
     let binaries_dir = manifest_dir.join("binaries");
-    let dest = binaries_dir.join(format!("ffmpeg-{target}"));
+    let ext = if target.contains("windows") { ".exe" } else { "" };
+    let dest = binaries_dir.join(format!("ffmpeg-{target}{ext}"));
 
     if dest.is_file() {
         return dest;

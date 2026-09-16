@@ -1,4 +1,6 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -29,6 +31,13 @@ pub struct AiProgressEvent {
     pub status: String,
 }
 
+#[derive(Clone, serde::Serialize)]
+pub struct AiLogEvent {
+    pub session_id: String,
+    pub message: String,
+    pub timestamp_ms: i64,
+}
+
 impl AiPipeline {
     pub fn new(db: Arc<Database>) -> Self {
         Self { db }
@@ -38,7 +47,15 @@ impl AiPipeline {
         &self,
         session_id: &str,
         app: &AppHandle,
+        cancel_flag: Arc<AtomicBool>,
     ) -> Result<(String, RedactionSummary)> {
+        if cancel_flag.load(Ordering::Relaxed) {
+            emit_log(app, session_id, "Generazione annullata dall'utente.");
+            let _ = self.db.update_session_status(session_id, crate::storage::models::SessionStatus::Ready);
+            anyhow::bail!("cancelled by user");
+        }
+
+        emit_log(app, session_id, "Inizializzazione generazione documentazione AI...");
         self.db
             .update_session_status(session_id, crate::storage::models::SessionStatus::Processing)?;
 
@@ -57,20 +74,123 @@ impl AiPipeline {
         let (redacted_events, redaction_summary) = redact_events(&compressed);
         let screenshots = self.db.list_screenshots(session_id)?;
 
+        emit_log(
+            app,
+            session_id,
+            &format!(
+                "Caricati {} eventi e {} screenshot; compressi in {} azioni chiave ({} elementi oscurati)",
+                raw_events.len(),
+                screenshots.len(),
+                compressed.len(),
+                redaction_summary.count
+            ),
+        );
+
+        if cancel_flag.load(Ordering::Relaxed) {
+            emit_log(app, session_id, "Generazione annullata dall'utente.");
+            let _ = self.db.update_session_status(session_id, crate::storage::models::SessionStatus::Ready);
+            anyhow::bail!("cancelled by user");
+        }
+
+        let audio_transcript = if let Some(existing) = &session.audio_transcript {
+            if !existing.trim().is_empty() {
+                emit_log(app, session_id, "Utilizzo trascrizione vocale esistente");
+                Some(existing.clone())
+            } else {
+                None
+            }
+        } else if let Some(audio_path_str) = &session.audio_path {
+            let audio_path = std::path::Path::new(audio_path_str);
+            if audio_path.is_file() {
+                emit_log(app, session_id, "Avvio trascrizione audio del microfono con AI...");
+                
+                let transcription_prov_id = self.db.get_setting("transcription_provider_id").unwrap_or(None);
+                let transcription_model_override = self.db.get_setting("transcription_model").unwrap_or(None);
+                let transcription_url_override = self.db.get_setting("transcription_base_url").unwrap_or(None);
+
+                let mut trans_provider = if let Some(prov_id) = transcription_prov_id.filter(|s| !s.trim().is_empty()) {
+                    self.db
+                        .list_providers()
+                        .unwrap_or_default()
+                        .into_iter()
+                        .find(|p| p.id == prov_id)
+                        .unwrap_or_else(|| provider.clone())
+                } else {
+                    provider.clone()
+                };
+
+                if let Some(model_override) = transcription_model_override.filter(|s| !s.trim().is_empty()) {
+                    trans_provider.model = Some(model_override);
+                }
+                if let Some(url_override) = transcription_url_override.filter(|s| !s.trim().is_empty()) {
+                    trans_provider.base_url = Some(url_override);
+                }
+
+                match crate::ai::transcription::transcribe_audio(&trans_provider, audio_path).await {
+                    Ok(transcript) => {
+                        let _ = self.db.update_session_audio_transcript(session_id, &transcript);
+                        emit_log(app, session_id, &format!("Trascrizione vocale completata con {}: {} caratteri", trans_provider.name, transcript.len()));
+                        Some(transcript)
+                    }
+                    Err(err) => {
+                        emit_log(app, session_id, &format!("Trascrizione non riuscita: {err}"));
+                        None
+                    }
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        if cancel_flag.load(Ordering::Relaxed) {
+            emit_log(app, session_id, "Generazione annullata dall'utente.");
+            let _ = self.db.update_session_status(session_id, crate::storage::models::SessionStatus::Ready);
+            anyhow::bail!("cancelled by user");
+        }
+
         let timeline_job = self
             .db
             .create_ai_job(session_id, AiJobStage::TimelineBuilder)?;
         emit_progress(app, session_id, AiJobStage::TimelineBuilder, "running");
+        emit_log(app, session_id, "Costruzione sequenza temporale e raggruppamento azioni...");
         let mut steps = build_workflow_steps(&redacted_events);
-        if let Ok(ai_steps) = self
-            .refine_timeline(&provider, &session.title, &redacted_events, &steps)
-            .await
-        {
-            if !ai_steps.is_empty() && ai_steps.len() <= 15 {
-                steps = ai_steps;
+
+        emit_log(app, session_id, "Ottimizzazione passaggi con modello LLM...");
+        let refine_fut = self.refine_timeline(
+            &provider,
+            &session.title,
+            &redacted_events,
+            &steps,
+            audio_transcript.as_deref(),
+        );
+
+        match tokio::time::timeout(Duration::from_secs(35), refine_fut).await {
+            Ok(Ok(ai_steps)) => {
+                if !ai_steps.is_empty() && ai_steps.len() <= 15 {
+                    steps = ai_steps;
+                    emit_log(app, session_id, "Passaggi consolidati con successo dal modello AI");
+                } else {
+                    emit_log(app, session_id, "Passaggi deterministici mantenuti");
+                }
+            }
+            Ok(Err(err)) => {
+                emit_log(app, session_id, &format!("Ottimizzazione passaggi LLM saltata ({err}), utilizzo raggruppamento deterministico"));
+            }
+            Err(_) => {
+                emit_log(app, session_id, "Timeout risposta modello AI per i passaggi, proseguo con i passaggi deterministici");
             }
         }
+
+        if cancel_flag.load(Ordering::Relaxed) {
+            emit_log(app, session_id, "Generazione annullata dall'utente.");
+            let _ = self.db.update_session_status(session_id, crate::storage::models::SessionStatus::Ready);
+            anyhow::bail!("cancelled by user");
+        }
+
         emit_progress(app, session_id, AiJobStage::TimelineBuilder, "completed");
+        emit_log(app, session_id, &format!("Timeline definita: {} passaggi identificati", steps.len()));
         self.db.finish_ai_job(
             &timeline_job.id,
             AiJobStatus::Completed,
@@ -78,10 +198,17 @@ impl AiPipeline {
             None,
         )?;
 
+        if cancel_flag.load(Ordering::Relaxed) {
+            emit_log(app, session_id, "Generazione annullata dall'utente.");
+            let _ = self.db.update_session_status(session_id, crate::storage::models::SessionStatus::Ready);
+            anyhow::bail!("cancelled by user");
+        }
+
         let selector_job = self
             .db
             .create_ai_job(session_id, AiJobStage::ScreenshotSelector)?;
         emit_progress(app, session_id, AiJobStage::ScreenshotSelector, "running");
+        emit_log(app, session_id, "Abbinamento e selezione screenshot migliori per ogni passaggio...");
         match_screenshots_to_steps(&mut steps, &screenshots);
         let selected_ids: Vec<String> = steps
             .iter()
@@ -89,12 +216,19 @@ impl AiPipeline {
             .collect();
         let _ = self.db.mark_screenshots_selected(&selected_ids);
         emit_progress(app, session_id, AiJobStage::ScreenshotSelector, "completed");
+        emit_log(app, session_id, &format!("Selezionati {} screenshot per la documentazione", selected_ids.len()));
         self.db.finish_ai_job(
             &selector_job.id,
             AiJobStatus::Completed,
             Some(json!({ "count": screenshots.len() }).to_string()),
             None,
         )?;
+
+        if cancel_flag.load(Ordering::Relaxed) {
+            emit_log(app, session_id, "Generazione annullata dall'utente.");
+            let _ = self.db.update_session_status(session_id, crate::storage::models::SessionStatus::Ready);
+            anyhow::bail!("cancelled by user");
+        }
 
         let (doc_title, overview) =
             infer_workflow_summary(&session.title, &redacted_events, &steps);
@@ -104,12 +238,21 @@ impl AiPipeline {
             .db
             .create_ai_job(session_id, AiJobStage::TechnicalWriter)?;
         emit_progress(app, session_id, AiJobStage::TechnicalWriter, "running");
-        let markdown = match self
-            .enhance_documentation(&provider, &doc_title, &overview, &steps, &base_markdown)
-            .await
-        {
-            Ok(enhanced) => {
+        emit_log(app, session_id, "Generazione guida e arricchimento tecnico con modello LLM...");
+        
+        let enhance_fut = self.enhance_documentation(
+            &provider,
+            &doc_title,
+            &overview,
+            &steps,
+            &base_markdown,
+            audio_transcript.as_deref(),
+        );
+
+        let markdown = match tokio::time::timeout(Duration::from_secs(60), enhance_fut).await {
+            Ok(Ok(enhanced)) => {
                 emit_progress(app, session_id, AiJobStage::TechnicalWriter, "completed");
+                emit_log(app, session_id, "Guida generata con successo dal modello AI");
                 self.db.finish_ai_job(
                     &writer_job.id,
                     AiJobStatus::Completed,
@@ -118,8 +261,9 @@ impl AiPipeline {
                 )?;
                 enhanced
             }
-            Err(err) => {
+            Ok(Err(err)) => {
                 emit_progress(app, session_id, AiJobStage::TechnicalWriter, "failed");
+                emit_log(app, session_id, &format!("Arricchimento AI non riuscito ({err}), uso template base"));
                 self.db.finish_ai_job(
                     &writer_job.id,
                     AiJobStatus::Failed,
@@ -128,12 +272,30 @@ impl AiPipeline {
                 )?;
                 base_markdown.clone()
             }
+            Err(_) => {
+                emit_progress(app, session_id, AiJobStage::TechnicalWriter, "failed");
+                emit_log(app, session_id, "Timeout risposta modello AI per la guida, uso template base");
+                self.db.finish_ai_job(
+                    &writer_job.id,
+                    AiJobStatus::Failed,
+                    None,
+                    Some("Timeout response from LLM provider".to_string()),
+                )?;
+                base_markdown.clone()
+            }
         };
+
+        if cancel_flag.load(Ordering::Relaxed) {
+            emit_log(app, session_id, "Generazione annullata dall'utente.");
+            let _ = self.db.update_session_status(session_id, crate::storage::models::SessionStatus::Ready);
+            anyhow::bail!("cancelled by user");
+        }
 
         let reviewer_job = self
             .db
             .create_ai_job(session_id, AiJobStage::QualityReviewer)?;
         emit_progress(app, session_id, AiJobStage::QualityReviewer, "running");
+        emit_log(app, session_id, "Revisione qualità, sanitizzazione e controllo link screenshot...");
         let reviewed_markdown = finalize_markdown(&markdown, &base_markdown, &screenshots);
         emit_progress(app, session_id, AiJobStage::QualityReviewer, "completed");
         self.db.finish_ai_job(
@@ -162,6 +324,7 @@ impl AiPipeline {
 
         self.db
             .update_session_status(session_id, crate::storage::models::SessionStatus::Ready)?;
+        emit_log(app, session_id, "Documentazione completata e salvata con successo!");
 
         Ok((reviewed_markdown, redaction_summary))
     }
@@ -186,14 +349,21 @@ impl AiPipeline {
         session_title: &str,
         events: &[SessionEvent],
         steps: &[WorkflowStep],
+        audio_transcript: Option<&str>,
     ) -> Result<Vec<WorkflowStep>> {
         if steps.len() <= 3 {
             return Ok(steps.to_vec());
         }
 
+        let audio_section = if let Some(transcript) = audio_transcript.filter(|t| !t.trim().is_empty()) {
+            format!("\nUser's Spoken Microphone Explanation (Audio Transcript):\n\"\"\"\n{}\n\"\"\"\n", transcript.trim())
+        } else {
+            String::new()
+        };
+
         let llm = build_provider(provider)?;
         let prompt = format!(
-            "Session title: {session_title}\nCurrent steps:\n{}\nRaw events:\n{}",
+            "Session title: {session_title}\n{audio_section}Current steps:\n{}\nRaw events:\n{}",
             serde_json::to_string_pretty(steps)?,
             events_for_prompt(events)
         );
@@ -217,17 +387,26 @@ Do not use placeholders.",
         overview: &str,
         steps: &[WorkflowStep],
         base_markdown: &str,
+        audio_transcript: Option<&str>,
     ) -> Result<String> {
+        let audio_section = if let Some(transcript) = audio_transcript.filter(|t| !t.trim().is_empty()) {
+            format!("\nUser's Spoken Microphone Explanation (Audio Transcript):\n\"\"\"\n{}\n\"\"\"\n", transcript.trim())
+        } else {
+            String::new()
+        };
+
         let llm = build_provider(provider)?;
         let prompt = format!(
             "Improve this workflow documentation Markdown.\n\
 Title: {title}\n\
 Overview: {overview}\n\
+{audio_section}\
 Steps JSON:\n{}\n\
 Current Markdown:\n{base_markdown}\n\n\
 Rules:\n\
 - Keep the same number of steps and preserve every screenshot image line exactly.\n\
-- Infer the user's goal from the recorded actions and write a clear overview.\n\
+- Use the user's spoken audio explanation to describe each step and clarify actions.\n\
+- Infer the user's goal from the recorded actions and audio explanation, and write a clear overview.\n\
 - Replace generic session titles with a specific workflow title when possible.\n\
 - Write concrete instructions using app names and pane titles from the steps.\n\
 - Never use bracket placeholders like [MISSING SCREENSHOT] or [SPECIFY ...].\n\
@@ -281,6 +460,21 @@ fn emit_progress(app: &AppHandle, session_id: &str, stage: AiJobStage, status: &
             session_id: session_id.to_string(),
             stage: stage.as_str().to_string(),
             status: status.to_string(),
+        },
+    );
+}
+
+fn emit_log(app: &AppHandle, session_id: &str, message: &str) {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as i64;
+    let _ = app.emit(
+        "ai-log",
+        AiLogEvent {
+            session_id: session_id.to_string(),
+            message: message.to_string(),
+            timestamp_ms: now,
         },
     );
 }

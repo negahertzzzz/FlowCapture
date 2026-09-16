@@ -10,7 +10,9 @@ CREATE TABLE IF NOT EXISTS sessions (
   duration INTEGER DEFAULT 0,
   documentation_md TEXT,
   steps_json TEXT,
-  compressed_events_json TEXT
+  compressed_events_json TEXT,
+  audio_path TEXT,
+  audio_transcript TEXT
 );
 
 CREATE TABLE IF NOT EXISTS events (
@@ -31,6 +33,8 @@ CREATE TABLE IF NOT EXISTS screenshots (
   timestamp_ms INTEGER NOT NULL,
   trigger TEXT,
   selected INTEGER NOT NULL DEFAULT 0,
+  click_x INTEGER,
+  click_y INTEGER,
   FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
 );
 

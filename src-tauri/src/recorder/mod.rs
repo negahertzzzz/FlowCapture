@@ -17,11 +17,24 @@ impl RecorderEngine {
         &mut self,
         session_dir: PathBuf,
         platform: &mut PlatformServices,
+        monitor_id: Option<String>,
     ) -> Result<()> {
         let video_dir = session_dir.join("video");
-        platform.recorder.start(video_dir)?;
+        platform.recorder.start_with_monitor(video_dir, monitor_id)?;
         self.output_dir = Some(session_dir);
         Ok(())
+    }
+
+    pub fn pause_with_platform(&self, platform: &PlatformServices) {
+        platform.recorder.pause();
+    }
+
+    pub fn resume_with_platform(&self, platform: &PlatformServices) {
+        platform.recorder.resume();
+    }
+
+    pub fn switch_monitor_with_platform(&self, platform: &PlatformServices, monitor_id: Option<String>) -> Result<()> {
+        platform.recorder.switch_monitor(monitor_id)
     }
 
     pub fn stop_with_platform(

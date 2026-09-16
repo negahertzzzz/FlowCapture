@@ -21,7 +21,9 @@ pub use permissions::{
 pub use macos::refresh_dev_dock_icon;
 pub use traits::*;
 
-pub use common::SharedScreenshotCapturer;
+#[cfg(not(target_os = "linux"))]
+pub use common::find_monitor;
+pub use common::{list_monitors, SharedScreenshotCapturer};
 
 use anyhow::Result;
 

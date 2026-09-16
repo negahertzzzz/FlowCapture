@@ -287,16 +287,26 @@ fn run_command_with_timeout(
 
 fn chrome_binary_candidates() -> Vec<String> {
     [
+        // macOS
         "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
         "/Applications/Chromium.app/Contents/MacOS/Chromium",
         "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
         "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+        // Windows
+        r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+        r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
+        // Linux / PATH
         "google-chrome",
         "chromium",
+        "msedge",
+        "chrome",
     ]
     .into_iter()
     .filter(|candidate| {
-        if candidate.contains('/') {
+        if candidate.contains('/') || candidate.contains('\\') {
             Path::new(candidate).is_file()
         } else {
             true

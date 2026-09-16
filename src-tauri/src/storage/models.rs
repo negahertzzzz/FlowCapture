@@ -35,6 +35,8 @@ pub struct Session {
     pub documentation_md: Option<String>,
     pub steps_json: Option<String>,
     pub compressed_events_json: Option<String>,
+    pub audio_path: Option<String>,
+    pub audio_transcript: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preview_screenshot_path: Option<String>,
 }
@@ -52,6 +54,8 @@ impl Session {
             documentation_md: row.get(7)?,
             steps_json: row.get(8)?,
             compressed_events_json: row.get(9)?,
+            audio_path: row.get(10)?,
+            audio_transcript: row.get(11)?,
             preview_screenshot_path: None,
         })
     }
@@ -98,6 +102,8 @@ pub struct Screenshot {
     pub timestamp_ms: i64,
     pub trigger: Option<String>,
     pub selected: i64,
+    pub click_x: Option<i64>,
+    pub click_y: Option<i64>,
 }
 
 impl Screenshot {
@@ -109,6 +115,8 @@ impl Screenshot {
             timestamp_ms: row.get(3)?,
             trigger: row.get(4)?,
             selected: row.get(5)?,
+            click_x: row.get(6)?,
+            click_y: row.get(7)?,
         })
     }
 }
@@ -275,3 +283,14 @@ pub struct RedactionSummary {
     pub count: usize,
     pub patterns: Vec<String>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MonitorInfo {
+    pub id: String,
+    pub name: String,
+    pub is_primary: bool,
+    pub width: u32,
+    pub height: u32,
+    pub scale_factor: f64,
+}
+

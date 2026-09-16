@@ -19,6 +19,14 @@ pub fn build_provider(config: &ProviderConfig) -> Result<Box<dyn LlmProvider>> {
     }
 }
 
+fn create_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .timeout(std::time::Duration::from_secs(90))
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
 pub struct OpenAiProvider {
     client: reqwest::Client,
     config: ProviderConfig,
@@ -27,7 +35,7 @@ pub struct OpenAiProvider {
 impl OpenAiProvider {
     pub fn new(config: ProviderConfig) -> Result<Self> {
         Ok(Self {
-            client: reqwest::Client::new(),
+            client: create_http_client(),
             config,
         })
     }
@@ -85,7 +93,7 @@ pub struct ClaudeProvider {
 impl ClaudeProvider {
     pub fn new(config: ProviderConfig) -> Result<Self> {
         Ok(Self {
-            client: reqwest::Client::new(),
+            client: create_http_client(),
             config,
         })
     }
@@ -144,7 +152,7 @@ pub struct OllamaProvider {
 impl OllamaProvider {
     pub fn new(config: ProviderConfig) -> Result<Self> {
         Ok(Self {
-            client: reqwest::Client::new(),
+            client: create_http_client(),
             config,
         })
     }
@@ -164,7 +172,8 @@ impl LlmProvider for OllamaProvider {
             .clone()
             .unwrap_or_else(|| "llama3.2".to_string());
 
-        let response = self
+        // 1. Try Ollama native chat endpoint: /api/chat
+        let res = self
             .client
             .post(format!("{base_url}/api/chat"))
             .json(&json!({
@@ -176,15 +185,48 @@ impl LlmProvider for OllamaProvider {
                 "stream": false
             }))
             .send()
+            .await;
+
+        if let Ok(resp) = res {
+            if resp.status().is_success() {
+                if let Ok(json_res) = resp.json::<serde_json::Value>().await {
+                    if let Some(content) = json_res["message"]["content"].as_str() {
+                        return Ok(content.to_string());
+                    }
+                }
+            }
+        }
+
+        // 2. Fallback to OpenAI-compatible endpoint: /v1/chat/completions (LM Studio, LocalAI, vLLM, Ollama)
+        let mut req = self
+            .client
+            .post(format!("{base_url}/v1/chat/completions"))
+            .json(&json!({
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": prompt}
+                ],
+                "temperature": 0.2
+            }));
+
+        if let Some(key) = &self.config.api_key {
+            if !key.trim().is_empty() {
+                req = req.bearer_auth(key);
+            }
+        }
+
+        let response = req
+            .send()
             .await?
             .error_for_status()?
             .json::<serde_json::Value>()
             .await?;
 
-        response["message"]["content"]
+        response["choices"][0]["message"]["content"]
             .as_str()
             .map(str::to_string)
-            .context("missing Ollama response content")
+            .context("missing Ollama/Local LLM response content (tried /api/chat and /v1/chat/completions)")
     }
 }
 
@@ -196,7 +238,7 @@ pub struct GeminiProvider {
 impl GeminiProvider {
     pub fn new(config: ProviderConfig) -> Result<Self> {
         Ok(Self {
-            client: reqwest::Client::new(),
+            client: create_http_client(),
             config,
         })
     }

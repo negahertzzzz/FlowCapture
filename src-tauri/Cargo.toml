@@ -26,7 +26,7 @@ chrono = { version = "0.4", features = ["serde"] }
 thiserror = "2"
 anyhow = "1"
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "multipart"] }
 active-win-pos-rs = "0.8"
 parking_lot = "0.12"
 regex = "1"
@@ -35,12 +35,12 @@ dirs = "6"
 device_query = "3.0"
 async-trait = "0.1"
 pulldown-cmark = "0.13"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 
 # Linux uses xcap 0.4.x (X11/dbus) to avoid PipeWire 1.0+ required by xcap 0.5+ on Ubuntu 22.04.
 [target.'cfg(target_os = "linux")'.dependencies]
 xcap = "=0.4.1"
 dbus = "0.9"
-image = { version = "0.25", default-features = false, features = ["png"] }
 percent-encoding = "2.3"
 
 [target.'cfg(not(target_os = "linux"))'.dependencies]
@@ -49,7 +49,6 @@ xcap = "0.9.6"
 [target.'cfg(target_os = "macos")'.dependencies]
 macos-accessibility-client = "0.0.1"
 core-graphics = "0.24"
-image = "0.25"
 objc2 = "0.6"
 objc2-app-kit = "0.3"
 objc2-foundation = "0.3"

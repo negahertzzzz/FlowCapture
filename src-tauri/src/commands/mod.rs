@@ -122,12 +122,18 @@ pub fn update_session_title(
 }
 
 #[tauri::command]
+pub fn list_monitors() -> Result<Vec<crate::storage::models::MonitorInfo>, String> {
+    crate::platform::list_monitors().map_err(|err| err.to_string())
+}
+
+#[tauri::command]
 pub async fn start_recording(
     state: State<'_, Arc<AppState>>,
     title: Option<String>,
+    monitor_id: Option<String>,
 ) -> Result<Session, String> {
     let state = Arc::clone(state.inner());
-    tauri::async_runtime::spawn_blocking(move || state.start_recording(title))
+    tauri::async_runtime::spawn_blocking(move || state.start_recording(title, monitor_id))
         .await
         .map_err(|err| err.to_string())?
         .map_err(|err| err.to_string())
@@ -151,6 +157,26 @@ pub async fn stop_recording(
         session.duration.max(1),
     );
     Ok(session)
+}
+
+#[tauri::command]
+pub fn pause_recording(state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    state.pause_recording().map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+pub fn resume_recording(state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    state.resume_recording().map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+pub fn switch_recording_monitor(
+    state: State<'_, Arc<AppState>>,
+    monitor_id: String,
+) -> Result<(), String> {
+    state
+        .switch_recording_monitor(monitor_id)
+        .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
@@ -233,20 +259,39 @@ pub fn update_session_documentation(
 }
 
 #[tauri::command]
+pub fn cancel_documentation_generation(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+) -> Result<bool, String> {
+    let cancelled = state.cancel_ai_job(&session_id);
+    let _ = state.db.update_session_status(&session_id, crate::storage::models::SessionStatus::Ready);
+    Ok(cancelled)
+}
+
+#[tauri::command]
 pub async fn generate_documentation(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,
     session_id: String,
 ) -> Result<GenerateDocumentationResult, String> {
+    let cancel_flag = state.register_ai_cancellation(&session_id);
     let pipeline = AiPipeline::new(Arc::clone(&state.db));
-    let (markdown, redaction_summary) = pipeline
-        .run(&session_id, &app)
-        .await
-        .map_err(|err| err.to_string())?;
-    Ok(GenerateDocumentationResult {
-        markdown,
-        redaction_summary,
-    })
+    let result = pipeline
+        .run(&session_id, &app, cancel_flag)
+        .await;
+
+    state.remove_ai_cancellation(&session_id);
+
+    match result {
+        Ok((markdown, redaction_summary)) => Ok(GenerateDocumentationResult {
+            markdown,
+            redaction_summary,
+        }),
+        Err(err) => {
+            let _ = state.db.update_session_status(&session_id, crate::storage::models::SessionStatus::Ready);
+            Err(err.to_string())
+        }
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -347,4 +392,117 @@ pub fn get_replay_steps(
     } else {
         Ok(Vec::new())
     }
+}
+
+#[tauri::command]
+pub async fn save_session_audio(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+    audio_base64: String,
+    mime_type: String,
+) -> Result<String, String> {
+    use base64::Engine;
+    let session_dir = state.db.session_dir(&session_id);
+    let audio_dir = session_dir.join("audio");
+    std::fs::create_dir_all(&audio_dir).map_err(|err| err.to_string())?;
+
+    let ext = if mime_type.contains("wav") {
+        "wav"
+    } else if mime_type.contains("mp3") {
+        "mp3"
+    } else if mime_type.contains("ogg") {
+        "ogg"
+    } else {
+        "webm"
+    };
+
+    let audio_path = audio_dir.join(format!("recording.{ext}"));
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(audio_base64.trim())
+        .map_err(|err| format!("invalid audio base64: {err}"))?;
+
+    std::fs::write(&audio_path, bytes).map_err(|err| err.to_string())?;
+
+    let path_str = audio_path.to_string_lossy().to_string();
+    state
+        .db
+        .update_session_audio(&session_id, &path_str)
+        .map_err(|err| err.to_string())?;
+
+    Ok(path_str)
+}
+
+#[tauri::command]
+pub async fn transcribe_session_audio(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+) -> Result<String, String> {
+    let session = state
+        .db
+        .get_session(&session_id)
+        .map_err(|err| err.to_string())?
+        .ok_or_else(|| "session not found".to_string())?;
+
+    let audio_path_str = session
+        .audio_path
+        .ok_or_else(|| "No audio recorded for this session".to_string())?;
+    let audio_path = std::path::PathBuf::from(&audio_path_str);
+    if !audio_path.is_file() {
+        return Err("Audio file not found on disk".to_string());
+    }
+
+    // Check if user set a dedicated provider, model or base URL for transcription
+    let transcription_prov_id = state.db.get_setting("transcription_provider_id").unwrap_or(None);
+    let transcription_model_override = state.db.get_setting("transcription_model").unwrap_or(None);
+    let transcription_url_override = state.db.get_setting("transcription_base_url").unwrap_or(None);
+
+    let mut provider = if let Some(prov_id) = transcription_prov_id.filter(|s| !s.trim().is_empty()) {
+        state
+            .db
+            .list_providers()
+            .map_err(|err| err.to_string())?
+            .into_iter()
+            .find(|p| p.id == prov_id)
+            .unwrap_or(
+                state
+                    .db
+                    .get_enabled_provider()
+                    .map_err(|err| err.to_string())?
+                    .ok_or_else(|| "No AI provider configured for transcription".to_string())?
+            )
+    } else {
+        state
+            .db
+            .get_enabled_provider()
+            .map_err(|err| err.to_string())?
+            .ok_or_else(|| "No enabled AI provider configured for transcription".to_string())?
+    };
+
+    if let Some(model_override) = transcription_model_override.filter(|s| !s.trim().is_empty()) {
+        provider.model = Some(model_override);
+    }
+    if let Some(url_override) = transcription_url_override.filter(|s| !s.trim().is_empty()) {
+        provider.base_url = Some(url_override);
+    }
+
+    let transcript = crate::ai::transcription::transcribe_audio(&provider, &audio_path)
+        .await
+        .map_err(|err| err.to_string())?;
+
+    state
+        .db
+        .update_session_audio_transcript(&session_id, &transcript)
+        .map_err(|err| err.to_string())?;
+
+    Ok(transcript)
+}
+
+#[tauri::command]
+pub fn delete_session(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+) -> Result<(), String> {
+    state.cancel_ai_job(&session_id);
+    state.remove_ai_cancellation(&session_id);
+    state.db.delete_session(&session_id).map_err(|err| err.to_string())
 }

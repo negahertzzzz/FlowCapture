@@ -1,7 +1,7 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useParams, useNavigate } from "react-router-dom";
 import { ProcessingPanel } from "@/components/ai/ProcessingPanel";
 import { MarkdownPreview } from "@/components/documentation/MarkdownPreview";
 import { ExportPanel } from "@/components/export/ExportPanel";
@@ -9,6 +9,8 @@ import { AppButton } from "@/components/ui/AppButton";
 import { Icon } from "@/components/ui/Icon";
 import { Toast } from "@/components/ui/Toast";
 import { useSessionTitle } from "@/hooks/useSessionTitle";
+import { useAiJob } from "@/context/AiJobContext";
+import { useSessionsContext } from "@/context/SessionsContext";
 import {
   api,
   type ExportOptionsPayload,
@@ -26,6 +28,7 @@ const TABS = [
   "Timeline",
   "Screenshots",
   "Documentation",
+  "Audio",
   "Replay",
   "Recording",
   "Exports",
@@ -35,6 +38,10 @@ type TabName = (typeof TABS)[number];
 
 export function SessionPage() {
   const { sessionId = "" } = useParams();
+  const navigate = useNavigate();
+  const { refreshSessions } = useSessionsContext();
+  const { activeJob, startJob, cancelJob } = useAiJob();
+
   const [session, setSession] = useState<Session | null>(null);
   const [events, setEvents] = useState<SessionEvent[]>([]);
   const [screenshots, setScreenshots] = useState<Screenshot[]>([]);
@@ -42,16 +49,16 @@ export function SessionPage() {
   const [steps, setSteps] = useState<WorkflowStep[]>([]);
   const [markdown, setMarkdown] = useState("");
   const [busy, setBusy] = useState(false);
-  const [generating, setGenerating] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [redactionSummary, setRedactionSummary] = useState<RedactionSummary | null>(null);
-  const [activeStage, setActiveStage] = useState<string | null>(null);
-  const [completedStages, setCompletedStages] = useState<string[]>([]);
-  const [failedStage, setFailedStage] = useState<string | null>(null);
   const [replayIndex, setReplayIndex] = useState(0);
   const [tab, setTab] = useState<TabName>("Timeline");
   const [docMode, setDocMode] = useState<"preview" | "edit">("preview");
+
+  const isCurrentSessionGenerating =
+    activeJob?.sessionId === sessionId && !activeJob.isDone;
 
   const handleTitleError = useCallback((message: string) => {
     setError(message);
@@ -89,34 +96,17 @@ export function SessionPage() {
     refresh().catch((err) => setError(String(err)));
   }, [sessionId]);
 
+  // When activeJob completes for this session, refresh data
   useEffect(() => {
-    if (!generating) return;
-
-    let unlisten: (() => void) | undefined;
-    api
-      .onAiProgress(sessionId, (event) => {
-        if (event.status === "running") {
-          setActiveStage(event.stage);
-        }
-        if (event.status === "completed") {
-          setCompletedStages((current) =>
-            current.includes(event.stage) ? current : [...current, event.stage],
-          );
-          setActiveStage(null);
-        }
-        if (event.status === "failed") {
-          setFailedStage(event.stage);
-          setActiveStage(null);
-        }
-      })
-      .then((fn) => {
-        unlisten = fn;
-      });
-
-    return () => {
-      unlisten?.();
-    };
-  }, [generating, sessionId]);
+    if (activeJob?.sessionId === sessionId && activeJob.isDone && activeJob.result) {
+      setMarkdown(activeJob.result.markdown);
+      setDocMode("preview");
+      setTab("Documentation");
+      setRedactionSummary(activeJob.result.redaction_summary);
+      setToast("Documentation generated");
+      refresh().catch(() => undefined);
+    }
+  }, [activeJob?.sessionId, activeJob?.isDone, activeJob?.result, sessionId]);
 
   const replayScreenshot = useMemo(() => {
     const step = steps[replayIndex];
@@ -166,25 +156,33 @@ export function SessionPage() {
 
   async function handleGenerate() {
     setBusy(true);
-    setGenerating(true);
     setError(null);
     setToast(null);
-    setActiveStage(null);
-    setCompletedStages([]);
-    setFailedStage(null);
     try {
-      const result = await api.generateDocumentation(sessionId);
-      setMarkdown(result.markdown);
-      setDocMode("preview");
-      setTab("Documentation");
-      setRedactionSummary(result.redaction_summary);
-      setToast("Documentation generated");
-      await refresh();
+      await startJob(sessionId, title || session?.title || "Session");
     } catch (err) {
       setError(String(err));
     } finally {
       setBusy(false);
-      setGenerating(false);
+    }
+  }
+
+  async function handleDeleteSession() {
+    if (!session) return;
+    if (
+      window.confirm(
+        `Sei sicuro di voler eliminare definitivamente la sessione "${session.title}"? Tutti i dati e gli screenshot verranno cancellati.`
+      )
+    ) {
+      setBusy(true);
+      try {
+        await api.deleteSession(sessionId);
+        await refreshSessions();
+        navigate("/");
+      } catch (err) {
+        setError(String(err));
+        setBusy(false);
+      }
     }
   }
 
@@ -209,6 +207,21 @@ export function SessionPage() {
       setToast("Markdown copied");
     } catch (err) {
       setError(String(err));
+    }
+  }
+
+  async function handleTranscribeAudio() {
+    setTranscribing(true);
+    setError(null);
+    setToast(null);
+    try {
+      await api.transcribeSessionAudio(sessionId);
+      setToast("Audio trascritto con successo!");
+      await refresh();
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setTranscribing(false);
     }
   }
 
@@ -244,13 +257,15 @@ export function SessionPage() {
     );
   }
 
-  if (generating) {
+  if (isCurrentSessionGenerating && activeJob) {
     return (
       <div className="page">
         <ProcessingPanel
-          activeStage={activeStage}
-          completedStages={completedStages}
-          failedStage={failedStage}
+          activeStage={activeJob.stage}
+          completedStages={activeJob.completedStages}
+          failedStage={activeJob.failedStage}
+          logs={activeJob.logs}
+          onCancel={() => cancelJob(sessionId)}
         />
       </div>
     );
@@ -273,12 +288,21 @@ export function SessionPage() {
         events
       </div>
 
-      <div className="sd-actions">
+      <div className="sd-actions" style={{ display: "flex", gap: "10px", alignItems: "center" }}>
         <AppButton kind="primary" icon="sparkles" disabled={busy} onClick={handleGenerate}>
           Generate Documentation
         </AppButton>
         <AppButton icon="download" disabled={busy} onClick={() => setTab("Exports")}>
           Export
+        </AppButton>
+        <AppButton
+          kind="ghost"
+          icon="trash"
+          disabled={busy}
+          onClick={handleDeleteSession}
+          style={{ marginLeft: "auto", color: "#ef4444", borderColor: "rgba(239, 68, 68, 0.3)" }}
+        >
+          Elimina Sessione
         </AppButton>
       </div>
 
@@ -362,8 +386,9 @@ export function SessionPage() {
                         inset: 0,
                         width: "100%",
                         height: "100%",
-                        objectFit: "cover",
-                        objectPosition: "left top",
+                        objectFit: "contain",
+                        objectPosition: "center",
+                        backgroundColor: "rgba(0,0,0,0.4)",
                       }}
                       onError={(event) => {
                         (event.target as HTMLImageElement).style.display = "none";
@@ -440,6 +465,80 @@ export function SessionPage() {
         </div>
       ) : null}
 
+      {tab === "Audio" ? (
+        <div className="card panel">
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px", flexWrap: "wrap", gap: "10px" }}>
+            <div>
+              <h3>Registrazione Audio & Trascrizione Vocale</h3>
+              <div className="pd">Riascolta l'audio del microfono catturato e visualizza la trascrizione AI del parlato.</div>
+            </div>
+            {session.audio_path ? (
+              <AppButton
+                kind="primary"
+                icon="sparkles"
+                size="sm"
+                disabled={transcribing || busy}
+                onClick={handleTranscribeAudio}
+              >
+                {transcribing ? "Trascrizione in corso…" : session.audio_transcript ? "Ritrascrivi Audio" : "Trascrivi con AI"}
+              </AppButton>
+            ) : null}
+          </div>
+
+          {session.audio_path ? (
+            <div style={{ marginTop: "16px", display: "flex", flexDirection: "column", gap: "16px" }}>
+              <div style={{ padding: "16px", background: "rgba(255,255,255,0.03)", borderRadius: "8px", border: "1px solid var(--border)" }}>
+                <div style={{ fontSize: "13px", fontWeight: 500, marginBottom: "8px", color: "var(--text-1)" }}>
+                  Traccia Audio Microfono:
+                </div>
+                <audio
+                  controls
+                  src={convertFileSrc(session.audio_path)}
+                  style={{ width: "100%", height: "40px" }}
+                />
+              </div>
+
+              <div style={{ padding: "16px", background: "rgba(255,255,255,0.03)", borderRadius: "8px", border: "1px solid var(--border)" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
+                  <div style={{ fontSize: "13px", fontWeight: 500, color: "var(--text-1)" }}>
+                    Trascrizione del Parlato (Speech-to-Text):
+                  </div>
+                  {session.audio_transcript ? (
+                    <span style={{ fontSize: "11px", color: "var(--color-primary)", fontWeight: 600 }}>
+                      ● Trascritto
+                    </span>
+                  ) : null}
+                </div>
+                {session.audio_transcript ? (
+                  <div
+                    style={{
+                      whiteSpace: "pre-wrap",
+                      fontSize: "14px",
+                      lineHeight: "1.6",
+                      color: "var(--text-1)",
+                      background: "var(--bg-3, #0d1117)",
+                      padding: "14px 16px",
+                      borderRadius: "6px",
+                      border: "1px solid var(--border)",
+                    }}
+                  >
+                    {session.audio_transcript}
+                  </div>
+                ) : (
+                  <div style={{ color: "var(--dim)", fontSize: "13.5px" }}>
+                    Nessuna trascrizione generata finora. Clicca sul pulsante in alto a destra "Trascrivi con AI" per convertire la voce in testo.
+                  </div>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="pd" style={{ marginTop: "16px" }}>
+              Nessun audio del microfono registrato per questa sessione. Per registrare l'audio, attiva l'opzione "Registra audio microfono" prima di avviare la registrazione.
+            </div>
+          )}
+        </div>
+      ) : null}
+
       {tab === "Replay" ? (
         <div className="card panel">
           <h3>Session Replay</h3>
@@ -471,7 +570,8 @@ export function SessionPage() {
                         inset: 0,
                         width: "100%",
                         height: "100%",
-                        objectFit: "cover",
+                        objectFit: "contain",
+                        backgroundColor: "rgba(0, 0, 0, 0.4)",
                       }}
                       onError={(event) => {
                         (event.target as HTMLImageElement).style.display = "none";
