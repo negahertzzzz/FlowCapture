@@ -35,6 +35,7 @@ impl ExportEngine {
         let options = options.unwrap_or_default().normalized();
         let session = self.require_session(session_id)?;
         let screenshots = self.db.list_screenshots(session_id)?;
+        prepare_screenshots_for_export(&screenshots);
         let markdown = self.resolve_markdown(session_id, &session, &screenshots)?;
         let export_path = self.export_path(session_id, "md");
         let rewritten = if options.screenshots {
@@ -53,6 +54,7 @@ impl ExportEngine {
     ) -> Result<ExportRecord> {
         let session = self.require_session(session_id)?;
         let screenshots = self.db.list_screenshots(session_id)?;
+        prepare_screenshots_for_export(&screenshots);
         let steps = self.load_steps(session_id)?;
         let html = render_styled_export_html(
             &session,
@@ -73,6 +75,7 @@ impl ExportEngine {
     ) -> Result<ExportRecord> {
         let session = self.require_session(session_id)?;
         let screenshots = self.db.list_screenshots(session_id)?;
+        prepare_screenshots_for_export(&screenshots);
         let steps = self.load_steps(session_id)?;
         let html = render_styled_export_html(
             &session,
@@ -364,4 +367,31 @@ fn rewrite_markdown_for_html(markdown: &str, screenshots: &[Screenshot]) -> Stri
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn prepare_screenshots_for_export(screenshots: &[Screenshot]) {
+    for shot in screenshots {
+        let path = PathBuf::from(&shot.path);
+        if !path.is_file() {
+            continue;
+        }
+
+        if let (Some(cx), Some(cy)) = (shot.click_x, shot.click_y) {
+            let parent = path.parent().unwrap_or_else(|| Path::new(""));
+            let stem = path.file_stem().unwrap_or_default().to_string_lossy();
+            let ext = path.extension().unwrap_or_default().to_string_lossy();
+            let clean_path = parent.join(format!("{stem}_clean.{ext}"));
+            if !clean_path.exists() {
+                let _ = std::fs::copy(&path, &clean_path);
+            }
+
+            let has_custom_annotations = shot.annotations_json.as_deref()
+                .map(|s| s.contains("badge") || s.contains("rect") || s.contains("circle") || s.contains("highlight") || s.contains("text"))
+                .unwrap_or(false);
+
+            if !has_custom_annotations {
+                let _ = crate::screenshots::highlight_click_on_image(&path, cx, cy, None);
+            }
+        }
+    }
 }

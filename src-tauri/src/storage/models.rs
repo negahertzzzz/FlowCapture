@@ -104,6 +104,7 @@ pub struct Screenshot {
     pub selected: i64,
     pub click_x: Option<i64>,
     pub click_y: Option<i64>,
+    pub annotations_json: Option<String>,
 }
 
 impl Screenshot {
@@ -117,6 +118,7 @@ impl Screenshot {
             selected: row.get(5)?,
             click_x: row.get(6)?,
             click_y: row.get(7)?,
+            annotations_json: row.get(8)?,
         })
     }
 }

@@ -46,6 +46,7 @@ impl Database {
         let _ = conn.execute("ALTER TABLE sessions ADD COLUMN audio_transcript TEXT", []);
         let _ = conn.execute("ALTER TABLE screenshots ADD COLUMN click_x INTEGER", []);
         let _ = conn.execute("ALTER TABLE screenshots ADD COLUMN click_y INTEGER", []);
+        let _ = conn.execute("ALTER TABLE screenshots ADD COLUMN annotations_json TEXT", []);
         Ok(())
     }
 
@@ -265,7 +266,7 @@ impl Database {
 
     pub fn insert_screenshot(&self, screenshot: &Screenshot) -> Result<()> {
         self.conn.lock().execute(
-            "INSERT INTO screenshots (id, session_id, path, timestamp_ms, trigger, selected, click_x, click_y) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO screenshots (id, session_id, path, timestamp_ms, trigger, selected, click_x, click_y, annotations_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 screenshot.id,
                 screenshot.session_id,
@@ -274,7 +275,8 @@ impl Database {
                 screenshot.trigger,
                 screenshot.selected,
                 screenshot.click_x,
-                screenshot.click_y
+                screenshot.click_y,
+                screenshot.annotations_json,
             ],
         )?;
         Ok(())
@@ -283,7 +285,7 @@ impl Database {
     pub fn list_screenshots(&self, session_id: &str) -> Result<Vec<Screenshot>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, session_id, path, timestamp_ms, trigger, selected, click_x, click_y FROM screenshots WHERE session_id = ?1 ORDER BY timestamp_ms ASC",
+            "SELECT id, session_id, path, timestamp_ms, trigger, selected, click_x, click_y, annotations_json FROM screenshots WHERE session_id = ?1 ORDER BY timestamp_ms ASC",
         )?;
         let rows = stmt.query_map(params![session_id], |row| Screenshot::from_row(row))?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -320,6 +322,20 @@ impl Database {
                 params![id],
             )?;
         }
+        Ok(())
+    }
+
+    pub fn update_screenshot_annotations(
+        &self,
+        screenshot_id: &str,
+        annotations_json: Option<&str>,
+        click_x: Option<i64>,
+        click_y: Option<i64>,
+    ) -> Result<()> {
+        self.conn.lock().execute(
+            "UPDATE screenshots SET annotations_json = ?1, click_x = ?2, click_y = ?3 WHERE id = ?4",
+            params![annotations_json, click_x, click_y, screenshot_id],
+        )?;
         Ok(())
     }
 
@@ -497,8 +513,8 @@ impl Database {
 
         for screenshot in screenshots {
             tx.execute(
-                "INSERT INTO screenshots (id, session_id, path, timestamp_ms, trigger, selected, click_x, click_y)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                "INSERT INTO screenshots (id, session_id, path, timestamp_ms, trigger, selected, click_x, click_y, annotations_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
                     screenshot.id,
                     screenshot.session_id,
@@ -508,6 +524,7 @@ impl Database {
                     screenshot.selected,
                     screenshot.click_x,
                     screenshot.click_y,
+                    screenshot.annotations_json,
                 ],
             )?;
         }

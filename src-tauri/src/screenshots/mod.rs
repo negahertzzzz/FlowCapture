@@ -188,11 +188,24 @@ impl ScreenshotEngine {
             .map(|val| val != "false")
             .unwrap_or(true);
 
-        if highlight_enabled {
+        let annotations_json = if highlight_enabled {
             if let (Some(x), Some(y)) = (pending.click_x, pending.click_y) {
-                let _ = highlight_click_on_image(&pending.path, x, y, pending.monitor_id.as_deref());
+                Some(serde_json::json!([
+                    {
+                        "id": "click_primary",
+                        "type": "click",
+                        "x": x,
+                        "y": y,
+                        "color": "#ef4444",
+                        "strokeWidth": 3
+                    }
+                ]).to_string())
+            } else {
+                None
             }
-        }
+        } else {
+            None
+        };
 
         let screenshot = Screenshot {
             id: pending.id,
@@ -203,6 +216,7 @@ impl ScreenshotEngine {
             selected: 0,
             click_x: pending.click_x,
             click_y: pending.click_y,
+            annotations_json,
         };
         self.db.insert_screenshot(&screenshot)?;
         Ok(screenshot)

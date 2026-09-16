@@ -228,7 +228,12 @@ export function ExportPanel({
               />
             </div>
             <div className="row">
-              <span className="cfg-label">Annotations</span>
+              <div>
+                <span className="cfg-label">Annotazioni grafiche</span>
+                <div style={{ fontSize: "11px", color: "var(--dim)" }}>
+                  Includi evidenziazioni, click e badge disegnati
+                </div>
+              </div>
               <Toggle
                 active={options.annotations}
                 onClick={() => patchOptions({ annotations: !options.annotations })}
@@ -379,33 +384,16 @@ export function ExportPanel({
                             <div className="shot">
                               <div className="shot-img">
                                 <img
-                                  src={convertFileSrc(shot.path)}
+                                  src={convertFileSrc(
+                                    !options.annotations && shot.path.replace(/(\.[a-zA-Z0-9]+)$/, "_clean$1")
+                                      ? shot.path
+                                      : shot.path
+                                  )}
                                   alt={step.title}
                                   onError={(event) => {
                                     (event.target as HTMLImageElement).style.display = "none";
                                   }}
                                 />
-                                {options.annotations ? (
-                                  <>
-                                    <div
-                                      className="ring"
-                                      style={{ left: "62%", top: "40%" }}
-                                    />
-                                    <svg
-                                      className="cur"
-                                      style={{
-                                        left: "60%",
-                                        top: "38%",
-                                        stroke: accentInk,
-                                      }}
-                                      viewBox="0 0 24 24"
-                                      fill="#fff"
-                                      strokeWidth="1.2"
-                                    >
-                                      <path d="m4 2 16 10-6.5 1.5L11 21 4 2Z" />
-                                    </svg>
-                                  </>
-                                ) : null}
                               </div>
                               <div className="shot-cap">
                                 <Icon name="window" size={14} />

@@ -17,6 +17,7 @@ export function SettingsPage() {
   const [transcriptionProviderId, setTranscriptionProviderId] = useState("");
   const [transcriptionModel, setTranscriptionModel] = useState("");
   const [transcriptionBaseUrl, setTranscriptionBaseUrl] = useState("");
+  const [transcriptionLanguage, setTranscriptionLanguage] = useState("it");
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -52,6 +53,7 @@ export function SettingsPage() {
       nextTransProvId,
       nextTransModel,
       nextTransUrl,
+      nextTransLang,
       nextMonitors,
     ] = await Promise.all([
       api.listProviders(),
@@ -65,6 +67,7 @@ export function SettingsPage() {
       api.getSetting("transcription_provider_id"),
       api.getSetting("transcription_model"),
       api.getSetting("transcription_base_url"),
+      api.getSetting("transcription_language"),
       api.listMonitors().catch(() => [] as MonitorInfo[]),
     ]);
     setProviders(nextProviders);
@@ -76,6 +79,7 @@ export function SettingsPage() {
     setTranscriptionProviderId(nextTransProvId ?? "");
     setTranscriptionModel(nextTransModel ?? "");
     setTranscriptionBaseUrl(nextTransUrl ?? "");
+    setTranscriptionLanguage(nextTransLang ?? "it");
     if (nextMicId) setSelectedMicId(nextMicId);
     if (nextMonitorId) setSelectedMonitorId(nextMonitorId);
     setMonitors(nextMonitors);
@@ -383,6 +387,37 @@ export function SettingsPage() {
                 }}
               />
             </div>
+
+            <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+              <label style={{ fontSize: "12px", minWidth: "140px", color: "var(--dim)", margin: 0 }}>
+                Lingua Trascrizione:
+              </label>
+              <select
+                value={transcriptionLanguage}
+                onChange={async (e) => {
+                  const val = e.target.value;
+                  setTranscriptionLanguage(val);
+                  await api.setSetting("transcription_language", val);
+                }}
+                style={{
+                  flex: 1,
+                  background: "var(--bg-3, #151b23)",
+                  color: "var(--text-1)",
+                  border: "1px solid var(--border)",
+                  padding: "5px 10px",
+                  borderRadius: "5px",
+                  fontSize: "12.5px",
+                }}
+              >
+                <option value="it">Italiano (it)</option>
+                <option value="en">Inglese (en)</option>
+                <option value="es">Spagnolo (es)</option>
+                <option value="fr">Francese (fr)</option>
+                <option value="de">Tedesco (de)</option>
+                <option value="auto">Rilevamento automatico (auto)</option>
+              </select>
+            </div>
+
             <div style={{ fontSize: "11px", color: "var(--dim)" }}>
               💡 Per <b>Ollama o server self-hosted</b>: puoi configurare un URL personalizzato (es. <code>http://localhost:11434</code> o <code>http://localhost:8000</code> per un server whisper.cpp / faster-whisper locale).
             </div>

@@ -39,6 +39,7 @@ export function HomePage() {
   const [canRecord, setCanRecord] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [captureAllEvents, setCaptureAllEvents] = useState(false);
+  const [transcriptionLanguage, setTranscriptionLanguage] = useState("it");
   const [importing, setImporting] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
@@ -78,6 +79,9 @@ export function HomePage() {
   useEffect(() => {
     api.getSetting("capture_all_events").then((val) => {
       setCaptureAllEvents(val === "true");
+    }).catch(() => undefined);
+    api.getSetting("transcription_language").then((val) => {
+      if (val) setTranscriptionLanguage(val);
     }).catch(() => undefined);
   }, []);
 
@@ -335,6 +339,38 @@ export function HomePage() {
                     </button>
                   </div>
                 </div>
+
+                {transcribeAudio && (
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "10px" }}>
+                    <label htmlFor="home-trans-lang" style={{ fontSize: "12.5px", color: "var(--text-2)" }}>
+                      Lingua Trascrizione:
+                    </label>
+                    <select
+                      id="home-trans-lang"
+                      value={transcriptionLanguage}
+                      onChange={async (e) => {
+                        const val = e.target.value;
+                        setTranscriptionLanguage(val);
+                        await api.setSetting("transcription_language", val);
+                      }}
+                      style={{
+                        background: "var(--bg-3, #151b23)",
+                        color: "var(--text-1)",
+                        border: "1px solid var(--border)",
+                        padding: "4px 8px",
+                        borderRadius: "6px",
+                        fontSize: "12px",
+                      }}
+                    >
+                      <option value="it">Italiano (it)</option>
+                      <option value="en">Inglese (en)</option>
+                      <option value="es">Spagnolo (es)</option>
+                      <option value="fr">Francese (fr)</option>
+                      <option value="de">Tedesco (de)</option>
+                      <option value="auto">Rilevamento automatico (auto)</option>
+                    </select>
+                  </div>
+                )}
               </div>
             ) : null}
           </div>

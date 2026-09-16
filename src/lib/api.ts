@@ -43,6 +43,7 @@ export interface Screenshot {
   selected: number;
   click_x?: number | null;
   click_y?: number | null;
+  annotations_json?: string | null;
 }
 
 export interface ProviderConfig {
@@ -91,6 +92,11 @@ export interface WorkflowStep {
   description: string;
   timestamp_ms: number;
   screenshot_ids: string[];
+}
+
+export interface NewStepPayload {
+  title: string;
+  description: string;
 }
 
 export interface RedactionSummary {
@@ -215,6 +221,26 @@ export const api = {
     invoke<string>("export_session_bundle", { sessionId, targetPath }),
   importSessionBundle: (archivePath: string) =>
     invoke<Session>("import_session_bundle", { archivePath }),
+  translateDocumentation: (sessionId: string, targetLanguage?: string) =>
+    invoke<string>("translate_documentation", { sessionId, targetLanguage }),
+  saveAnnotatedScreenshot: (
+    sessionId: string,
+    screenshotId: string,
+    imageBase64: string,
+    clickX: number | null,
+    clickY: number | null,
+    newStep?: { title: string; description: string },
+    annotationsJson?: string | null,
+  ) =>
+    invoke<Screenshot>("save_annotated_screenshot", {
+      sessionId,
+      screenshotId,
+      imageBase64,
+      clickX,
+      clickY,
+      newStep,
+      annotationsJson,
+    }),
   onAiProgress: (
     sessionId: string,
     handler: (event: AiProgressEvent) => void,

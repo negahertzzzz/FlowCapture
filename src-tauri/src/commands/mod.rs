@@ -485,7 +485,9 @@ pub async fn transcribe_session_audio(
         provider.base_url = Some(url_override);
     }
 
-    let transcript = crate::ai::transcription::transcribe_audio(&provider, &audio_path)
+    let transcription_lang = state.db.get_setting("transcription_language").unwrap_or(None);
+
+    let transcript = crate::ai::transcription::transcribe_audio(&provider, &audio_path, transcription_lang.as_deref())
         .await
         .map_err(|err| err.to_string())?;
 
@@ -528,4 +530,155 @@ pub fn import_session_bundle(
     crate::storage::bundle::import_session_bundle(&state.db, path)
         .map_err(|err| err.to_string())
 }
+
+#[tauri::command]
+pub async fn translate_documentation(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+    target_language: Option<String>,
+) -> Result<String, String> {
+    let session = state
+        .db
+        .get_session(&session_id)
+        .map_err(|err| err.to_string())?
+        .ok_or_else(|| "Session not found".to_string())?;
+
+    let current_md = session
+        .documentation_md
+        .ok_or_else(|| "No documentation generated for this session yet".to_string())?;
+
+    if current_md.trim().is_empty() {
+        return Err("Documentation is empty".to_string());
+    }
+
+    let provider_config = state
+        .db
+        .get_enabled_provider()
+        .map_err(|err| err.to_string())?
+        .ok_or_else(|| "No enabled AI provider configured for translation".to_string())?;
+
+    let llm = crate::ai::providers::build_provider(&provider_config)
+        .map_err(|err| err.to_string())?;
+
+    let lang = target_language.unwrap_or_else(|| "Italian".to_string());
+
+    let system = "You are an expert technical documentation translator specializing in software user guides and SOPs.";
+    let prompt = format!(
+        "Translate the following workflow documentation Markdown into {lang}.\n\n\
+        CRITICAL RULES:\n\
+        1. PRESERVE EVERY SCREENSHOT IMAGE LINK EXACTLY AS IS. For example: `![Step X](...)` must keep the EXACT URL or file path unchanged! Do not translate, remove, or modify any image path.\n\
+        2. Preserve all Markdown structure, headers (#, ##, ###), lists, tables, bold text, and code blocks.\n\
+        3. Translate all explanations, action descriptions, titles, and instructions into natural, fluent, professional {lang}.\n\
+        4. Return ONLY the translated Markdown without conversational pleasantries or commentary.\n\n\
+        Current Markdown:\n\
+        {current_md}"
+    );
+
+    let translated = llm.generate(system, &prompt).await.map_err(|err| err.to_string())?;
+
+    state
+        .db
+        .update_session_documentation(&session_id, &translated)
+        .map_err(|err| err.to_string())?;
+
+    Ok(translated)
+}
+
+#[derive(serde::Deserialize)]
+pub struct NewStepPayload {
+    pub title: String,
+    pub description: String,
+}
+
+#[tauri::command]
+pub fn save_annotated_screenshot(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+    screenshot_id: String,
+    image_base64: String,
+    click_x: Option<i64>,
+    click_y: Option<i64>,
+    new_step: Option<NewStepPayload>,
+    annotations_json: Option<String>,
+) -> Result<crate::storage::models::Screenshot, String> {
+    let screenshots = state.db.list_screenshots(&session_id).map_err(|err| err.to_string())?;
+    let screenshot = screenshots
+        .into_iter()
+        .find(|s| s.id == screenshot_id)
+        .ok_or_else(|| "Screenshot not found".to_string())?;
+
+    let original_path = std::path::PathBuf::from(&screenshot.path);
+    if original_path.is_file() {
+        let parent = original_path.parent().unwrap_or(std::path::Path::new(""));
+        let stem = original_path.file_stem().unwrap_or_default().to_string_lossy();
+        let ext = original_path.extension().unwrap_or_default().to_string_lossy();
+        let clean_path = parent.join(format!("{stem}_clean.{ext}"));
+        if !clean_path.exists() {
+            let _ = std::fs::copy(&original_path, &clean_path);
+        }
+    }
+
+    let raw_base64 = if let Some(idx) = image_base64.find("base64,") {
+        &image_base64[idx + 7..]
+    } else {
+        &image_base64
+    };
+
+    use base64::Engine;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(raw_base64.trim())
+        .map_err(|e| format!("Invalid base64 image data: {e}"))?;
+
+    std::fs::write(&screenshot.path, &bytes)
+        .map_err(|e| format!("Failed to save screenshot file: {e}"))?;
+
+    state.db.update_screenshot_annotations(&screenshot_id, annotations_json.as_deref(), click_x, click_y)
+        .map_err(|err| err.to_string())?;
+
+    if let Some(step_data) = new_step {
+        if let Ok(Some(session)) = state.db.get_session(&session_id) {
+            let mut steps: Vec<crate::storage::models::WorkflowStep> = session
+                .steps_json
+                .as_deref()
+                .and_then(|json_str| serde_json::from_str(json_str).ok())
+                .unwrap_or_default();
+
+            let next_step_num = steps.len() + 1;
+            let new_step_obj = crate::storage::models::WorkflowStep {
+                step: next_step_num,
+                title: step_data.title.clone(),
+                description: step_data.description.clone(),
+                timestamp_ms: screenshot.timestamp_ms,
+                screenshot_ids: vec![screenshot.id.clone()],
+            };
+            steps.push(new_step_obj);
+
+            let new_steps_json = serde_json::to_string(&steps).unwrap_or_default();
+
+            let mut md = session.documentation_md.unwrap_or_default();
+            let img_line = format!("![Step {}]({})\n\n", next_step_num, screenshot.path);
+            md.push_str(&format!(
+                "\n\n### Step {}: {}\n\n{}\n\n{}",
+                next_step_num,
+                step_data.title,
+                step_data.description,
+                img_line
+            ));
+
+            let _ = state.db.save_documentation(
+                &session_id,
+                &md,
+                &new_steps_json,
+                session.compressed_events_json.as_deref().unwrap_or("[]"),
+            );
+        }
+    }
+
+    let updated_screenshots = state.db.list_screenshots(&session_id).map_err(|err| err.to_string())?;
+    updated_screenshots
+        .into_iter()
+        .find(|s| s.id == screenshot_id)
+        .ok_or_else(|| "Screenshot not found after save".to_string())
+}
+
 

@@ -126,7 +126,9 @@ impl AiPipeline {
                     trans_provider.base_url = Some(url_override);
                 }
 
-                match crate::ai::transcription::transcribe_audio(&trans_provider, audio_path).await {
+                let transcription_lang = self.db.get_setting("transcription_language").unwrap_or(None);
+
+                match crate::ai::transcription::transcribe_audio(&trans_provider, audio_path, transcription_lang.as_deref()).await {
                     Ok(transcript) => {
                         let _ = self.db.update_session_audio_transcript(session_id, &transcript);
                         emit_log(app, session_id, &format!("Trascrizione vocale completata con {}: {} caratteri", trans_provider.name, transcript.len()));

@@ -164,11 +164,30 @@ function AppShell() {
     }
   }, [recording, elapsed]);
 
+  const [sidebarOpen, setSidebarOpen] = useState(() => {
+    return localStorage.getItem("flowcapture_sidebar_open") !== "false";
+  });
+
+  function toggleSidebar(open: boolean) {
+    setSidebarOpen(open);
+    localStorage.setItem("flowcapture_sidebar_open", open ? "true" : "false");
+  }
+
   return (
     <div className="win">
-      <div className="app-body">
-        <Sidebar />
-        <main className="main">
+      <div className={`app-body ${sidebarOpen ? "sidebar-open" : "sidebar-collapsed"}`}>
+        {sidebarOpen && <Sidebar onClose={() => toggleSidebar(false)} />}
+        <main className="main" style={{ position: "relative" }}>
+          {!sidebarOpen && (
+            <button
+              type="button"
+              className="btn-toggle-sidebar"
+              onClick={() => toggleSidebar(true)}
+              title="Mostra barra laterale"
+            >
+              ☰ Menu
+            </button>
+          )}
           <Routes>
             <Route path="/" element={<HomePage />} />
             <Route path="/sessions/:sessionId" element={<SessionPage />} />

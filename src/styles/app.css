@@ -16,7 +16,58 @@ body { background: var(--bg); overflow: hidden; }
   overflow: hidden;
 }
 
-.app-body { flex: 1; display: grid; grid-template-columns: 256px 1fr; min-height: 0; }
+.app-body {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  min-height: 0;
+  transition: grid-template-columns 0.2s ease-in-out;
+}
+
+.app-body.sidebar-collapsed {
+  grid-template-columns: 0px 1fr;
+}
+
+.btn-toggle-sidebar {
+  position: fixed;
+  top: 14px;
+  left: 14px;
+  z-index: 100;
+  background: var(--surface-2, #1b2331);
+  color: var(--text);
+  border: 1px solid var(--hair-2, rgba(255,255,255,0.15));
+  border-radius: 8px;
+  padding: 6px 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+  transition: 0.15s;
+}
+.btn-toggle-sidebar:hover {
+  background: var(--surface, #242f42);
+  border-color: var(--mint, #5fe9b8);
+}
+
+.btn-collapse-sidebar {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: auto;
+  transition: 0.15s;
+}
+.btn-collapse-sidebar:hover {
+  background: rgba(255,255,255,0.08);
+  color: var(--text);
+}
 
 /* ---------- Sidebar ---------- */
 .side {
@@ -101,7 +152,12 @@ body { background: var(--bg); overflow: hidden; }
 .main::-webkit-scrollbar {
   display: none;
 }
-.page { max-width: 1080px; padding: 36px 44px 80px; }
+.page {
+  max-width: 100%;
+  width: 100%;
+  padding: 30px 48px 80px;
+  box-sizing: border-box;
+}
 
 /* ---------- Home ---------- */
 .home-hero .kick { font-family:var(--mono); font-size:12px; letter-spacing:.18em; color:var(--mint); }

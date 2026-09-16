@@ -35,6 +35,7 @@ pub struct BundleScreenshotMeta {
     pub selected: i64,
     pub click_x: Option<i64>,
     pub click_y: Option<i64>,
+    pub annotations_json: Option<String>,
     pub file_name: String,
 }
 
@@ -96,6 +97,7 @@ pub fn export_session_bundle(
             selected: s.selected,
             click_x: s.click_x,
             click_y: s.click_y,
+            annotations_json: s.annotations_json.clone(),
             file_name,
         });
     }
@@ -282,6 +284,7 @@ pub fn import_session_bundle(
             selected: meta.selected,
             click_x: meta.click_x,
             click_y: meta.click_y,
+            annotations_json: meta.annotations_json.clone(),
         });
     }
 

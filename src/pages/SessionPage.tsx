@@ -4,7 +4,8 @@ import { save } from "@tauri-apps/plugin-dialog";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { ProcessingPanel } from "@/components/ai/ProcessingPanel";
-import { MarkdownPreview } from "@/components/documentation/MarkdownPreview";
+import { MarkdownEditor } from "@/components/documentation/MarkdownEditor";
+import { ImageAnnotationModal } from "@/components/sessions/ImageAnnotationModal";
 import { ExportPanel } from "@/components/export/ExportPanel";
 import { AppButton } from "@/components/ui/AppButton";
 import { Icon } from "@/components/ui/Icon";
@@ -51,13 +52,14 @@ export function SessionPage() {
   const [markdown, setMarkdown] = useState("");
   const [busy, setBusy] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
+  const [translating, setTranslating] = useState(false);
+  const [annotatingScreenshot, setAnnotatingScreenshot] = useState<Screenshot | null>(null);
   const [exportingBundle, setExportingBundle] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [redactionSummary, setRedactionSummary] = useState<RedactionSummary | null>(null);
   const [replayIndex, setReplayIndex] = useState(0);
   const [tab, setTab] = useState<TabName>("Timeline");
-  const [docMode, setDocMode] = useState<"preview" | "edit">("preview");
 
   const isCurrentSessionGenerating =
     activeJob?.sessionId === sessionId && !activeJob.isDone;
@@ -102,7 +104,6 @@ export function SessionPage() {
   useEffect(() => {
     if (activeJob?.sessionId === sessionId && activeJob.isDone && activeJob.result) {
       setMarkdown(activeJob.result.markdown);
-      setDocMode("preview");
       setTab("Documentation");
       setRedactionSummary(activeJob.result.redaction_summary);
       setToast("Documentation generated");
@@ -224,6 +225,22 @@ export function SessionPage() {
       setError(String(err));
     } finally {
       setTranscribing(false);
+    }
+  }
+
+  async function handleTranslateDocumentation(targetLanguage = "Italian") {
+    setTranslating(true);
+    setError(null);
+    setToast(null);
+    try {
+      const translated = await api.translateDocumentation(sessionId, targetLanguage);
+      setMarkdown(translated);
+      setToast("Documentazione tradotta in italiano con successo!");
+      await refresh();
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setTranslating(false);
     }
   }
 
@@ -434,20 +451,31 @@ export function SessionPage() {
                       }}
                     />
                   </div>
-                  <div className="scap">
+                  <div className="scap" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                     <span className="sn">{shot.trigger ?? "capture"}</span>
-                    <button
-                      type="button"
-                      className="del"
-                      onClick={() =>
-                        api
-                          .deleteScreenshot(shot.id)
-                          .then(refresh)
-                          .catch((err) => setError(String(err)))
-                      }
-                    >
-                      <Icon name="trash" size={16} />
-                    </button>
+                    <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-sm"
+                        style={{ padding: "2px 6px", fontSize: "11px", display: "flex", alignItems: "center", gap: "4px" }}
+                        onClick={() => setAnnotatingScreenshot(shot)}
+                        title="Modifica screenshot, sposta click o aggiungi annotazioni"
+                      >
+                        🎨 Modifica
+                      </button>
+                      <button
+                        type="button"
+                        className="del"
+                        onClick={() =>
+                          api
+                            .deleteScreenshot(shot.id)
+                            .then(refresh)
+                            .catch((err) => setError(String(err)))
+                        }
+                      >
+                        <Icon name="trash" size={16} />
+                      </button>
+                    </div>
                   </div>
                 </div>
               ))
@@ -458,49 +486,46 @@ export function SessionPage() {
 
       {tab === "Documentation" ? (
         <div className="card panel">
-          <h3>Generated Documentation</h3>
-          <div className="pd">
-            Review the rendered guide or edit the Markdown source before exporting.
-          </div>
-          <div className="doc-toolbar">
-            <AppButton size="sm" icon="save" disabled={busy} onClick={handleSaveDocumentation}>
-              Save
-            </AppButton>
-            <AppButton
-              size="sm"
-              icon="copy"
-              disabled={!markdown}
-              onClick={handleCopyMarkdown}
-            >
-              Copy Markdown
-            </AppButton>
-            <AppButton
-              size="sm"
-              kind={docMode === "preview" ? "primary" : "ghost"}
-              icon="eye"
-              onClick={() => setDocMode("preview")}
-            >
-              Preview
-            </AppButton>
-            <AppButton
-              size="sm"
-              kind={docMode === "edit" ? "primary" : "ghost"}
-              icon="edit"
-              onClick={() => setDocMode("edit")}
-            >
-              Edit Markdown
-            </AppButton>
-          </div>
-          {docMode === "preview" ? (
-            <MarkdownPreview markdown={markdown} screenshots={screenshots} />
-          ) : (
-            <div className="doc-edit">
-              <textarea
-                value={markdown}
-                onChange={(event) => setMarkdown(event.target.value)}
-              />
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px", flexWrap: "wrap", gap: "10px" }}>
+            <div>
+              <h3>Documentazione Generata</h3>
+              <div className="pd">
+                Modifica il Markdown con la barra degli strumenti avanzata, inserisci screenshot o passaggi e visualizza l'anteprima live.
+              </div>
             </div>
-          )}
+            <div style={{ display: "flex", gap: "8px", alignItems: "center", flexWrap: "wrap" }}>
+              <AppButton
+                size="sm"
+                kind="ghost"
+                icon="sparkles"
+                disabled={!markdown || translating || busy}
+                onClick={() => handleTranslateDocumentation("Italian")}
+                title="Traduci il testo della guida in Italiano preservando la formattazione e le immagini degli screenshot"
+              >
+                {translating ? "Traduzione in corso…" : "🌐 Traduci in Italiano (AI)"}
+              </AppButton>
+              <AppButton
+                size="sm"
+                icon="copy"
+                disabled={!markdown}
+                onClick={handleCopyMarkdown}
+              >
+                Copia Markdown
+              </AppButton>
+              <AppButton size="sm" kind="primary" icon="save" disabled={busy || translating} onClick={handleSaveDocumentation}>
+                Salva Modifiche
+              </AppButton>
+            </div>
+          </div>
+
+          <div style={{ marginTop: "14px" }}>
+            <MarkdownEditor
+              value={markdown}
+              onChange={setMarkdown}
+              screenshots={screenshots}
+              disabled={busy || translating}
+            />
+          </div>
         </div>
       ) : null}
 
@@ -620,6 +645,19 @@ export function SessionPage() {
                     <div className="rwin" />
                   )}
                 </div>
+                {replayScreenshot && (
+                  <div style={{ marginTop: "10px", display: "flex", justifyContent: "flex-end" }}>
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => setAnnotatingScreenshot(replayScreenshot)}
+                      style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px" }}
+                      title="Modifica questo screenshot, sposta click o aggiungi annotazioni grafiche"
+                    >
+                      🎨 Modifica / Evidenzia questo Step
+                    </button>
+                  </div>
+                )}
                 <div className="rp-nav">
                   <AppButton
                     size="sm"
@@ -703,6 +741,18 @@ export function SessionPage() {
           onRevealExport={handleRevealExport}
         />
       ) : null}
+
+      {annotatingScreenshot && (
+        <ImageAnnotationModal
+          sessionId={sessionId}
+          screenshot={annotatingScreenshot}
+          onClose={() => setAnnotatingScreenshot(null)}
+          onSaved={async () => {
+            setToast("Screenshot aggiornato con successo!");
+            await refresh();
+          }}
+        />
+      )}
 
       <Toast message={toast} onDismiss={() => setToast(null)} />
     </div>

@@ -5,19 +5,35 @@ import { useSessionsContext } from "@/context/SessionsContext";
 import { statusDotClass } from "@/lib/icons";
 import { formatDuration } from "@/lib/utils";
 
-export function Sidebar() {
+interface SidebarProps {
+  onClose?: () => void;
+}
+
+export function Sidebar({ onClose }: SidebarProps) {
   const navigate = useNavigate();
   const location = useLocation();
   const { sessions } = useSessionsContext();
 
   return (
     <aside className="side">
-      <div className="logo">
-        <Logo />
-        <div>
-          <div className="lt">FlowCapture</div>
-          <div className="ls">Workflow documentation</div>
+      <div className="logo" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
+          <Logo />
+          <div>
+            <div className="lt">FlowCapture</div>
+            <div className="ls">Workflow documentation</div>
+          </div>
         </div>
+        {onClose && (
+          <button
+            type="button"
+            className="btn-collapse-sidebar"
+            onClick={onClose}
+            title="Chiudi barra laterale"
+          >
+            ◀
+          </button>
+        )}
       </div>
 
       <NavLink

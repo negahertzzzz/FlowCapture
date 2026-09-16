@@ -9,6 +9,7 @@ use crate::storage::models::ProviderConfig;
 pub async fn transcribe_audio(
     provider: &ProviderConfig,
     audio_path: &Path,
+    language: Option<&str>,
 ) -> Result<String> {
     let bytes = std::fs::read(audio_path)
         .with_context(|| format!("failed to read audio file at {}", audio_path.display()))?;
@@ -18,9 +19,9 @@ pub async fn transcribe_audio(
     }
 
     match provider.provider_type.as_str() {
-        "openai" => transcribe_openai(provider, audio_path, bytes).await,
-        "gemini" => transcribe_gemini(provider, audio_path, bytes).await,
-        "ollama" => transcribe_ollama(provider, audio_path, bytes).await,
+        "openai" => transcribe_openai(provider, audio_path, bytes, language).await,
+        "gemini" => transcribe_gemini(provider, audio_path, bytes, language).await,
+        "ollama" => transcribe_ollama(provider, audio_path, bytes, language).await,
         other => {
             anyhow::bail!("Audio transcription is supported with OpenAI (Whisper), Gemini, and Local/Self-hosted (Whisper/Ollama). Configured provider: {other}")
         }
@@ -39,6 +40,7 @@ async fn transcribe_openai(
     provider: &ProviderConfig,
     audio_path: &Path,
     bytes: Vec<u8>,
+    language: Option<&str>,
 ) -> Result<String> {
     let api_key = provider
         .api_key
@@ -56,9 +58,13 @@ async fn transcribe_openai(
 
     let client = create_transcription_client();
     let part = reqwest::multipart::Part::bytes(bytes).file_name(file_name);
-    let form = reqwest::multipart::Form::new()
+    let mut form = reqwest::multipart::Form::new()
         .part("file", part)
         .text("model", "whisper-1");
+
+    if let Some(lang) = language.filter(|l| !l.is_empty() && *l != "auto") {
+        form = form.text("language", lang.to_string());
+    }
 
     let response = client
         .post(format!("{base_url}/audio/transcriptions"))
@@ -80,6 +86,7 @@ async fn transcribe_gemini(
     provider: &ProviderConfig,
     audio_path: &Path,
     bytes: Vec<u8>,
+    language: Option<&str>,
 ) -> Result<String> {
     let api_key = provider
         .api_key
@@ -109,6 +116,16 @@ async fn transcribe_gemini(
 
     let base64_audio = base64::engine::general_purpose::STANDARD.encode(&bytes);
 
+    let prompt_text = match language {
+        Some("it") => "Transcribe the spoken audio verbatim in Italian. Output only the transcript without conversational pleasantries or commentary.".to_string(),
+        Some("en") => "Transcribe the spoken audio verbatim in English. Output only the transcript without conversational pleasantries or commentary.".to_string(),
+        Some("es") => "Transcribe the spoken audio verbatim in Spanish. Output only the transcript without conversational pleasantries or commentary.".to_string(),
+        Some("fr") => "Transcribe the spoken audio verbatim in French. Output only the transcript without conversational pleasantries or commentary.".to_string(),
+        Some("de") => "Transcribe the spoken audio verbatim in German. Output only the transcript without conversational pleasantries or commentary.".to_string(),
+        Some(other) if !other.is_empty() && other != "auto" => format!("Transcribe the spoken audio verbatim in {other}. Output only the transcript without conversational pleasantries or commentary."),
+        _ => "Transcribe the spoken audio verbatim in its original spoken language (Italian by default if detected). Output only the transcript without conversational pleasantries or commentary.".to_string(),
+    };
+
     let client = create_transcription_client();
     let response = client
         .post(format!("{base_url}/models/{model}:generateContent"))
@@ -124,7 +141,7 @@ async fn transcribe_gemini(
                         }
                     },
                     {
-                        "text": "Transcribe the spoken audio verbatim in its original spoken language (such as Italian, English, etc.). Output only the transcript without conversational pleasantries or commentary."
+                        "text": prompt_text
                     }
                 ]
             }]
@@ -145,6 +162,7 @@ async fn transcribe_ollama(
     provider: &ProviderConfig,
     audio_path: &Path,
     bytes: Vec<u8>,
+    language: Option<&str>,
 ) -> Result<String> {
     let base_url = provider
         .base_url
@@ -164,9 +182,13 @@ async fn transcribe_ollama(
 
     // 1. First attempt: OpenAI-compatible audio transcription endpoint (used by whisper.cpp server, faster-whisper server, vLLM, LocalAI)
     let part = reqwest::multipart::Part::bytes(bytes.clone()).file_name(file_name.clone());
-    let form = reqwest::multipart::Form::new()
+    let mut form = reqwest::multipart::Form::new()
         .part("file", part)
         .text("model", model.clone());
+
+    if let Some(lang) = language.filter(|l| !l.is_empty() && *l != "auto") {
+        form = form.text("language", lang.to_string());
+    }
 
     let mut req = client.post(format!("{base_url}/v1/audio/transcriptions")).multipart(form);
     if let Some(key) = &provider.api_key {
@@ -186,6 +208,12 @@ async fn transcribe_ollama(
     }
 
     // 2. Second attempt: Ollama chat/generate API with audio base64 if a multimodal model is used
+    let chat_instruction = match language {
+        Some("it") => "Transcribe the spoken audio in Italian. Output only the transcript verbatim.",
+        Some(other) if !other.is_empty() && other != "auto" => &format!("Transcribe the spoken audio in {other}. Output only the transcript verbatim."),
+        _ => "Transcribe the spoken audio in its original language. Output only the transcript verbatim.",
+    };
+
     let base64_audio = base64::engine::general_purpose::STANDARD.encode(&bytes);
     let res = client
         .post(format!("{base_url}/api/chat"))
@@ -194,7 +222,7 @@ async fn transcribe_ollama(
             "messages": [
                 {
                     "role": "user",
-                    "content": "Transcribe the spoken audio in its original language. Output only the transcript verbatim.",
+                    "content": chat_instruction,
                     "images": [base64_audio]
                 }
             ],
