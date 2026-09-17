@@ -151,7 +151,7 @@ impl ExportEngine {
         screenshots: &[Screenshot],
     ) -> Result<String> {
         let steps = self.load_steps(session_id)?;
-        let (title, overview) = infer_workflow_summary(&session.title, &[], &steps);
+        let (title, overview) = infer_workflow_summary(&session.title, &[], &steps, None);
         Ok(render_documentation_markdown(
             &title,
             &overview,

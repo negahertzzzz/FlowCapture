@@ -247,7 +247,7 @@ impl AiPipeline {
         }
 
         let (doc_title, overview) =
-            infer_workflow_summary(&session.title, &redacted_events, &steps);
+            infer_workflow_summary(&session.title, &redacted_events, &steps, audio_transcript.as_deref());
         let base_markdown = render_documentation_markdown(&doc_title, &overview, &steps, &screenshots);
 
         let writer_job = self
@@ -389,13 +389,20 @@ impl AiPipeline {
         );
         let response = llm
             .generate(
-                "You consolidate noisy desktop recordings into concise workflow steps. \
+                "You consolidate noisy desktop recordings into concise, instructive workflow steps. \
 Return JSON array only with fields step, title, description, timestamp_ms. \
-Merge duplicate navigation and repeated clicks. Keep at most 15 steps. \
-When an event provides 'element_name', 'element_type', or 'url', explicitly describe clicking that specific element \
-(e.g., 'Click \"Submit\" button' instead of generic 'Click target element' or using the page title). \
-Do not invent actions that are not supported by the events. \
-Do not use placeholders.",
+Rules: \
+- Merge duplicate navigation and repeated clicks. Keep at most 15 steps. \
+- When an event provides 'element_name', 'element_type', or 'url', explicitly describe clicking that specific element \
+(e.g., 'Click \"Submit\" button' instead of generic 'Click target element'). \
+- If a User's Spoken Audio Transcript is provided, USE IT to: \
+(a) understand the user's intent and goal for each action, \
+(b) enrich step descriptions with the user's own explanations and context, \
+(c) match spoken explanations to the corresponding events by timing. \
+- Each step description must explain WHAT to do AND WHY (the purpose of the action). \
+- Include app names, window titles, menu paths, and UI element names in descriptions. \
+- Do not invent actions that are not supported by the events. \
+- Do not use placeholders.",
                 &prompt,
                 &options,
             )
@@ -431,20 +438,34 @@ Overview: {overview}\n\
 Steps JSON:\n{}\n\
 Current Markdown:\n{base_markdown}\n\n\
 Rules:\n\
-- Keep the same number of steps and preserve every screenshot image line exactly.\n\
-- Explicitly identify the specific UI elements clicked (buttons, inputs, links) from the steps and events instead of referring only to page titles.\n\
-- Include web URLs where relevant when available in the events.\n\
-- Use the user's spoken audio explanation to describe each step and clarify actions.\n\
+- Write a COMPLETE USER GUIDE in Markdown with these sections:\n\
+  1. Title: A specific, descriptive title for the workflow\n\
+  2. Overview: What this guide is about, what the user will accomplish, and why it is useful\n\
+  3. Prerequisites: Any software, accounts, or setup needed before starting (infer from the apps and URLs used)\n\
+  4. Steps: Detailed numbered steps with clear instructions\n\
+  5. Expected Result: What the user should see or have at the end of the workflow\n\
+- Keep the same number of steps and preserve every screenshot image line (![...](...)) EXACTLY as-is, unchanged.\n\
+- For each step, explain:\n\
+  (a) WHAT to do (the specific action)\n\
+  (b) WHERE to do it (which app, window, panel, or menu)\n\
+  (c) HOW to do it (click which button, type what text, navigate which menu path)\n\
+  (d) WHY (the purpose of this action in the overall workflow)\n\
+- Use the event data fields: 'element_name' for exact UI element names, 'element_type' \
+for element kinds (button, link, input), and 'url' for web addresses.\n\
+- If a User's Spoken Audio Transcript is provided, integrate the user's own \
+explanations to describe each step's purpose and add context not visible from clicks alone.\n\
 - Infer the user's goal from the recorded actions and audio explanation, and write a clear overview.\n\
 - Replace generic session titles with a specific workflow title when possible.\n\
-- Write concrete instructions using app names and pane titles from the steps.\n\
+- Write concrete instructions using real app names, window titles, and menu paths from the steps.\n\
 - Never use bracket placeholders like [MISSING SCREENSHOT] or [SPECIFY ...].\n\
 - Never add TODO/TBD notes.\n\
 - Return Markdown only.",
             serde_json::to_string_pretty(steps)?
         );
         llm.generate(
-            "You are a technical writer turning desktop recordings into polished SOPs.",
+            "You are an expert technical writer creating detailed, step-by-step user guides \
+from desktop workflow recordings. Your output must be a complete, self-contained guide \
+that a user with no prior knowledge can follow to reproduce the exact workflow.",
             &prompt,
             &options,
         )

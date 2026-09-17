@@ -179,6 +179,7 @@ pub fn infer_workflow_summary(
     session_title: &str,
     events: &[SessionEvent],
     steps: &[WorkflowStep],
+    audio_transcript: Option<&str>,
 ) -> (String, String) {
     let mut panes = HashSet::new();
     let mut apps = HashSet::new();
@@ -198,8 +199,33 @@ pub fn infer_workflow_summary(
         }
     }
 
+    // Try to extract a meaningful summary from the audio transcript
+    let transcript_hint = audio_transcript
+        .filter(|t| !t.trim().is_empty())
+        .map(|t| {
+            // Take the first ~120 chars of the transcript as context hint
+            let trimmed = t.trim();
+            if trimmed.len() > 120 {
+                format!("{}...", &trimmed[..trimmed.char_indices().take(120).last().map(|(i, _)| i).unwrap_or(120)])
+            } else {
+                trimmed.to_string()
+            }
+        });
+
     let title = if is_generic_session_title(session_title) {
-        if panes.is_empty() {
+        if let Some(ref hint) = transcript_hint {
+            // Use the first sentence of the transcript as a title hint
+            let first_sentence = hint.split(['.', '!', '?']).next().unwrap_or(hint).trim();
+            if first_sentence.len() > 10 && first_sentence.len() < 80 {
+                format!("How to: {first_sentence}")
+            } else if panes.len() == 1 {
+                format!("How to use {}", panes.iter().next().unwrap())
+            } else if panes.is_empty() {
+                "Workflow Documentation".to_string()
+            } else {
+                format!("Workflow: {}", summarize_panes(&panes))
+            }
+        } else if panes.is_empty() {
             "Workflow Documentation".to_string()
         } else if panes.len() == 1 {
             format!("How to use {}", panes.iter().next().unwrap())
@@ -212,6 +238,13 @@ pub fn infer_workflow_summary(
 
     let overview = if steps.is_empty() {
         "This workflow was recorded with FlowCapture.".to_string()
+    } else if let Some(ref hint) = transcript_hint {
+        format!(
+            "This guide walks through {} steps to complete **{}**. The user explained: \"{}\"",
+            steps.len(),
+            title,
+            hint
+        )
     } else if panes.is_empty() {
         format!(
             "This guide walks through {} recorded actions to complete **{}**.",
@@ -236,7 +269,7 @@ pub fn render_documentation_markdown(
     steps: &[WorkflowStep],
     screenshots: &[Screenshot],
 ) -> String {
-    let mut output = format!("# {title}\n\n{overview}\n\n## Steps\n\n");
+    let mut output = format!("# {title}\n\n{overview}\n\n## Prerequisites\n\nEnsure you have access to the applications and accounts used in this workflow.\n\n## Steps\n\n");
     let lookup = screenshot_lookup(screenshots);
 
     for step in steps {
@@ -252,6 +285,8 @@ pub fn render_documentation_markdown(
             }
         }
     }
+
+    output.push_str("## Expected Result\n\nAfter completing all steps, the workflow should be finished successfully.\n");
 
     output.trim().to_string()
 }

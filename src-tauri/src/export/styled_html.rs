@@ -44,7 +44,7 @@ pub fn render_styled_export_html(
     output_mode: &str,
 ) -> String {
     let options = options.clone().normalized();
-    let (title, overview) = infer_workflow_summary(&session.title, &[], steps);
+    let (title, overview) = infer_workflow_summary(&session.title, &[], steps, None);
     let accent = accent_for(&options.accent, &options.theme);
     let accent_ink = if options.theme == "light" {
         "#ffffff"
