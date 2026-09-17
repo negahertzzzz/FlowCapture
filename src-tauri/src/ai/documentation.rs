@@ -51,29 +51,72 @@ pub fn build_workflow_steps(events: &[SessionEvent]) -> Vec<WorkflowStep> {
                     .unwrap_or("left");
                 let x = event.payload.get("x").and_then(|v| v.as_i64()).unwrap_or(0);
                 let y = event.payload.get("y").and_then(|v| v.as_i64()).unwrap_or(0);
+                let elem_name = event
+                    .payload
+                    .get("element_name")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty());
+                let elem_type = event
+                    .payload
+                    .get("element_type")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty());
+                let elem_url = event
+                    .payload
+                    .get("url")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty());
+
                 let context = last_window
                     .as_ref()
                     .map(|(app, title)| format!(" in **{title}** ({app})"))
                     .unwrap_or_default();
-                let click_key = format!("{button}:{x}:{y}:{context}");
+                let click_key = format!("{button}:{x}:{y}:{context}:{:?}", elem_name);
 
                 if last_click_key.as_deref() == Some(click_key.as_str()) {
                     continue;
                 }
                 last_click_key = Some(click_key);
 
+                let (title_text, desc_text) = match elem_name {
+                    Some(name) => {
+                        let action = match button {
+                            "right" => "Right-click",
+                            "middle" => "Middle-click",
+                            _ => "Click",
+                        };
+                        let type_desc = elem_type
+                            .map(|t| format!(" ({t})"))
+                            .unwrap_or_default();
+                        let title = format!("{action} \"{name}\"");
+                        let mut desc = format!("{action} on **{name}**{type_desc}{context}.");
+                        if let Some(url) = elem_url {
+                            desc.push_str(&format!(" (URL: `{url}`)"));
+                        }
+                        (title, desc)
+                    }
+                    None => {
+                        let title = format!("{button}-click");
+                        let desc = format!(
+                            "{}{}.",
+                            match button {
+                                "right" => "Right-click the target element",
+                                "middle" => "Middle-click the target element",
+                                _ => "Click the target element",
+                            },
+                            context
+                        );
+                        (title, desc)
+                    }
+                };
+
                 steps.push(WorkflowStep {
                     step: 0,
-                    title: format!("{}-click", button),
-                    description: format!(
-                        "{}{}.",
-                        match button {
-                            "right" => "Right-click the target element",
-                            "middle" => "Middle-click the target element",
-                            _ => "Click the target element",
-                        },
-                        context
-                    ),
+                    title: title_text,
+                    description: desc_text,
                     timestamp_ms: event.timestamp_ms,
                     screenshot_ids: Vec::new(),
                 });

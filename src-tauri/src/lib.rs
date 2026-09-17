@@ -11,6 +11,7 @@ mod security;
 mod state;
 mod storage;
 mod thread_util;
+pub mod logger;
 
 use std::sync::Arc;
 
@@ -89,6 +90,9 @@ pub fn run() {
             commands::import_session_bundle,
             commands::translate_documentation,
             commands::save_annotated_screenshot,
+            commands::open_logs_folder,
+            commands::open_browser_extension_folder,
+            commands::get_browser_bridge_status,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

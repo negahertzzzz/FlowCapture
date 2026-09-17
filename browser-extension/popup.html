@@ -1,0 +1,38 @@
+﻿<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <title>FlowCapture Companion</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="header">
+    <img src="logo.png" alt="Logo" class="logo" />
+    <div class="title-wrap">
+      <h3>FlowCapture</h3>
+      <span class="sub">Browser Companion</span>
+    </div>
+  </div>
+
+  <div class="card status-card">
+    <div class="indicator-row">
+      <span id="status-dot" class="dot disconnected"></span>
+      <span id="status-text" class="status-label">Verifica connessione...</span>
+    </div>
+    <div id="recording-badge" class="badge hidden">🔴 Registrazione attiva</div>
+  </div>
+
+  <div class="card info-card">
+    <p>
+      Questa estensione invia automaticamente i pulsanti, campi e link cliccati all'app desktop <strong>FlowCapture</strong> per arricchire la documentazione generata.
+    </p>
+  </div>
+
+  <div class="footer">
+    <span class="bridge-info">Bridge: 127.0.0.1:41789</span>
+    <button id="refresh-btn" class="btn-refresh">Ricarica</button>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -30,6 +30,7 @@ pub struct AppState {
     pub screenshot_engine: Arc<Mutex<ScreenshotEngine>>,
     pub active_session: Mutex<Option<ActiveRecording>>,
     pub active_ai_cancellations: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    pub browser_bridge: crate::platform::browser_bridge::BrowserBridgeState,
 }
 
 pub struct ActiveRecording {
@@ -43,6 +44,12 @@ pub struct ActiveRecording {
 
 impl AppState {
     pub fn new(db: Arc<Database>, platform: PlatformServices) -> Result<Self> {
+        let browser_bridge = crate::platform::browser_bridge::BrowserBridgeState::new();
+        crate::platform::browser_bridge::start_browser_bridge_server(
+            browser_bridge.clone(),
+            crate::platform::browser_bridge::DEFAULT_BRIDGE_PORT,
+        );
+
         Ok(Self {
             db: db.clone(),
             platform: Arc::new(Mutex::new(platform)),
@@ -51,6 +58,7 @@ impl AppState {
             screenshot_engine: Arc::new(Mutex::new(ScreenshotEngine::new(db.clone()))),
             active_session: Mutex::new(None),
             active_ai_cancellations: Mutex::new(HashMap::new()),
+            browser_bridge,
         })
     }
 
@@ -108,6 +116,8 @@ impl AppState {
         let mon_id = effective_monitor_id.clone();
         let collector_paused = Arc::new(AtomicBool::new(false));
         let collector_paused_clone = collector_paused.clone();
+        self.browser_bridge.set_recording(true);
+        let browser_bridge_clone = self.browser_bridge.clone();
         let start_result = (|| -> Result<(JoinHandle<()>, Arc<AtomicBool>)> {
             let mut platform = self.platform.lock();
             platform.input.start()?;
@@ -127,6 +137,7 @@ impl AppState {
                 self.db.clone(),
                 self.platform.clone(),
                 self.screenshot_engine.clone(),
+                browser_bridge_clone,
                 session_id.clone(),
                 session_dir,
             );
@@ -147,6 +158,7 @@ impl AppState {
                 Ok(session)
             }
             Err(err) => {
+                self.browser_bridge.set_recording(false);
                 let _ = self.rollback_failed_start(&session_id);
                 Err(err)
             }
@@ -167,6 +179,7 @@ impl AppState {
         active.collector_stop.store(true, Ordering::SeqCst);
         self.screenshot_engine.lock().stop(&session_id)?;
         signal_platform_stop(self);
+        self.browser_bridge.set_recording(false);
 
         if !join_thread_with_timeout(active.collector_handle, COLLECTOR_JOIN_TIMEOUT) {
             eprintln!("FlowCapture: recording collector did not stop within timeout");
@@ -177,7 +190,7 @@ impl AppState {
         if let Some(mut platform) = self.platform.try_lock() {
             for input in platform.input.drain_events() {
                 if should_persist_event(&input.event_type) {
-                    pending_events.push(stored_from_input(&session_id, input));
+                    pending_events.push(stored_from_input(&session_id, input, &self.browser_bridge));
                 }
             }
             for window in platform.windows.drain_events() {
@@ -297,6 +310,7 @@ fn spawn_recording_collector(
     db: Arc<Database>,
     platform: Arc<Mutex<PlatformServices>>,
     screenshot_engine: Arc<Mutex<ScreenshotEngine>>,
+    browser_bridge: crate::platform::browser_bridge::BrowserBridgeState,
     session_id: String,
     session_dir: PathBuf,
 ) -> JoinHandle<()> {
@@ -387,7 +401,7 @@ fn spawn_recording_collector(
             let mut batch = Vec::new();
             for input in input_events {
                 if should_persist_event(&input.event_type) {
-                    batch.push(stored_from_input(&session_id, input));
+                    batch.push(stored_from_input(&session_id, input, &browser_bridge));
                 }
             }
             for window in window_events {
@@ -424,7 +438,57 @@ fn should_persist_event(event_type: &str) -> bool {
     !matches!(event_type, "mouse_move")
 }
 
-fn stored_from_input(session_id: &str, event: crate::platform::CapturedInputEvent) -> StoredEvent {
+fn stored_from_input(
+    session_id: &str,
+    mut event: crate::platform::CapturedInputEvent,
+    browser_bridge: &crate::platform::browser_bridge::BrowserBridgeState,
+) -> StoredEvent {
+    if event.event_type == "mouse_click" || event.event_type == "mouse_double_click" {
+        let x = event.payload.get("x").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+        let y = event.payload.get("y").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
+
+        // 1. Try matching with browser DOM event from the extension
+        if let Some(dom) = browser_bridge.match_and_take_event(event.timestamp_ms, x, y) {
+            if let Some(obj) = event.payload.as_object_mut() {
+                if !dom.text.is_empty() {
+                    obj.insert("element_name".to_string(), serde_json::Value::String(dom.text));
+                }
+                obj.insert("element_type".to_string(), serde_json::Value::String(dom.tag.to_lowercase()));
+                obj.insert("url".to_string(), serde_json::Value::String(dom.url));
+                obj.insert("page_title".to_string(), serde_json::Value::String(dom.page_title));
+                if let Some(sel) = dom.selector {
+                    obj.insert("selector".to_string(), serde_json::Value::String(sel));
+                }
+                if let Some(role) = dom.role {
+                    obj.insert("element_role".to_string(), serde_json::Value::String(role));
+                }
+            }
+        } else {
+            // 2. Fallback to Windows UI Automation
+            #[cfg(target_os = "windows")]
+            {
+                if let Some(uia) = crate::platform::windows_uia::get_element_at_point(x, y) {
+                    if let Some(obj) = event.payload.as_object_mut() {
+                        if !uia.name.is_empty() {
+                            obj.insert("element_name".to_string(), serde_json::Value::String(uia.name));
+                        }
+                        let type_desc = if !uia.localized_type.is_empty() {
+                            uia.localized_type
+                        } else {
+                            uia.control_type
+                        };
+                        if !type_desc.is_empty() {
+                            obj.insert("element_type".to_string(), serde_json::Value::String(type_desc));
+                        }
+                        if let Some(cls) = uia.class_name {
+                            obj.insert("class_name".to_string(), serde_json::Value::String(cls));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     StoredEvent {
         id: Uuid::new_v4().to_string(),
         session_id: session_id.to_string(),

@@ -434,9 +434,12 @@ pub async fn save_session_audio(
 
 #[tauri::command]
 pub async fn transcribe_session_audio(
+    app: AppHandle,
     state: State<'_, Arc<AppState>>,
     session_id: String,
 ) -> Result<String, String> {
+    crate::ai::emit_log(&app, &session_id, "Inizializzazione trascrizione vocale del microfono...");
+
     let session = state
         .db
         .get_session(&session_id)
@@ -445,10 +448,12 @@ pub async fn transcribe_session_audio(
 
     let audio_path_str = session
         .audio_path
-        .ok_or_else(|| "No audio recorded for this session".to_string())?;
+        .ok_or_else(|| "Nessun file audio registrato per questa sessione".to_string())?;
     let audio_path = std::path::PathBuf::from(&audio_path_str);
     if !audio_path.is_file() {
-        return Err("Audio file not found on disk".to_string());
+        let msg = "File audio non trovato su disco".to_string();
+        crate::ai::emit_log(&app, &session_id, &format!("ERRORE: {msg}"));
+        return Err(msg);
     }
 
     // Check if user set a dedicated provider, model or base URL for transcription
@@ -468,14 +473,14 @@ pub async fn transcribe_session_audio(
                     .db
                     .get_enabled_provider()
                     .map_err(|err| err.to_string())?
-                    .ok_or_else(|| "No AI provider configured for transcription".to_string())?
+                    .ok_or_else(|| "Nessun provider AI configurato per la trascrizione".to_string())?
             )
     } else {
         state
             .db
             .get_enabled_provider()
             .map_err(|err| err.to_string())?
-            .ok_or_else(|| "No enabled AI provider configured for transcription".to_string())?
+            .ok_or_else(|| "Nessun provider AI abilitato per la trascrizione".to_string())?
     };
 
     if let Some(model_override) = transcription_model_override.filter(|s| !s.trim().is_empty()) {
@@ -487,15 +492,44 @@ pub async fn transcribe_session_audio(
 
     let transcription_lang = state.db.get_setting("transcription_language").unwrap_or(None);
 
-    let transcript = crate::ai::transcription::transcribe_audio(&provider, &audio_path, transcription_lang.as_deref())
-        .await
-        .map_err(|err| err.to_string())?;
+    let filename = audio_path.file_name().and_then(|n| n.to_str()).unwrap_or("audio");
+    let file_size = std::fs::metadata(&audio_path).map(|m| m.len()).unwrap_or(0);
+    crate::ai::emit_log(
+        &app,
+        &session_id,
+        &format!(
+            "Connessione al servizio di trascrizione '{}' (endpoint: {:?}, modello: {:?})...",
+            provider.name, provider.base_url, provider.model
+        ),
+    );
+    crate::ai::emit_log(
+        &app,
+        &session_id,
+        &format!("Invio file '{filename}' ({file_size} bytes, lingua: {:?}). In attesa...", transcription_lang),
+    );
+
+    let transcript = match crate::ai::transcription::transcribe_audio(&provider, &audio_path, transcription_lang.as_deref()).await {
+        Ok(t) => {
+            crate::ai::emit_log(
+                &app,
+                &session_id,
+                &format!("Trascrizione vocale completata con successo ({} caratteri)!", t.len()),
+            );
+            t
+        }
+        Err(err) => {
+            let msg = format!("Errore durante la trascrizione audio: {err}");
+            crate::ai::emit_log(&app, &session_id, &format!("ERRORE: {msg}"));
+            return Err(msg);
+        }
+    };
 
     state
         .db
         .update_session_audio_transcript(&session_id, &transcript)
         .map_err(|err| err.to_string())?;
 
+    crate::ai::emit_log(&app, &session_id, "Testo trascritto salvato con successo nel database!");
     Ok(transcript)
 }
 
@@ -533,55 +567,156 @@ pub fn import_session_bundle(
 
 #[tauri::command]
 pub async fn translate_documentation(
+    app: AppHandle,
     state: State<'_, Arc<AppState>>,
     session_id: String,
     target_language: Option<String>,
 ) -> Result<String, String> {
+    crate::ai::emit_log(&app, &session_id, "Inizializzazione traduzione della documentazione...");
+
     let session = state
         .db
         .get_session(&session_id)
         .map_err(|err| err.to_string())?
-        .ok_or_else(|| "Session not found".to_string())?;
+        .ok_or_else(|| "Sessione non trovata".to_string())?;
 
     let current_md = session
         .documentation_md
-        .ok_or_else(|| "No documentation generated for this session yet".to_string())?;
+        .ok_or_else(|| "Nessuna documentazione generata per questa sessione".to_string())?;
 
     if current_md.trim().is_empty() {
-        return Err("Documentation is empty".to_string());
+        return Err("La documentazione è vuota".to_string());
     }
+
+    // Estrai tutti i tag immagine del Markdown: ![alt](url)
+    // Sostituiscili temporaneamente con un token compatto tipo <!-- FC_SCREENSHOT_0 -->
+    // in modo che l'LLM riceva e traduca SOLO IL TESTO puro, senza alterare o confondere i percorsi immagine.
+    let image_regex = regex::Regex::new(r"!\[([^\]]*)\]\(([^)]+)\)")
+        .map_err(|e| format!("Regex error: {e}"))?;
+
+    let mut images: Vec<String> = Vec::new();
+    let text_to_translate = image_regex
+        .replace_all(&current_md, |caps: &regex::Captures| {
+            let idx = images.len();
+            images.push(caps[0].to_string());
+            format!("<!-- FC_SCREENSHOT_{idx} -->")
+        })
+        .to_string();
+
+    crate::ai::emit_log(
+        &app,
+        &session_id,
+        &format!(
+            "Isolate {} immagini: all'AI verrà inviato unicamente il testo puro.",
+            images.len()
+        ),
+    );
 
     let provider_config = state
         .db
         .get_enabled_provider()
         .map_err(|err| err.to_string())?
-        .ok_or_else(|| "No enabled AI provider configured for translation".to_string())?;
+        .ok_or_else(|| "Nessun provider AI abilitato per la traduzione. Configura un provider in Impostazioni.".to_string())?;
 
     let llm = crate::ai::providers::build_provider(&provider_config)
         .map_err(|err| err.to_string())?;
 
     let lang = target_language.unwrap_or_else(|| "Italian".to_string());
+    let provider_name = provider_config.name.clone();
+    let model_name = provider_config.model.clone().unwrap_or_else(|| "default".to_string());
+    let endpoint = provider_config.base_url.clone().unwrap_or_else(|| "default".to_string());
 
-    let system = "You are an expert technical documentation translator specializing in software user guides and SOPs.";
-    let prompt = format!(
-        "Translate the following workflow documentation Markdown into {lang}.\n\n\
-        CRITICAL RULES:\n\
-        1. PRESERVE EVERY SCREENSHOT IMAGE LINK EXACTLY AS IS. For example: `![Step X](...)` must keep the EXACT URL or file path unchanged! Do not translate, remove, or modify any image path.\n\
-        2. Preserve all Markdown structure, headers (#, ##, ###), lists, tables, bold text, and code blocks.\n\
-        3. Translate all explanations, action descriptions, titles, and instructions into natural, fluent, professional {lang}.\n\
-        4. Return ONLY the translated Markdown without conversational pleasantries or commentary.\n\n\
-        Current Markdown:\n\
-        {current_md}"
+    crate::ai::emit_log(
+        &app,
+        &session_id,
+        &format!(
+            "Connessione a '{provider_name}' ({endpoint}) con modello '{model_name}'..."
+        ),
     );
 
-    let translated = llm.generate(system, &prompt).await.map_err(|err| err.to_string())?;
+    let char_count = text_to_translate.len();
+    let word_count = text_to_translate.split_whitespace().count();
+    crate::ai::emit_log(
+        &app,
+        &session_id,
+        &format!(
+            "Invio testo al server AI ({char_count} caratteri, ~{word_count} parole). In attesa della traduzione in {lang}..."
+        ),
+    );
+
+    let system = "You are an expert technical documentation translator specializing in software user guides and SOPs. Translate accurately into natural, fluent Italian.";
+    let prompt = format!(
+        "Traduci in lingua {lang} la seguente documentazione di workflow Markdown.\n\n\
+        REGOLE FONDAMENTALI:\n\
+        1. NON alterare, non tradurre e non rimuovere i segnaposto <!-- FC_SCREENSHOT_X -->. Mantienili esattamente nella stessa posizione.\n\
+        2. Traduci tutti i titoli (#, ##, ###), le descrizioni delle azioni, le spiegazioni e gli elenchi in un italiano chiaro, naturale e professionale.\n\
+        3. Preserva fedelmente la formattazione Markdown (grassetti, corsivi, elenchi numerati e puntati, tabelle, blocchi di codice).\n\
+        4. Rispondi ESCLUSIVAMENTE con il Markdown tradotto, senza alcuna premessa, saluto o commento conversazionale.\n\n\
+        Testo Markdown da tradurre:\n\
+        {text_to_translate}"
+    );
+
+    let options = crate::ai::providers::get_ai_generate_options(
+        &state.db,
+        crate::ai::providers::AiOperation::Translation,
+    );
+
+    crate::ai::emit_log(
+        &app,
+        &session_id,
+        "Applicata modalità No-Think (ragionamento interno disabilitato per traduzione diretta)...",
+    );
+
+    let translated_res = llm.generate(system, &prompt, &options).await;
+    let translated_raw = match translated_res {
+        Ok(t) => {
+            crate::ai::emit_log(
+                &app,
+                &session_id,
+                &format!("Risposta ricevuta con successo dal server AI ({} caratteri)!", t.len()),
+            );
+            t
+        }
+        Err(err) => {
+            let err_msg = format!("Errore durante la traduzione con {provider_name}: {err}");
+            crate::ai::emit_log(&app, &session_id, &format!("ERRORE: {err_msg}"));
+            return Err(err_msg);
+        }
+    };
+
+    crate::ai::emit_log(&app, &session_id, "Ripristino dei riferimenti originali agli screenshot...");
+    let mut final_md = translated_raw.trim().to_string();
+
+    // Rimuovi eventuali ```markdown e ``` che alcuni modelli avvolgono attorno alla risposta
+    if final_md.starts_with("```markdown") {
+        final_md = final_md.trim_start_matches("```markdown").to_string();
+    } else if final_md.starts_with("```") {
+        final_md = final_md.trim_start_matches("```").to_string();
+    }
+    if final_md.ends_with("```") {
+        final_md = final_md.trim_end_matches("```").to_string();
+    }
+    final_md = final_md.trim().to_string();
+
+    for (idx, original_tag) in images.iter().enumerate() {
+        let placeholder = format!("<!-- FC_SCREENSHOT_{idx} -->");
+        if final_md.contains(&placeholder) {
+            final_md = final_md.replace(&placeholder, original_tag);
+        } else {
+            // Se il modello ha per errore rimosso il placeholder, riaccoda l'immagine per non perderla
+            final_md.push_str(&format!("\n\n{original_tag}\n"));
+        }
+    }
 
     state
         .db
-        .update_session_documentation(&session_id, &translated)
+        .update_session_documentation(&session_id, &final_md)
         .map_err(|err| err.to_string())?;
 
-    Ok(translated)
+    crate::ai::emit_log(&app, &session_id, "Documentazione tradotta salvata nel database!");
+    crate::ai::emit_log(&app, &session_id, "Traduzione in italiano completata con successo!");
+
+    Ok(final_md)
 }
 
 #[derive(serde::Deserialize)]
@@ -680,5 +815,71 @@ pub fn save_annotated_screenshot(
         .find(|s| s.id == screenshot_id)
         .ok_or_else(|| "Screenshot not found after save".to_string())
 }
+
+#[tauri::command]
+pub fn open_logs_folder() -> Result<String, String> {
+    let log_dir = crate::logger::get_log_dir();
+    let path_str = log_dir.to_string_lossy().to_string();
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new("explorer").arg(&log_dir).spawn();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open").arg(&log_dir).spawn();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = std::process::Command::new("xdg-open").arg(&log_dir).spawn();
+    }
+    Ok(path_str)
+}
+
+#[tauri::command]
+pub fn open_browser_extension_folder() -> Result<String, String> {
+    let mut candidate = std::env::current_dir()
+        .map(|p| p.join("browser-extension"))
+        .unwrap_or_else(|_| std::path::PathBuf::from("browser-extension"));
+
+    if !candidate.is_dir() {
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(parent) = exe.parent() {
+                let p2 = parent.join("browser-extension");
+                if p2.is_dir() {
+                    candidate = p2;
+                } else if let Some(grandparent) = parent.parent() {
+                    let p3 = grandparent.join("browser-extension");
+                    if p3.is_dir() {
+                        candidate = p3;
+                    }
+                }
+            }
+        }
+    }
+
+    let path_str = candidate.to_string_lossy().to_string();
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new("explorer").arg(&candidate).spawn();
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open").arg(&candidate).spawn();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = std::process::Command::new("xdg-open").arg(&candidate).spawn();
+    }
+    Ok(path_str)
+}
+
+#[tauri::command]
+pub fn get_browser_bridge_status(state: State<'_, Arc<AppState>>) -> Result<serde_json::Value, String> {
+    Ok(serde_json::json!({
+        "port": crate::platform::browser_bridge::DEFAULT_BRIDGE_PORT,
+        "recording": state.browser_bridge.is_recording(),
+    }))
+}
+
 
 

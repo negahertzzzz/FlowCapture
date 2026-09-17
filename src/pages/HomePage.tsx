@@ -433,9 +433,39 @@ export function HomePage() {
       {error ? (
         <div
           className="card set-card"
-          style={{ marginTop: 18, borderColor: "rgba(255,138,138,.35)", color: "var(--rose)" }}
+          style={{
+            marginTop: 18,
+            borderColor: "rgba(255,138,138,.45)",
+            background: "rgba(255,100,100,0.06)",
+            color: "var(--rose)",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: "12px",
+          }}
         >
-          {error}
+          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            <Icon name="alert" size={18} />
+            <span style={{ fontSize: "13px", lineHeight: "1.4" }}>{error}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setError(null)}
+            style={{
+              background: "rgba(255, 255, 255, 0.08)",
+              border: "none",
+              borderRadius: "6px",
+              color: "var(--rose)",
+              cursor: "pointer",
+              padding: "4px 8px",
+              fontSize: "13px",
+              fontWeight: "bold",
+              flexShrink: 0,
+            }}
+            title="Chiudi messaggio di errore"
+          >
+            ✕
+          </button>
         </div>
       ) : null}
 

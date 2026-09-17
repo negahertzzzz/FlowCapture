@@ -30,8 +30,8 @@ pub async fn transcribe_audio(
 
 fn create_transcription_client() -> Client {
     Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(10))
-        .timeout(std::time::Duration::from_secs(45))
+        .connect_timeout(std::time::Duration::from_secs(15))
+        .timeout(std::time::Duration::from_secs(300))
         .build()
         .unwrap_or_else(|_| Client::new())
 }
@@ -45,38 +45,98 @@ async fn transcribe_openai(
     let api_key = provider
         .api_key
         .clone()
-        .context("OpenAI API key not configured")?;
+        .filter(|k| !k.trim().is_empty())
+        .unwrap_or_else(|| "not-needed".to_string());
     let base_url = provider
         .base_url
         .clone()
         .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
+
+    let clean_base = base_url.trim().trim_end_matches('/');
+    let url = if clean_base.ends_with("/audio/transcriptions") {
+        clean_base.to_string()
+    } else if clean_base.ends_with("/v1") || clean_base.starts_with("https://api.openai.com") {
+        format!("{clean_base}/audio/transcriptions")
+    } else {
+        format!("{clean_base}/v1/audio/transcriptions")
+    };
 
     let file_name = audio_path
         .file_name()
         .map(|f| f.to_string_lossy().to_string())
         .unwrap_or_else(|| "recording.webm".to_string());
 
+    let model_name = provider
+        .model
+        .clone()
+        .unwrap_or_else(|| "whisper-1".to_string());
+
+    let bytes_len = bytes.len();
     let client = create_transcription_client();
-    let part = reqwest::multipart::Part::bytes(bytes).file_name(file_name);
+    let part = reqwest::multipart::Part::bytes(bytes).file_name(file_name.clone());
     let mut form = reqwest::multipart::Form::new()
         .part("file", part)
-        .text("model", "whisper-1");
+        .text("model", model_name.clone());
 
     if let Some(lang) = language.filter(|l| !l.is_empty() && *l != "auto") {
         form = form.text("language", lang.to_string());
     }
 
-    let response = client
-        .post(format!("{base_url}/audio/transcriptions"))
-        .bearer_auth(api_key)
+    let payload_desc = format!(
+        "File: {file_name} ({bytes_len} bytes), Modello: {model_name}, Lingua: {:?}",
+        language
+    );
+    crate::logger::log_api_request("Whisper/OpenAI Audio", "POST", &url, None, &payload_desc);
+
+    let start_time = std::time::Instant::now();
+    let send_res = client
+        .post(&url)
+        .bearer_auth(&api_key)
         .multipart(form)
         .send()
-        .await?
-        .error_for_status()?
-        .json::<serde_json::Value>()
-        .await?;
+        .await;
+    let duration_ms = start_time.elapsed().as_millis();
 
-    response["text"]
+    let response = match send_res {
+        Ok(resp) => resp,
+        Err(e) => {
+            let err_msg = if e.is_timeout() {
+                format!("Timeout scaduto (oltre 5 minuti) in attesa di trascrizione da {url}.")
+            } else if e.is_connect() {
+                format!("Impossibile connettersi al server di trascrizione su {url}. Verifica che sia attivo.")
+            } else {
+                format!("Errore di rete verso {url}: {e}")
+            };
+            crate::logger::log_api_error("Whisper/OpenAI Audio", &url, duration_ms, &err_msg);
+            anyhow::bail!("{err_msg}");
+        }
+    };
+
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+
+    if !status.is_success() {
+        crate::logger::log_api_error(
+            "Whisper/OpenAI Audio",
+            &url,
+            duration_ms,
+            &format!("HTTP {status}: {body}"),
+        );
+        anyhow::bail!("Whisper API su {url} ha risposto con errore HTTP {status}: {body}");
+    }
+
+    crate::logger::log_api_response(
+        "Whisper/OpenAI Audio",
+        &url,
+        status.as_u16(),
+        duration_ms,
+        &body,
+    );
+
+    let json_val: serde_json::Value = serde_json::from_str(&body)
+        .context("risposta JSON non valida da Whisper")?;
+
+    json_val["text"]
         .as_str()
         .map(str::to_string)
         .context("missing OpenAI Whisper transcription in response")

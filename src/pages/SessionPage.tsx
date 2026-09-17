@@ -53,6 +53,13 @@ export function SessionPage() {
   const [busy, setBusy] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [translating, setTranslating] = useState(false);
+  const [translationLogs, setTranslationLogs] = useState<string[]>([]);
+  const [showTranslationLog, setShowTranslationLog] = useState(false);
+  const [translationStatus, setTranslationStatus] = useState<"idle" | "translating" | "success" | "error">("idle");
+
+  const [audioLogs, setAudioLogs] = useState<string[]>([]);
+  const [showAudioLog, setShowAudioLog] = useState(false);
+  const [audioStatus, setAudioStatus] = useState<"idle" | "transcribing" | "success" | "error">("idle");
   const [annotatingScreenshot, setAnnotatingScreenshot] = useState<Screenshot | null>(null);
   const [exportingBundle, setExportingBundle] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -217,13 +224,27 @@ export function SessionPage() {
     setTranscribing(true);
     setError(null);
     setToast(null);
+    setShowAudioLog(true);
+    setAudioStatus("transcribing");
+    setAudioLogs([`[${new Date().toLocaleTimeString()}] Avvio richiesta di trascrizione vocale...`]);
+
+    let unlisten: (() => void) | undefined;
     try {
+      unlisten = await api.onAiLog(sessionId, (evt) => {
+        setAudioLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ${evt.message}`]);
+      });
+
       await api.transcribeSessionAudio(sessionId);
+      setAudioStatus("success");
       setToast("Audio trascritto con successo!");
       await refresh();
     } catch (err) {
-      setError(String(err));
+      const msg = String(err);
+      setError(msg);
+      setAudioStatus("error");
+      setAudioLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ❌ ERRORE: ${msg}`]);
     } finally {
+      if (unlisten) unlisten();
       setTranscribing(false);
     }
   }
@@ -232,14 +253,28 @@ export function SessionPage() {
     setTranslating(true);
     setError(null);
     setToast(null);
+    setShowTranslationLog(true);
+    setTranslationStatus("translating");
+    setTranslationLogs([`[${new Date().toLocaleTimeString()}] Avvio richiesta di traduzione in ${targetLanguage}...`]);
+
+    let unlisten: (() => void) | undefined;
     try {
+      unlisten = await api.onAiLog(sessionId, (evt) => {
+        setTranslationLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ${evt.message}`]);
+      });
+
       const translated = await api.translateDocumentation(sessionId, targetLanguage);
       setMarkdown(translated);
+      setTranslationStatus("success");
       setToast("Documentazione tradotta in italiano con successo!");
       await refresh();
     } catch (err) {
-      setError(String(err));
+      const msg = String(err);
+      setError(msg);
+      setTranslationStatus("error");
+      setTranslationLogs((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ❌ ERRORE: ${msg}`]);
     } finally {
+      if (unlisten) unlisten();
       setTranslating(false);
     }
   }
@@ -365,9 +400,39 @@ export function SessionPage() {
       {error ? (
         <div
           className="card set-card"
-          style={{ marginTop: 18, borderColor: "rgba(255,138,138,.35)", color: "var(--rose)" }}
+          style={{
+            marginTop: 18,
+            borderColor: "rgba(255,138,138,.45)",
+            background: "rgba(255,100,100,0.06)",
+            color: "var(--rose)",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: "12px",
+          }}
         >
-          {error}
+          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            <Icon name="alert" size={18} />
+            <span style={{ fontSize: "13px", lineHeight: "1.4" }}>{error}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setError(null)}
+            style={{
+              background: "rgba(255, 255, 255, 0.08)",
+              border: "none",
+              borderRadius: "6px",
+              color: "var(--rose)",
+              cursor: "pointer",
+              padding: "4px 8px",
+              fontSize: "13px",
+              fontWeight: "bold",
+              flexShrink: 0,
+            }}
+            title="Chiudi messaggio di errore"
+          >
+            ✕
+          </button>
         </div>
       ) : null}
 
@@ -500,7 +565,7 @@ export function SessionPage() {
                 icon="sparkles"
                 disabled={!markdown || translating || busy}
                 onClick={() => handleTranslateDocumentation("Italian")}
-                title="Traduci il testo della guida in Italiano preservando la formattazione e le immagini degli screenshot"
+                title="Traduci il solo testo della guida in Italiano (le immagini vengono isolate e ripristinate intatte)"
               >
                 {translating ? "Traduzione in corso…" : "🌐 Traduci in Italiano (AI)"}
               </AppButton>
@@ -517,6 +582,123 @@ export function SessionPage() {
               </AppButton>
             </div>
           </div>
+
+          {showTranslationLog && (
+            <div
+              style={{
+                marginTop: "12px",
+                marginBottom: "16px",
+                background: "#0d1117",
+                border: `1px solid ${
+                  translationStatus === "error"
+                    ? "rgba(239, 68, 68, 0.45)"
+                    : translationStatus === "success"
+                    ? "rgba(52, 211, 153, 0.45)"
+                    : "rgba(96, 165, 250, 0.4)"
+                }`,
+                borderRadius: "10px",
+                padding: "14px 16px",
+                boxShadow: "0 6px 20px rgba(0, 0, 0, 0.35)",
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  marginBottom: "8px",
+                }}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "8px",
+                    fontWeight: 600,
+                    fontSize: "13px",
+                    color:
+                      translationStatus === "error"
+                        ? "#f87171"
+                        : translationStatus === "success"
+                        ? "#34d399"
+                        : "#60a5fa",
+                  }}
+                >
+                  {translationStatus === "translating" && (
+                    <span
+                      style={{
+                        display: "inline-block",
+                        width: "12px",
+                        height: "12px",
+                        border: "2px solid #60a5fa",
+                        borderTopColor: "transparent",
+                        borderRadius: "50%",
+                        animation: "spin 0.8s linear infinite",
+                      }}
+                    />
+                  )}
+                  {translationStatus === "success" && <Icon name="check" size={15} />}
+                  {translationStatus === "error" && <Icon name="alert" size={15} />}
+                  <span>
+                    {translationStatus === "translating"
+                      ? "Traduzione AI in corso (invio solo testo, immagini protette)..."
+                      : translationStatus === "success"
+                      ? "Traduzione completata con successo!"
+                      : "Errore durante la traduzione con il server AI"}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowTranslationLog(false)}
+                  style={{
+                    background: "rgba(255, 255, 255, 0.08)",
+                    border: "none",
+                    borderRadius: "6px",
+                    color: "#8b949e",
+                    cursor: "pointer",
+                    padding: "3px 8px",
+                    fontSize: "11px",
+                  }}
+                >
+                  Chiudi log ✕
+                </button>
+              </div>
+
+              <div
+                style={{
+                  fontFamily: "var(--mono, monospace)",
+                  fontSize: "12px",
+                  lineHeight: "1.5",
+                  color: "#c9d1d9",
+                  maxHeight: "160px",
+                  overflowY: "auto",
+                  background: "rgba(0, 0, 0, 0.4)",
+                  borderRadius: "6px",
+                  padding: "10px 12px",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "4px",
+                }}
+              >
+                {translationLogs.map((log, idx) => (
+                  <div
+                    key={idx}
+                    style={{
+                      color: log.includes("ERRORE")
+                        ? "#f87171"
+                        : log.includes("successo")
+                        ? "#34d399"
+                        : log.includes("Isolate")
+                        ? "#fbbf24"
+                        : "#e6edf3",
+                    }}
+                  >
+                    {log}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           <div style={{ marginTop: "14px" }}>
             <MarkdownEditor
@@ -548,6 +730,121 @@ export function SessionPage() {
               </AppButton>
             ) : null}
           </div>
+
+          {showAudioLog && (
+            <div
+              style={{
+                marginTop: "12px",
+                marginBottom: "16px",
+                background: "#0d1117",
+                border: `1px solid ${
+                  audioStatus === "error"
+                    ? "rgba(239, 68, 68, 0.45)"
+                    : audioStatus === "success"
+                    ? "rgba(52, 211, 153, 0.45)"
+                    : "rgba(96, 165, 250, 0.4)"
+                }`,
+                borderRadius: "10px",
+                padding: "14px 16px",
+                boxShadow: "0 6px 20px rgba(0, 0, 0, 0.35)",
+              }}
+            >
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  marginBottom: "8px",
+                }}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "8px",
+                    fontWeight: 600,
+                    fontSize: "13px",
+                    color:
+                      audioStatus === "error"
+                        ? "#f87171"
+                        : audioStatus === "success"
+                        ? "#34d399"
+                        : "#60a5fa",
+                  }}
+                >
+                  {audioStatus === "transcribing" && (
+                    <span
+                      style={{
+                        display: "inline-block",
+                        width: "12px",
+                        height: "12px",
+                        border: "2px solid #60a5fa",
+                        borderTopColor: "transparent",
+                        borderRadius: "50%",
+                        animation: "spin 0.8s linear infinite",
+                      }}
+                    />
+                  )}
+                  {audioStatus === "success" && <Icon name="check" size={15} />}
+                  {audioStatus === "error" && <Icon name="alert" size={15} />}
+                  <span>
+                    {audioStatus === "transcribing"
+                      ? "Trascrizione audio in corso con servizio AI..."
+                      : audioStatus === "success"
+                      ? "Trascrizione vocale completata!"
+                      : "Errore durante la trascrizione vocale"}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowAudioLog(false)}
+                  style={{
+                    background: "rgba(255, 255, 255, 0.08)",
+                    border: "none",
+                    borderRadius: "6px",
+                    color: "#8b949e",
+                    cursor: "pointer",
+                    padding: "3px 8px",
+                    fontSize: "11px",
+                  }}
+                >
+                  Chiudi log ✕
+                </button>
+              </div>
+
+              <div
+                style={{
+                  fontFamily: "var(--mono, monospace)",
+                  fontSize: "12px",
+                  lineHeight: "1.5",
+                  color: "#c9d1d9",
+                  maxHeight: "160px",
+                  overflowY: "auto",
+                  background: "rgba(0, 0, 0, 0.4)",
+                  borderRadius: "6px",
+                  padding: "10px 12px",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "4px",
+                }}
+              >
+                {audioLogs.map((log, idx) => (
+                  <div
+                    key={idx}
+                    style={{
+                      color: log.includes("ERRORE")
+                        ? "#f87171"
+                        : log.includes("successo")
+                        ? "#34d399"
+                        : "#e6edf3",
+                    }}
+                  >
+                    {log}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {session.audio_path ? (
             <div style={{ marginTop: "16px", display: "flex", flexDirection: "column", gap: "16px" }}>

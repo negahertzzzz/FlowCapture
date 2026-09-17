@@ -268,4 +268,8 @@ export const api = {
         handler(event.payload);
       }
     }),
+  openLogsFolder: () => invoke<string>("open_logs_folder"),
+  openBrowserExtensionFolder: () => invoke<string>("open_browser_extension_folder"),
+  getBrowserBridgeStatus: () =>
+    invoke<{ port: number; recording: boolean }>("get_browser_bridge_status"),
 };

@@ -12,6 +12,9 @@ mod traits;
 #[cfg(target_os = "windows")]
 mod windows;
 
+pub mod browser_bridge;
+pub mod windows_uia;
+
 pub use permissions::{
     check_recording_permissions, open_accessibility_settings, open_screen_recording_settings,
     preflight_recording_start, prepare_recording_permissions, request_accessibility_permission,

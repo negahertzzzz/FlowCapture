@@ -719,8 +719,24 @@ export function ImageAnnotationModal({
       </div>
 
       {error ? (
-        <div style={{ background: "rgba(239, 68, 68, 0.2)", color: "#f87171", padding: "8px 20px", fontSize: "13px" }}>
-          {error}
+        <div style={{ background: "rgba(239, 68, 68, 0.2)", color: "#f87171", padding: "8px 20px", fontSize: "13px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <span>{error}</span>
+          <button
+            type="button"
+            onClick={() => setError(null)}
+            style={{
+              background: "none",
+              border: "none",
+              color: "#f87171",
+              cursor: "pointer",
+              fontSize: "14px",
+              padding: "2px 6px",
+              lineHeight: 1,
+            }}
+            title="Chiudi"
+          >
+            ✕
+          </button>
         </div>
       ) : null}
 

@@ -377,6 +377,10 @@ impl AiPipeline {
             String::new()
         };
 
+        let options = crate::ai::providers::get_ai_generate_options(
+            &self.db,
+            crate::ai::providers::AiOperation::DocumentGeneration,
+        );
         let llm = build_provider(provider)?;
         let prompt = format!(
             "Session title: {session_title}\n{audio_section}Current steps:\n{}\nRaw events:\n{}",
@@ -388,9 +392,12 @@ impl AiPipeline {
                 "You consolidate noisy desktop recordings into concise workflow steps. \
 Return JSON array only with fields step, title, description, timestamp_ms. \
 Merge duplicate navigation and repeated clicks. Keep at most 15 steps. \
+When an event provides 'element_name', 'element_type', or 'url', explicitly describe clicking that specific element \
+(e.g., 'Click \"Submit\" button' instead of generic 'Click target element' or using the page title). \
 Do not invent actions that are not supported by the events. \
 Do not use placeholders.",
                 &prompt,
+                &options,
             )
             .await?;
         parse_steps_json(&response)
@@ -411,6 +418,10 @@ Do not use placeholders.",
             String::new()
         };
 
+        let options = crate::ai::providers::get_ai_generate_options(
+            &self.db,
+            crate::ai::providers::AiOperation::DocumentGeneration,
+        );
         let llm = build_provider(provider)?;
         let prompt = format!(
             "Improve this workflow documentation Markdown.\n\
@@ -421,6 +432,8 @@ Steps JSON:\n{}\n\
 Current Markdown:\n{base_markdown}\n\n\
 Rules:\n\
 - Keep the same number of steps and preserve every screenshot image line exactly.\n\
+- Explicitly identify the specific UI elements clicked (buttons, inputs, links) from the steps and events instead of referring only to page titles.\n\
+- Include web URLs where relevant when available in the events.\n\
 - Use the user's spoken audio explanation to describe each step and clarify actions.\n\
 - Infer the user's goal from the recorded actions and audio explanation, and write a clear overview.\n\
 - Replace generic session titles with a specific workflow title when possible.\n\
@@ -433,6 +446,7 @@ Rules:\n\
         llm.generate(
             "You are a technical writer turning desktop recordings into polished SOPs.",
             &prompt,
+            &options,
         )
         .await
     }
@@ -480,7 +494,8 @@ fn emit_progress(app: &AppHandle, session_id: &str, stage: AiJobStage, status: &
     );
 }
 
-fn emit_log(app: &AppHandle, session_id: &str, message: &str) {
+pub fn emit_log(app: &AppHandle, session_id: &str, message: &str) {
+    crate::logger::info(&format!("AI:{session_id}"), message);
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { AppButton } from "@/components/ui/AppButton";
 import { api, type ProviderConfig, type MonitorInfo } from "@/lib/api";
+import { Icon } from "@/components/ui/Icon";
 import { providerGlyph } from "@/lib/icons";
 
 export function SettingsPage() {
@@ -18,8 +19,12 @@ export function SettingsPage() {
   const [transcriptionModel, setTranscriptionModel] = useState("");
   const [transcriptionBaseUrl, setTranscriptionBaseUrl] = useState("");
   const [transcriptionLanguage, setTranscriptionLanguage] = useState("it");
+  const [aiThinkingMode, setAiThinkingMode] = useState("auto");
+  const [aiCustomParams, setAiCustomParams] = useState("{\n  \"temperature\": 0.2\n}");
+  const [customParamsError, setCustomParamsError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [bridgeInfo, setBridgeInfo] = useState<{ port: number; recording: boolean } | null>(null);
 
   async function refreshDevices() {
     try {
@@ -54,6 +59,8 @@ export function SettingsPage() {
       nextTransModel,
       nextTransUrl,
       nextTransLang,
+      nextThinkingMode,
+      nextCustomParams,
       nextMonitors,
     ] = await Promise.all([
       api.listProviders(),
@@ -68,6 +75,8 @@ export function SettingsPage() {
       api.getSetting("transcription_model"),
       api.getSetting("transcription_base_url"),
       api.getSetting("transcription_language"),
+      api.getSetting("ai_thinking_mode"),
+      api.getSetting("ai_custom_parameters"),
       api.listMonitors().catch(() => [] as MonitorInfo[]),
     ]);
     setProviders(nextProviders);
@@ -80,9 +89,14 @@ export function SettingsPage() {
     setTranscriptionModel(nextTransModel ?? "");
     setTranscriptionBaseUrl(nextTransUrl ?? "");
     setTranscriptionLanguage(nextTransLang ?? "it");
+    setAiThinkingMode(nextThinkingMode ?? "auto");
+    if (nextCustomParams) {
+      setAiCustomParams(nextCustomParams);
+    }
     if (nextMicId) setSelectedMicId(nextMicId);
     if (nextMonitorId) setSelectedMonitorId(nextMonitorId);
     setMonitors(nextMonitors);
+    api.getBrowserBridgeStatus().then(setBridgeInfo).catch(() => {});
     await refreshDevices();
   }
 
@@ -102,6 +116,40 @@ export function SettingsPage() {
     }
   }
 
+  async function handleSaveCustomParams(jsonStr: string) {
+    const trimmed = jsonStr.trim();
+    if (!trimmed) {
+      setCustomParamsError(null);
+      setAiCustomParams("{}");
+      await api.setSetting("ai_custom_parameters", "{}");
+      setMessage("Parametri personalizzati salvati ({})");
+      return;
+    }
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+        setCustomParamsError("I parametri devono essere un oggetto JSON valido (es. {\"temperature\": 0.2})");
+        return;
+      }
+      setCustomParamsError(null);
+      const formatted = JSON.stringify(parsed, null, 2);
+      setAiCustomParams(formatted);
+      await api.setSetting("ai_custom_parameters", formatted);
+      setMessage("Parametri personalizzati salvati con successo");
+    } catch (e: any) {
+      setCustomParamsError(`Errore sintassi JSON: ${e?.message ?? e}`);
+    }
+  }
+
+  function applyPreset(presetObj: Record<string, any>) {
+    const formatted = JSON.stringify(presetObj, null, 2);
+    setAiCustomParams(formatted);
+    setCustomParamsError(null);
+    api.setSetting("ai_custom_parameters", formatted).then(() => {
+      setMessage("Preset parametri personalizzati applicato");
+    });
+  }
+
   const activeProvider = providers.find((provider) => provider.enabled);
 
   return (
@@ -112,16 +160,69 @@ export function SettingsPage() {
       </div>
 
       {message ? (
-        <div className="banner" style={{ marginTop: 18 }}>
+        <div
+          className="banner"
+          style={{
+            marginTop: 18,
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+          }}
+        >
           <span className="bt">{message}</span>
+          <button
+            type="button"
+            onClick={() => setMessage(null)}
+            style={{
+              background: "none",
+              border: "none",
+              color: "inherit",
+              cursor: "pointer",
+              padding: "2px 6px",
+              fontSize: "13px",
+              opacity: 0.7,
+            }}
+          >
+            ✕
+          </button>
         </div>
       ) : null}
       {error ? (
         <div
           className="card set-card"
-          style={{ marginTop: 18, borderColor: "rgba(255,138,138,.35)", color: "var(--rose)" }}
+          style={{
+            marginTop: 18,
+            borderColor: "rgba(255,138,138,.45)",
+            background: "rgba(255,100,100,0.06)",
+            color: "var(--rose)",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: "12px",
+          }}
         >
-          {error}
+          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+            <Icon name="alert" size={18} />
+            <span style={{ fontSize: "13px", lineHeight: "1.4" }}>{error}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setError(null)}
+            style={{
+              background: "rgba(255, 255, 255, 0.08)",
+              border: "none",
+              borderRadius: "6px",
+              color: "var(--rose)",
+              cursor: "pointer",
+              padding: "4px 8px",
+              fontSize: "13px",
+              fontWeight: "bold",
+              flexShrink: 0,
+            }}
+            title="Chiudi messaggio di errore"
+          >
+            ✕
+          </button>
         </div>
       ) : null}
 
@@ -163,6 +264,71 @@ export function SettingsPage() {
               Disabled
             </button>
           </div>
+        </div>
+      </div>
+
+      <div className="card set-card">
+        <h3>Diagnostica & Log</h3>
+        <div className="sub">
+          I file di log dettagliati (comprese tutte le chiamate API a LLM e Whisper) vengono archiviati giornalmente nella cartella <code>log/</code> dell'applicazione.
+        </div>
+        <div style={{ marginTop: 14 }}>
+          <AppButton
+            kind="ghost"
+            onClick={async () => {
+              try {
+                const path = await api.openLogsFolder();
+                setMessage(`Cartella log aperta: ${path}`);
+              } catch (e: any) {
+                setError(`Impossibile aprire la cartella log: ${e?.message ?? e}`);
+              }
+            }}
+          >
+            📂 Apri Cartella Log
+          </AppButton>
+        </div>
+      </div>
+
+      <div className="card set-card">
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "10px" }}>
+          <div>
+            <h3>Estensione Browser (Google Chrome / Edge)</h3>
+            <div className="sub">
+              Cattura con precisione l'elemento web cliccato (testo pulsanti, link, campi input), l'URL completo delle pagine e i selettori CSS.
+            </div>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", background: "rgba(34, 197, 94, 0.1)", color: "#4ade80", border: "1px solid rgba(34, 197, 94, 0.25)", padding: "4px 10px", borderRadius: "16px" }}>
+            <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#22c55e", display: "inline-block" }}></span>
+            Bridge attivo (127.0.0.1:{bridgeInfo?.port ?? 41789})
+          </div>
+        </div>
+
+        <div style={{ marginTop: 14, padding: "12px", background: "rgba(0,0,0,0.2)", borderRadius: "8px", border: "1px solid var(--border)", fontSize: "12px", color: "var(--text-1)", lineHeight: "1.6" }}>
+          <div style={{ fontWeight: 600, color: "#38bdf8", marginBottom: 6 }}>Come installare l'estensione nel browser:</div>
+          <ol style={{ paddingLeft: 20, margin: 0 }}>
+            <li>Fai clic sul pulsante <strong>"Apri Cartella Estensione"</strong> qui sotto.</li>
+            <li>In Google Chrome o Edge, visita <code>chrome://extensions</code> e attiva la <strong>Modalità sviluppatore</strong> (in alto a destra).</li>
+            <li>Fai clic su <strong>"Carica estensione non pacchettizzata"</strong> e seleziona la cartella aperta (<code>browser-extension</code>).</li>
+          </ol>
+          <div style={{ marginTop: 8, color: "var(--dim)" }}>
+            💡 <em>Nota:</em> Se non installi l'estensione, FlowCapture usa comunque in automatico la <strong>Windows UI Automation (UIA)</strong> nativa per identificare gli elementi del sistema operativo e delle applicazioni desktop.
+          </div>
+        </div>
+
+        <div style={{ marginTop: 14 }}>
+          <AppButton
+            kind="primary"
+            onClick={async () => {
+              try {
+                const path = await api.openBrowserExtensionFolder();
+                setMessage(`Cartella estensione aperta: ${path}`);
+              } catch (e: any) {
+                setError(`Impossibile aprire la cartella estensione: ${e?.message ?? e}`);
+              }
+            }}
+          >
+            🧩 Apri Cartella Estensione
+          </AppButton>
         </div>
       </div>
 
@@ -563,6 +729,218 @@ export function SettingsPage() {
             >
               Rileva
             </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="card set-card">
+        <h3>Parametri AI & Modalità Thinking</h3>
+        <div className="sub">
+          Controlla il ragionamento (Think / No-Think) e specifica parametri JSON personalizzati inviati alle API dei modelli AI (LM Studio, Ollama, OpenAI, Claude, ecc.).
+        </div>
+
+        <div style={{ marginTop: 18 }}>
+          <label style={{ fontWeight: 600, display: "block", marginBottom: 6 }}>
+            Modalità Ragionamento (Think / No-Think)
+          </label>
+          <div className="seg" style={{ display: "inline-flex", marginBottom: 12 }}>
+            <button
+              type="button"
+              className={aiThinkingMode === "auto" ? "on" : ""}
+              onClick={async () => {
+                setAiThinkingMode("auto");
+                await api.setSetting("ai_thinking_mode", "auto");
+              }}
+            >
+              Automatico (Consigliato)
+            </button>
+            <button
+              type="button"
+              className={aiThinkingMode === "think" ? "on" : ""}
+              onClick={async () => {
+                setAiThinkingMode("think");
+                await api.setSetting("ai_thinking_mode", "think");
+              }}
+            >
+              Think Abilitato
+            </button>
+            <button
+              type="button"
+              className={aiThinkingMode === "no_think" ? "on" : ""}
+              onClick={async () => {
+                setAiThinkingMode("no_think");
+                await api.setSetting("ai_thinking_mode", "no_think");
+              }}
+            >
+              Disabilita Think
+            </button>
+          </div>
+
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: "8px",
+              padding: "12px 16px",
+              borderRadius: "8px",
+              background: "rgba(255, 255, 255, 0.03)",
+              border: "1px solid var(--border)",
+              fontSize: "12px",
+              lineHeight: 1.5,
+              marginBottom: 20,
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+              <span style={{ fontWeight: 600, minWidth: 160 }}>📝 Generazione Documento:</span>
+              <span style={{ color: aiThinkingMode === "no_think" ? "var(--dim)" : "#34d399" }}>
+                {aiThinkingMode === "no_think"
+                  ? "⚡ No-Think (disattivato da impostazione)"
+                  : "🧠 Think attivo (analizza ed elabora le azioni con ragionamento)"}
+              </span>
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+              <span style={{ fontWeight: 600, minWidth: 160 }}>🌐 Traduzione Documento:</span>
+              <span style={{ color: "#38bdf8" }}>
+                ⚡ No-Think forzato (traduzione diretta, massima velocità e zero riflessioni interne)
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div style={{ marginTop: 16 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+            <label style={{ fontWeight: 600, margin: 0 }}>
+              Parametri Personalizzati Richieste (JSON)
+            </label>
+            <div style={{ display: "flex", gap: "6px" }}>
+              <button
+                type="button"
+                onClick={() => applyPreset({ temperature: 0.2 })}
+                style={{
+                  background: "transparent",
+                  border: "1px solid var(--border)",
+                  borderRadius: "4px",
+                  padding: "3px 8px",
+                  fontSize: "11px",
+                  cursor: "pointer",
+                  color: "var(--text-1)",
+                }}
+              >
+                Preset Base
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  applyPreset({
+                    temperature: 0.3,
+                    top_p: 0.95,
+                    max_tokens: 4096,
+                  })
+                }
+                style={{
+                  background: "transparent",
+                  border: "1px solid var(--border)",
+                  borderRadius: "4px",
+                  padding: "3px 8px",
+                  fontSize: "11px",
+                  cursor: "pointer",
+                  color: "var(--text-1)",
+                }}
+              >
+                Preset LM Studio / OpenAI
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  applyPreset({
+                    options: {
+                      temperature: 0.2,
+                      num_ctx: 8192,
+                    },
+                  })
+                }
+                style={{
+                  background: "transparent",
+                  border: "1px solid var(--border)",
+                  borderRadius: "4px",
+                  padding: "3px 8px",
+                  fontSize: "11px",
+                  cursor: "pointer",
+                  color: "var(--text-1)",
+                }}
+              >
+                Preset Ollama
+              </button>
+              <button
+                type="button"
+                onClick={() => applyPreset({})}
+                style={{
+                  background: "transparent",
+                  border: "1px solid var(--border)",
+                  borderRadius: "4px",
+                  padding: "3px 8px",
+                  fontSize: "11px",
+                  cursor: "pointer",
+                  color: "var(--dim)",
+                }}
+              >
+                Svuota ({})
+              </button>
+            </div>
+          </div>
+
+          <div style={{ fontSize: "12px", color: "var(--dim)", marginBottom: 10 }}>
+            Questi parametri verranno inseriti direttamente nel payload della richiesta API inviata ai modelli AI.
+          </div>
+
+          <textarea
+            value={aiCustomParams}
+            onChange={(e) => {
+              const val = e.target.value;
+              setAiCustomParams(val);
+              try {
+                if (val.trim()) {
+                  JSON.parse(val);
+                }
+                setCustomParamsError(null);
+              } catch (err: any) {
+                setCustomParamsError(`JSON non valido: ${err?.message ?? err}`);
+              }
+            }}
+            onBlur={() => handleSaveCustomParams(aiCustomParams)}
+            rows={5}
+            style={{
+              width: "100%",
+              fontFamily: "Consolas, Monaco, monospace",
+              fontSize: "12px",
+              padding: "10px",
+              borderRadius: "6px",
+              background: "rgba(0, 0, 0, 0.25)",
+              border: customParamsError ? "1px solid var(--rose)" : "1px solid var(--border)",
+              color: "var(--text-1)",
+              resize: "vertical",
+            }}
+            placeholder={'{\n  "temperature": 0.2\n}'}
+          />
+
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8 }}>
+            {customParamsError ? (
+              <span style={{ color: "var(--rose)", fontSize: "12px" }}>
+                ⚠ {customParamsError}
+              </span>
+            ) : (
+              <span style={{ color: "#34d399", fontSize: "12px" }}>
+                ✓ JSON valido (salvato automaticamente)
+              </span>
+            )}
+
+            <AppButton
+              size="sm"
+              kind="ghost"
+              onClick={() => handleSaveCustomParams(aiCustomParams)}
+            >
+              💾 Salva Parametri
+            </AppButton>
           </div>
         </div>
       </div>

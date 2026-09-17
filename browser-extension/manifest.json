@@ -1,0 +1,35 @@
+﻿{
+  "manifest_version": 3,
+  "name": "FlowCapture Companion",
+  "version": "1.0.0",
+  "description": "Rileva e invia a FlowCapture gli elementi cliccati e i metadati DOM delle pagine web",
+  "permissions": [
+    "activeTab",
+    "storage"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_start",
+      "all_frames": true
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "32": "icon32.png",
+      "128": "icon128.png"
+    }
+  },
+  "icons": {
+    "32": "icon32.png",
+    "128": "icon128.png"
+  }
+}
