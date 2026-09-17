@@ -21,7 +21,7 @@ function resolveImageSrc(src: string | undefined, screenshots: Screenshot[]) {
 
   const byExactPath = screenshots.find((shot) => normalized === shot.path);
   if (byExactPath) {
-    return convertFileSrc(byExactPath.path);
+    return `${convertFileSrc(byExactPath.path)}?t=${byExactPath.timestamp_ms}`;
   }
 
   const filename = screenshotFilename(normalized);
@@ -31,7 +31,7 @@ function resolveImageSrc(src: string | undefined, screenshots: Screenshot[]) {
       normalized === `screenshots/${screenshotFilename(shot.path)}`,
   );
   if (byFilename) {
-    return convertFileSrc(byFilename.path);
+    return `${convertFileSrc(byFilename.path)}?t=${byFilename.timestamp_ms}`;
   }
 
   const uuidMatch = normalized.match(
@@ -40,7 +40,7 @@ function resolveImageSrc(src: string | undefined, screenshots: Screenshot[]) {
   if (uuidMatch) {
     const byId = screenshots.find((shot) => shot.id === uuidMatch[0]);
     if (byId) {
-      return convertFileSrc(byId.path);
+      return `${convertFileSrc(byId.path)}?t=${byId.timestamp_ms}`;
     }
   }
 

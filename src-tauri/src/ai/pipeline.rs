@@ -217,6 +217,20 @@ impl AiPipeline {
             .flat_map(|step| step.screenshot_ids.clone())
             .collect();
         let _ = self.db.mark_screenshots_selected(&selected_ids);
+
+        let highlight_enabled = self
+            .db
+            .get_setting("highlight_clicks")
+            .ok()
+            .flatten()
+            .map(|val| val != "false")
+            .unwrap_or(true);
+
+        if highlight_enabled {
+            emit_log(app, session_id, "Evidenziazione punti di click sugli screenshot del documento...");
+            crate::export::prepare_screenshots_for_export(&screenshots);
+        }
+
         emit_progress(app, session_id, AiJobStage::ScreenshotSelector, "completed");
         emit_log(app, session_id, &format!("Selezionati {} screenshot per la documentazione", selected_ids.len()));
         self.db.finish_ai_job(

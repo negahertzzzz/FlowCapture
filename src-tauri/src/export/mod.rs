@@ -369,7 +369,7 @@ fn rewrite_markdown_for_html(markdown: &str, screenshots: &[Screenshot]) -> Stri
         .join("\n")
 }
 
-fn prepare_screenshots_for_export(screenshots: &[Screenshot]) {
+pub fn prepare_screenshots_for_export(screenshots: &[Screenshot]) {
     for shot in screenshots {
         let path = PathBuf::from(&shot.path);
         if !path.is_file() {
@@ -381,7 +381,8 @@ fn prepare_screenshots_for_export(screenshots: &[Screenshot]) {
             let stem = path.file_stem().unwrap_or_default().to_string_lossy();
             let ext = path.extension().unwrap_or_default().to_string_lossy();
             let clean_path = parent.join(format!("{stem}_clean.{ext}"));
-            if !clean_path.exists() {
+            let clean_exists = clean_path.exists();
+            if !clean_exists {
                 let _ = std::fs::copy(&path, &clean_path);
             }
 
@@ -389,7 +390,7 @@ fn prepare_screenshots_for_export(screenshots: &[Screenshot]) {
                 .map(|s| s.contains("badge") || s.contains("rect") || s.contains("circle") || s.contains("highlight") || s.contains("text"))
                 .unwrap_or(false);
 
-            if !has_custom_annotations {
+            if !has_custom_annotations && !clean_exists {
                 let _ = crate::screenshots::highlight_click_on_image(&path, cx, cy, None);
             }
         }
