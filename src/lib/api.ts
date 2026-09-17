@@ -15,6 +15,7 @@ export interface Session {
   preview_screenshot_path?: string | null;
   audio_path?: string | null;
   audio_transcript?: string | null;
+  full_video_path?: string | null;
 }
 
 export interface StoredEvent {
@@ -107,6 +108,11 @@ export interface RedactionSummary {
 export interface VideoReadyEvent {
   sessionId: string;
   videoPath: string;
+}
+
+export interface FullVideoReadyEvent {
+  sessionId: string;
+  fullVideoPath: string;
 }
 
 export interface AiProgressEvent {
@@ -264,6 +270,15 @@ export const api = {
     handler: (event: VideoReadyEvent) => void,
   ): Promise<UnlistenFn> =>
     listen<VideoReadyEvent>("video-ready", (event) => {
+      if (event.payload.sessionId === sessionId) {
+        handler(event.payload);
+      }
+    }),
+  onFullVideoReady: (
+    sessionId: string,
+    handler: (event: FullVideoReadyEvent) => void,
+  ): Promise<UnlistenFn> =>
+    listen<FullVideoReadyEvent>("full-video-ready", (event) => {
       if (event.payload.sessionId === sessionId) {
         handler(event.payload);
       }

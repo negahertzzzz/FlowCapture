@@ -4,6 +4,8 @@ use anyhow::Result;
 
 use crate::platform::PlatformServices;
 
+pub mod full_video;
+
 pub struct RecorderEngine {
     output_dir: Option<PathBuf>,
 }

@@ -38,6 +38,8 @@ pub struct Session {
     pub audio_path: Option<String>,
     pub audio_transcript: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub full_video_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preview_screenshot_path: Option<String>,
 }
 
@@ -56,6 +58,7 @@ impl Session {
             compressed_events_json: row.get(9)?,
             audio_path: row.get(10)?,
             audio_transcript: row.get(11)?,
+            full_video_path: row.get(12).unwrap_or(None),
             preview_screenshot_path: None,
         })
     }

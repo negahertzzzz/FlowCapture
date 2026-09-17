@@ -129,40 +129,70 @@ export function SessionPage() {
     );
   }, [steps, screenshots, replayIndex]);
 
-  const recordingVideoSrc = useMemo(() => {
+  const [selectedVideoMode, setSelectedVideoMode] = useState<"full" | "timelapse">("full");
+
+  const fullVideoSrc = useMemo(() => {
+    if (!session?.full_video_path?.endsWith(".mp4")) {
+      return null;
+    }
+    return convertFileSrc(session.full_video_path);
+  }, [session?.full_video_path]);
+
+  const timelapseVideoSrc = useMemo(() => {
     if (!session?.video_path?.endsWith(".mp4")) {
       return null;
     }
     return convertFileSrc(session.video_path);
   }, [session?.video_path]);
 
+  const activeVideoSrc = selectedVideoMode === "full"
+    ? (fullVideoSrc ?? timelapseVideoSrc)
+    : (timelapseVideoSrc ?? fullVideoSrc);
+
   const videoEncoding = Boolean(
-    session && session.duration > 0 && !session.video_path?.endsWith(".mp4"),
+    session &&
+      session.duration > 0 &&
+      !session.full_video_path?.endsWith(".mp4") &&
+      !session.video_path?.endsWith(".mp4"),
   );
 
   useEffect(() => {
-    if (!sessionId || session?.video_path?.endsWith(".mp4")) {
+    if (!sessionId) return;
+    if (session?.video_path?.endsWith(".mp4") && session?.full_video_path?.endsWith(".mp4")) {
       return;
     }
 
-    let unlisten: (() => void) | undefined;
+    let unlistenTime: (() => void) | undefined;
+    let unlistenFull: (() => void) | undefined;
+
     api
       .onVideoReady(sessionId, () => {
         refresh().catch((err) => setError(String(err)));
       })
       .then((fn) => {
-        unlisten = fn;
+        unlistenTime = fn;
+      });
+
+    api
+      .onFullVideoReady(sessionId, () => {
+        refresh().catch((err) => setError(String(err)));
+      })
+      .then((fn) => {
+        unlistenFull = fn;
       });
 
     const interval = window.setInterval(() => {
-      refresh().catch(() => undefined);
+      if ((!session?.full_video_path || !session?.video_path) && session && session.duration > 0) {
+        refresh().catch(() => undefined);
+      }
     }, 2500);
 
     return () => {
-      unlisten?.();
+      unlistenTime?.();
+      unlistenFull?.();
       window.clearInterval(interval);
     };
-  }, [sessionId, session?.video_path]);
+  }, [sessionId, session?.video_path, session?.full_video_path]);
 
   async function handleGenerate() {
     setBusy(true);
@@ -982,12 +1012,41 @@ export function SessionPage() {
 
       {tab === "Recording" ? (
         <div className="card panel">
-          <h3>Screen Recording</h3>
-          <div className="pd">The full session capture, stored locally as MP4.</div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "10px" }}>
+            <div>
+              <h3>Screen Recording</h3>
+              <div className="pd">
+                {selectedVideoMode === "full"
+                  ? "Video HD fluido a framerate continuo con audio microfono sincronizzato."
+                  : "Timelapse leggero a 1 fotogramma al secondo generato dai frame della sessione."}
+              </div>
+            </div>
+
+            <div className="seg">
+              <button
+                type="button"
+                className={selectedVideoMode === "full" ? "on" : ""}
+                onClick={() => setSelectedVideoMode("full")}
+                title="Video HD continuo fluido con audio sincronizzato"
+              >
+                🎥 Video HD (30 FPS) {fullVideoSrc ? "✓" : ""}
+              </button>
+              <button
+                type="button"
+                className={selectedVideoMode === "timelapse" ? "on" : ""}
+                onClick={() => setSelectedVideoMode("timelapse")}
+                title="Video timelapse a 1 fotogramma al secondo"
+              >
+                ⏱️ Timelapse (1 FPS) {timelapseVideoSrc ? "✓" : ""}
+              </button>
+            </div>
+          </div>
+
           <div className="video-tab">
-            {recordingVideoSrc ? (
+            {activeVideoSrc ? (
               <video
-                src={recordingVideoSrc}
+                key={activeVideoSrc}
+                src={activeVideoSrc}
                 controls
                 playsInline
                 className="video-player"
@@ -1018,8 +1077,8 @@ export function SessionPage() {
                   }}
                 >
                   {videoEncoding
-                    ? "Encoding session video in the background…"
-                    : "No recording video yet. Record a session and stop it to generate the video."}
+                    ? "Finalizzazione ed elaborazione video in background in corso…"
+                    : "Nessun video registrato per questa modalità."}
                 </div>
               </div>
             )}

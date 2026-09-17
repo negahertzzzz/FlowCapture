@@ -151,10 +151,16 @@ pub async fn stop_recording(
         .map_err(|err| err.to_string())?
         .map_err(|err| err.to_string())?;
     spawn_session_video_encode(
+        db.clone(),
+        app.clone(),
+        session.id.clone(),
+        session.duration.max(1),
+    );
+    crate::media::spawn_session_full_video_finalize(
         db,
         app,
         session.id.clone(),
-        session.duration.max(1),
+        None,
     );
     Ok(session)
 }
@@ -396,6 +402,7 @@ pub fn get_replay_steps(
 
 #[tauri::command]
 pub async fn save_session_audio(
+    app: AppHandle,
     state: State<'_, Arc<AppState>>,
     session_id: String,
     audio_base64: String,
@@ -428,6 +435,13 @@ pub async fn save_session_audio(
         .db
         .update_session_audio(&session_id, &path_str)
         .map_err(|err| err.to_string())?;
+
+    crate::media::spawn_session_full_video_finalize(
+        state.db.clone(),
+        app,
+        session_id,
+        Some(audio_path),
+    );
 
     Ok(path_str)
 }

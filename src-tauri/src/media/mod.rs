@@ -18,6 +18,13 @@ pub struct VideoReadyEvent {
     pub video_path: String,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FullVideoReadyEvent {
+    pub session_id: String,
+    pub full_video_path: String,
+}
+
 pub fn resolve_ffmpeg() -> Option<PathBuf> {
     for candidate in sidecar_ffmpeg_paths() {
         if candidate.is_file() {
@@ -112,6 +119,63 @@ pub fn spawn_session_video_encode(
             Ok(None) => {}
             Err(err) => {
                 eprintln!("session video encode failed for {session_id}: {err:#}");
+            }
+        }
+    });
+}
+
+pub fn spawn_session_full_video_finalize(
+    db: Arc<Database>,
+    app: AppHandle,
+    session_id: String,
+    audio_path: Option<PathBuf>,
+) {
+    thread::spawn(move || {
+        let session_dir = db.session_dir(&session_id);
+        let temp_video = session_dir.join("video/recording_hd_temp.mp4");
+        let final_video = session_dir.join("video/recording_hd.mp4");
+        if !temp_video.is_file() && !final_video.is_file() {
+            return;
+        }
+
+        let audio = audio_path.or_else(|| {
+            let record_audio = db
+                .get_setting("record_audio")
+                .ok()
+                .flatten()
+                .map(|v| v == "true")
+                .unwrap_or(true);
+
+            if record_audio {
+                for _ in 0..15 {
+                    if let Some(p) = find_session_audio(&session_dir) {
+                        return Some(p);
+                    }
+                    thread::sleep(std::time::Duration::from_millis(200));
+                }
+            }
+            find_session_audio(&session_dir)
+        });
+
+        match crate::recorder::full_video::finalize_hd_video(&session_dir, audio.as_deref()) {
+            Ok(Some(path)) => {
+                let full_video_path = path.to_string_lossy().to_string();
+                if db
+                    .update_session_full_video_path(&session_id, &full_video_path)
+                    .is_ok()
+                {
+                    let _ = app.emit(
+                        "full-video-ready",
+                        FullVideoReadyEvent {
+                            session_id,
+                            full_video_path,
+                        },
+                    );
+                }
+            }
+            Ok(None) => {}
+            Err(err) => {
+                eprintln!("session full video finalize failed for {session_id}: {err:#}");
             }
         }
     });

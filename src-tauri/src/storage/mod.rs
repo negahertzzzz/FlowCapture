@@ -44,6 +44,7 @@ impl Database {
         conn.execute_batch(migration)?;
         let _ = conn.execute("ALTER TABLE sessions ADD COLUMN audio_path TEXT", []);
         let _ = conn.execute("ALTER TABLE sessions ADD COLUMN audio_transcript TEXT", []);
+        let _ = conn.execute("ALTER TABLE sessions ADD COLUMN full_video_path TEXT", []);
         let _ = conn.execute("ALTER TABLE screenshots ADD COLUMN click_x INTEGER", []);
         let _ = conn.execute("ALTER TABLE screenshots ADD COLUMN click_y INTEGER", []);
         let _ = conn.execute("ALTER TABLE screenshots ADD COLUMN annotations_json TEXT", []);
@@ -155,6 +156,14 @@ impl Database {
         Ok(())
     }
 
+    pub fn update_session_full_video_path(&self, session_id: &str, full_video_path: &str) -> Result<()> {
+        self.conn.lock().execute(
+            "UPDATE sessions SET full_video_path = ?1 WHERE id = ?2",
+            params![full_video_path, session_id],
+        )?;
+        Ok(())
+    }
+
     pub fn update_session_documentation(&self, session_id: &str, markdown: &str) -> Result<()> {
         self.conn.lock().execute(
             "UPDATE sessions SET documentation_md = ?1, status = ?2 WHERE id = ?3",
@@ -212,7 +221,7 @@ impl Database {
     pub fn list_sessions(&self) -> Result<Vec<Session>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, title, status, started_at, ended_at, video_path, duration, documentation_md, steps_json, compressed_events_json, audio_path, audio_transcript FROM sessions ORDER BY started_at DESC",
+            "SELECT id, title, status, started_at, ended_at, video_path, duration, documentation_md, steps_json, compressed_events_json, audio_path, audio_transcript, full_video_path FROM sessions ORDER BY started_at DESC",
         )?;
         let rows = stmt.query_map([], |row| Session::from_row(row))?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -221,7 +230,7 @@ impl Database {
     pub fn get_session(&self, session_id: &str) -> Result<Option<Session>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, title, status, started_at, ended_at, video_path, duration, documentation_md, steps_json, compressed_events_json, audio_path, audio_transcript FROM sessions WHERE id = ?1",
+            "SELECT id, title, status, started_at, ended_at, video_path, duration, documentation_md, steps_json, compressed_events_json, audio_path, audio_transcript, full_video_path FROM sessions WHERE id = ?1",
         )?;
         let mut rows = stmt.query(params![session_id])?;
         if let Some(row) = rows.next()? {

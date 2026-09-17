@@ -40,6 +40,7 @@ pub struct ActiveRecording {
     pub is_paused: Arc<AtomicBool>,
     collector_stop: Arc<AtomicBool>,
     collector_handle: JoinHandle<()>,
+    full_video_recorder: Option<crate::recorder::full_video::FullVideoRecorderHandle>,
 }
 
 impl AppState {
@@ -118,6 +119,42 @@ impl AppState {
         let collector_paused_clone = collector_paused.clone();
         self.browser_bridge.set_recording(true);
         let browser_bridge_clone = self.browser_bridge.clone();
+
+        let record_full_video = self
+            .db
+            .get_setting("record_full_video")
+            .ok()
+            .flatten()
+            .map(|v| v != "false")
+            .unwrap_or(true);
+
+        let full_video_fps: u32 = self
+            .db
+            .get_setting("full_video_fps")
+            .ok()
+            .flatten()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(30);
+
+        let full_video_recorder = if record_full_video {
+            match crate::recorder::full_video::FullVideoRecorderHandle::start(
+                session_dir.clone(),
+                crate::recorder::full_video::FullVideoConfig {
+                    fps: full_video_fps,
+                    monitor_id: mon_id.clone(),
+                    quality_crf: 23,
+                },
+            ) {
+                Ok(handle) => Some(handle),
+                Err(err) => {
+                    eprintln!("failed to start full video recorder: {err:#}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         let start_result = (|| -> Result<(JoinHandle<()>, Arc<AtomicBool>)> {
             let mut platform = self.platform.lock();
             platform.input.start()?;
@@ -154,10 +191,14 @@ impl AppState {
                     is_paused: collector_paused,
                     collector_stop,
                     collector_handle,
+                    full_video_recorder,
                 });
                 Ok(session)
             }
             Err(err) => {
+                if let Some(fvr) = full_video_recorder {
+                    let _ = fvr.stop();
+                }
                 self.browser_bridge.set_recording(false);
                 let _ = self.rollback_failed_start(&session_id);
                 Err(err)
@@ -166,7 +207,7 @@ impl AppState {
     }
 
     pub fn stop_recording(&self) -> Result<Session> {
-        let active = {
+        let mut active = {
             let mut guard = self.active_session.lock();
             guard
                 .take()
@@ -177,6 +218,11 @@ impl AppState {
         let session_id = active.session.id.clone();
 
         active.collector_stop.store(true, Ordering::SeqCst);
+        if let Some(fvr) = active.full_video_recorder.take() {
+            if let Err(err) = fvr.stop() {
+                eprintln!("FlowCapture: full video recorder stop failed: {err:#}");
+            }
+        }
         self.screenshot_engine.lock().stop(&session_id)?;
         signal_platform_stop(self);
         self.browser_bridge.set_recording(false);
@@ -236,6 +282,9 @@ impl AppState {
         let guard = self.active_session.lock();
         let active = guard.as_ref().ok_or_else(|| anyhow::anyhow!("no active recording"))?;
         active.is_paused.store(true, Ordering::SeqCst);
+        if let Some(ref fvr) = active.full_video_recorder {
+            fvr.pause();
+        }
         if let Some(platform) = self.platform.try_lock() {
             self.recorder.lock().pause_with_platform(&platform);
         }
@@ -246,6 +295,9 @@ impl AppState {
         let guard = self.active_session.lock();
         let active = guard.as_ref().ok_or_else(|| anyhow::anyhow!("no active recording"))?;
         active.is_paused.store(false, Ordering::SeqCst);
+        if let Some(ref fvr) = active.full_video_recorder {
+            fvr.resume();
+        }
         if let Some(platform) = self.platform.try_lock() {
             self.recorder.lock().resume_with_platform(&platform);
         }

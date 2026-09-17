@@ -22,6 +22,8 @@ export function SettingsPage() {
   const [aiThinkingMode, setAiThinkingMode] = useState("auto");
   const [aiCustomParams, setAiCustomParams] = useState("{\n  \"temperature\": 0.2\n}");
   const [customParamsError, setCustomParamsError] = useState<string | null>(null);
+  const [recordFullVideo, setRecordFullVideo] = useState(true);
+  const [fullVideoFps, setFullVideoFps] = useState("30");
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [bridgeInfo, setBridgeInfo] = useState<{ port: number; recording: boolean } | null>(null);
@@ -62,6 +64,8 @@ export function SettingsPage() {
       nextThinkingMode,
       nextCustomParams,
       nextMonitors,
+      nextRecordFullVideo,
+      nextFullVideoFps,
     ] = await Promise.all([
       api.listProviders(),
       api.getSetting("redaction_enabled"),
@@ -78,6 +82,8 @@ export function SettingsPage() {
       api.getSetting("ai_thinking_mode"),
       api.getSetting("ai_custom_parameters"),
       api.listMonitors().catch(() => [] as MonitorInfo[]),
+      api.getSetting("record_full_video"),
+      api.getSetting("full_video_fps"),
     ]);
     setProviders(nextProviders);
     setRedactionEnabled((nextSetting ?? "true") === "true");
@@ -90,6 +96,8 @@ export function SettingsPage() {
     setTranscriptionBaseUrl(nextTransUrl ?? "");
     setTranscriptionLanguage(nextTransLang ?? "it");
     setAiThinkingMode(nextThinkingMode ?? "auto");
+    setRecordFullVideo((nextRecordFullVideo ?? "true") !== "false");
+    setFullVideoFps(nextFullVideoFps || "30");
     if (nextCustomParams) {
       setAiCustomParams(nextCustomParams);
     }
@@ -377,6 +385,98 @@ export function SettingsPage() {
             </button>
           </div>
         </div>
+
+        <div
+          className="field"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            maxWidth: 520,
+            marginTop: 14,
+          }}
+        >
+          <div>
+            <label style={{ margin: 0 }}>Registrazione Video HD Continua</label>
+            <div style={{ fontSize: "12px", color: "var(--dim)" }}>
+              Registra un video fluido dell'intero schermo con audio sincronizzato in parallelo agli screenshot
+            </div>
+          </div>
+          <div className="seg">
+            <button
+              type="button"
+              className={recordFullVideo ? "on" : ""}
+              onClick={async () => {
+                setRecordFullVideo(true);
+                await api.setSetting("record_full_video", "true");
+              }}
+            >
+              Attivo
+            </button>
+            <button
+              type="button"
+              className={!recordFullVideo ? "on" : ""}
+              onClick={async () => {
+                setRecordFullVideo(false);
+                await api.setSetting("record_full_video", "false");
+              }}
+            >
+              Disattivo
+            </button>
+          </div>
+        </div>
+
+        {recordFullVideo && (
+          <div
+            className="field"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              maxWidth: 520,
+              marginTop: 14,
+            }}
+          >
+            <div>
+              <label style={{ margin: 0 }}>Framerate Video HD</label>
+              <div style={{ fontSize: "12px", color: "var(--dim)" }}>
+                Fluidità di acquisizione (15 FPS leggero, 30 FPS standard fluido, 60 FPS ultra fluido)
+              </div>
+            </div>
+            <div className="seg">
+              <button
+                type="button"
+                className={fullVideoFps === "15" ? "on" : ""}
+                onClick={async () => {
+                  setFullVideoFps("15");
+                  await api.setSetting("full_video_fps", "15");
+                }}
+              >
+                15 FPS
+              </button>
+              <button
+                type="button"
+                className={fullVideoFps === "30" ? "on" : ""}
+                onClick={async () => {
+                  setFullVideoFps("30");
+                  await api.setSetting("full_video_fps", "30");
+                }}
+              >
+                30 FPS
+              </button>
+              <button
+                type="button"
+                className={fullVideoFps === "60" ? "on" : ""}
+                onClick={async () => {
+                  setFullVideoFps("60");
+                  await api.setSetting("full_video_fps", "60");
+                }}
+              >
+                60 FPS
+              </button>
+            </div>
+          </div>
+        )}
 
         <div
           className="field"
