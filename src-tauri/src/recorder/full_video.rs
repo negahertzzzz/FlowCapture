@@ -109,33 +109,65 @@ impl FullVideoRecorderHandle {
             .name("full-video-capture-thread".to_string())
             .spawn(move || {
                 let mut next_frame_time = Instant::now();
+                let mut last_frame: Option<Vec<u8>> = None;
+
                 while !stop_clone.load(Ordering::SeqCst) {
                     if pause_clone.load(Ordering::SeqCst) {
-                        thread::sleep(Duration::from_millis(100));
+                        thread::sleep(Duration::from_millis(50));
                         next_frame_time = Instant::now();
                         continue;
                     }
 
+                    // 1. Capture the screen
                     let monitor_res = find_monitor(target_monitor_id.as_deref())
                         .or_else(|_| find_monitor(None));
 
                     if let Ok(mon) = monitor_res {
                         if let Ok(image) = mon.capture_image() {
-                            let raw_bytes = image.as_raw();
-                            if stdin.write_all(raw_bytes).is_err() {
-                                // FFmpeg process exited or broken pipe
-                                break;
-                            }
+                            last_frame = Some(image.into_raw());
                         }
                     }
 
-                    next_frame_time += frame_interval;
+                    // 2. Calculate how many frames to write
                     let now = Instant::now();
-                    if next_frame_time > now {
-                        thread::sleep(next_frame_time - now);
-                    } else if now - next_frame_time > Duration::from_millis(500) {
-                        // Reset if falling significantly behind
-                        next_frame_time = now;
+                    let frames_to_write = if now >= next_frame_time {
+                        let elapsed = now.duration_since(next_frame_time);
+                        let missed = (elapsed.as_nanos() / frame_interval.as_nanos()) as u32;
+                        // Write 1 for the current frame, plus any missed ones
+                        1 + missed
+                    } else {
+                        // We are ahead of schedule
+                        1
+                    };
+
+                    // Prevent writing a massive number of frames if the system slept/suspended
+                    let frames_to_write = frames_to_write.min(fps);
+
+                    // 3. Write frames and update next_frame_time
+                    if let Some(ref frame_data) = last_frame {
+                        let mut pipe_broken = false;
+                        for _ in 0..frames_to_write {
+                            if stdin.write_all(frame_data).is_err() {
+                                pipe_broken = true;
+                                break;
+                            }
+                            next_frame_time += frame_interval;
+                        }
+                        if pipe_broken {
+                            break;
+                        }
+                    } else {
+                        // If we didn't capture a frame (e.g. at the very start), just advance the clock
+                        next_frame_time += frame_interval * frames_to_write;
+                    }
+
+                    // 4. Sleep until the next frame is due, or reset if we are hopelessly behind
+                    let sleep_now = Instant::now();
+                    if next_frame_time > sleep_now {
+                        thread::sleep(next_frame_time - sleep_now);
+                    } else if sleep_now.duration_since(next_frame_time) > Duration::from_millis(1000) {
+                        // If we fell behind by more than 1 second (e.g. pipe blocked), reset clock
+                        next_frame_time = sleep_now;
                     }
                 }
 
