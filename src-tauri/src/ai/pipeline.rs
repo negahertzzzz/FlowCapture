@@ -234,10 +234,14 @@ impl AiPipeline {
         emit_log(app, session_id, "Costruzione sequenza temporale e raggruppamento azioni...");
         let mut steps = build_workflow_steps(&redacted_events);
 
+        let session_start_ms = chrono::DateTime::parse_from_rfc3339(&session.started_at)
+            .map(|dt| dt.timestamp_millis())
+            .ok();
+
         // Build pre-aligned event+audio pairs in Rust (deterministic, no AI guesswork needed)
         let aligned_events = if let Some(ref result) = audio_transcript_result {
             if !result.segments.is_empty() {
-                let aligned = align_audio_to_events(&redacted_events, &result.segments);
+                let aligned = align_audio_to_events(&redacted_events, &result.segments, session_start_ms);
                 emit_log(app, session_id, &format!(
                     "Allineamento deterministico audio-eventi: {}/{} eventi con audio associato",
                     aligned.iter().filter(|a| !a.nearby_audio.is_empty()).count(),
@@ -618,25 +622,47 @@ fn extract_json_array(response: &str) -> String {
 }
 
 /// Deterministically aligns audio segments to events by timestamp proximity.
+/// Converts absolute epoch event timestamps to relative audio file offsets using T0.
 /// For each event, finds all segments whose `[start_ms - PRE_MS, end_ms + POST_MS]` window
 /// overlaps the event's timestamp. The model then receives already-paired data.
 fn align_audio_to_events<'a>(
     events: &'a [SessionEvent],
     segments: &'a [AudioSegment],
+    session_start_ms: Option<i64>,
 ) -> Vec<AlignedEvent<'a>> {
     // Window: 3s before event (user often explains before clicking) to 2s after
     const PRE_MS: i64 = 3000;
     const POST_MS: i64 = 2000;
 
+    let first_event_ts = events.first().map(|e| e.timestamp_ms).unwrap_or(0);
+    let is_epoch = first_event_ts > 1_000_000_000_000;
+
+    let t0 = if is_epoch {
+        if let Some(start_ms) = session_start_ms.filter(|&s| s > 0 && (s - first_event_ts).abs() < 120_000) {
+            start_ms.min(first_event_ts)
+        } else {
+            first_event_ts
+        }
+    } else {
+        0
+    };
+
     events
         .iter()
         .map(|event| {
+            let event_offset_ms = if is_epoch {
+                event.timestamp_ms.saturating_sub(t0)
+            } else {
+                event.timestamp_ms
+            };
+
+            let window_start = event_offset_ms.saturating_sub(PRE_MS);
+            let window_end = event_offset_ms + POST_MS;
+
             let nearby_audio = segments
                 .iter()
                 .filter(|seg| {
-                    // Segment overlaps [event_ms - PRE_MS, event_ms + POST_MS]
-                    let window_start = event.timestamp_ms - PRE_MS;
-                    let window_end = event.timestamp_ms + POST_MS;
+                    // Segment overlaps [window_start, window_end]
                     seg.start_ms <= window_end && seg.end_ms >= window_start
                 })
                 .map(|seg| seg.text.as_str())

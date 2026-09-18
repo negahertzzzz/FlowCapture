@@ -180,11 +180,32 @@ pub fn export_session_bundle(
             if !segs.is_empty() {
                 const PRE_MS: i64 = 3000;
                 const POST_MS: i64 = 2000;
+
+                let first_event_ts = events.first().map(|e| e.timestamp_ms).unwrap_or(0);
+                let is_epoch = first_event_ts > 1_000_000_000_000;
+                let parsed_start = chrono::DateTime::parse_from_rfc3339(&session.started_at)
+                    .map(|dt| dt.timestamp_millis())
+                    .ok();
+                let t0 = if is_epoch {
+                    if let Some(start_ms) = parsed_start.filter(|&s| s > 0 && (s - first_event_ts).abs() < 120_000) {
+                        start_ms.min(first_event_ts)
+                    } else {
+                        first_event_ts
+                    }
+                } else {
+                    0
+                };
+
                 let aligned = events
                     .iter()
                     .map(|ev| {
-                        let w_start = ev.timestamp_ms - PRE_MS;
-                        let w_end = ev.timestamp_ms + POST_MS;
+                        let event_offset_ms = if is_epoch {
+                            ev.timestamp_ms.saturating_sub(t0)
+                        } else {
+                            ev.timestamp_ms
+                        };
+                        let w_start = event_offset_ms.saturating_sub(PRE_MS);
+                        let w_end = event_offset_ms + POST_MS;
                         let nearby: Vec<&str> = segs
                             .iter()
                             .filter(|s| s.start_ms <= w_end && s.end_ms >= w_start)

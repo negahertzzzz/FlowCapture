@@ -120,13 +120,21 @@ def align_audio_to_events(events: list, segments: list,
                            pre_ms: int = 3000, post_ms: int = 2000) -> list:
     """
     For each event, find audio segments whose time window overlaps
-    [event_ms - pre_ms, event_ms + post_ms].  Mirrors align_audio_to_events() in pipeline.rs.
+    [event_offset_ms - pre_ms, event_offset_ms + post_ms]. Mirrors align_audio_to_events() in pipeline.rs.
     """
+    if not events:
+        return []
+
+    first_ts = events[0].get("timestamp_ms", 0)
+    is_epoch = first_ts > 1_000_000_000_000
+    t0 = first_ts if is_epoch else 0
+
     aligned = []
     for event in events:
         ts = event["timestamp_ms"]
-        window_start = ts - pre_ms
-        window_end = ts + post_ms
+        offset_ms = (ts - t0) if is_epoch else ts
+        window_start = max(0, offset_ms - pre_ms)
+        window_end = offset_ms + post_ms
         nearby = [
             seg["text"]
             for seg in segments
