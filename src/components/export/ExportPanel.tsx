@@ -44,6 +44,246 @@ function mdInline(text: string) {
   return parts;
 }
 
+function renderMdBlocks(text: string) {
+  const lines = text.split("\n");
+  const blocks: ReactNode[] = [];
+  let listItems: string[] = [];
+
+  const flushList = () => {
+    if (listItems.length > 0) {
+      blocks.push(
+        <ul key={`ul-${blocks.length}`}>
+          {listItems.map((item, idx) => (
+            <li key={idx}>{mdInline(item)}</li>
+          ))}
+        </ul>
+      );
+      listItems = [];
+    }
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) {
+      flushList();
+      continue;
+    }
+    if (line.startsWith("- ") || line.startsWith("* ")) {
+      listItems.push(line.slice(2).trim());
+    } else {
+      flushList();
+      blocks.push(<p key={`p-${blocks.length}`}>{mdInline(line)}</p>);
+    }
+  }
+  flushList();
+  return blocks;
+}
+
+interface ParsedPreviewStep {
+  step: number;
+  title: string;
+  description: string;
+  reason?: string;
+  timestamp_ms: number;
+  screenshot?: Screenshot;
+}
+
+interface ParsedPreviewDoc {
+  title: string;
+  overview: string;
+  prerequisites?: string;
+  steps: ParsedPreviewStep[];
+  expectedResult?: string;
+}
+
+function parseDocumentationMarkdown(
+  md: string,
+  screenshots: Screenshot[],
+  sessionTitle: string,
+  fallbackSteps: WorkflowStep[],
+  defaultOverview: string,
+): ParsedPreviewDoc {
+  if (!md || !md.trim()) {
+    return {
+      title: sessionTitle || "Workflow Documentation",
+      overview: defaultOverview,
+      steps: fallbackSteps.map((s, idx) => ({
+        step: s.step || idx + 1,
+        title: s.title,
+        description: s.description,
+        reason: s.reason?.trim() || undefined,
+        timestamp_ms: s.timestamp_ms,
+        screenshot: s.screenshot_ids[0]
+          ? screenshots.find((shot) => shot.id === s.screenshot_ids[0])
+          : screenshots[idx],
+      })),
+    };
+  }
+
+  let title = sessionTitle || "Workflow Documentation";
+  const overviewLines: string[] = [];
+  const prereqLines: string[] = [];
+  const expectedLines: string[] = [];
+  const parsedSteps: ParsedPreviewStep[] = [];
+
+  const h1Re = /^#\s+(.+)$/;
+  const h2Re = /^##\s+(.+)$/;
+  const stepRe = /^#{2,4}\s+(?:Step|Passo)?\s*(\d+)[:.]\s*(.*)$/i;
+  const whyRe = /^>\s*\*\*(?:Why|Perch[ée])\s*:\*\*\s*(.*)$/i;
+  const imgRe = /!\[.*?\]\((.*?)\)/;
+
+  type Section = "none" | "overview" | "prereq" | "steps" | "expected" | "other";
+  let currentSection: Section = "none";
+  let currentStep: ParsedPreviewStep | null = null;
+
+  for (const line of md.split("\n")) {
+    const trimmed = line.trim();
+
+    const h1Match = h1Re.exec(trimmed);
+    if (h1Match) {
+      title = h1Match[1].trim() || title;
+      currentSection = "overview";
+      continue;
+    }
+
+    const h2Match = h2Re.exec(trimmed);
+    if (h2Match) {
+      if (currentStep) {
+        parsedSteps.push(currentStep);
+        currentStep = null;
+      }
+      const h2Text = h2Match[1].trim().toLowerCase();
+      if (
+        h2Text.includes("prerequisit") ||
+        h2Text.includes("pre-requisit") ||
+        h2Text.includes("requisiti")
+      ) {
+        currentSection = "prereq";
+      } else if (
+        h2Text.includes("step") ||
+        h2Text.includes("passagg") ||
+        h2Text.includes("procedura") ||
+        h2Text.includes("istruzioni")
+      ) {
+        currentSection = "steps";
+      } else if (
+        h2Text.includes("expected") ||
+        h2Text.includes("risultato") ||
+        h2Text.includes("conclusione") ||
+        h2Text.includes("result")
+      ) {
+        currentSection = "expected";
+      } else if (
+        h2Text.includes("overview") ||
+        h2Text.includes("panoramica") ||
+        h2Text.includes("introduzione")
+      ) {
+        currentSection = "overview";
+      } else {
+        currentSection = "other";
+      }
+      continue;
+    }
+
+    const stepMatch = stepRe.exec(trimmed);
+    if (stepMatch) {
+      if (currentStep) {
+        parsedSteps.push(currentStep);
+      }
+      const num = parseInt(stepMatch[1], 10) || parsedSteps.length + 1;
+      const sTitle = stepMatch[2].trim() || `Step ${num}`;
+      currentStep = {
+        step: num,
+        title: sTitle,
+        description: "",
+        timestamp_ms: 0,
+      };
+      currentSection = "steps";
+      continue;
+    }
+
+    switch (currentSection) {
+      case "overview":
+        if (trimmed) overviewLines.push(trimmed);
+        break;
+      case "prereq":
+        if (trimmed) prereqLines.push(trimmed);
+        break;
+      case "expected":
+        if (trimmed) expectedLines.push(trimmed);
+        break;
+      case "steps":
+        if (currentStep) {
+          const whyMatch = whyRe.exec(trimmed);
+          if (whyMatch) {
+            currentStep.reason = whyMatch[1].trim();
+          } else {
+            const imgMatch = imgRe.exec(trimmed);
+            if (imgMatch) {
+              const imgRef = imgMatch[1].trim();
+              const foundShot = screenshots.find(
+                (s) =>
+                  s.path === imgRef ||
+                  s.path.endsWith(imgRef) ||
+                  (imgRef && s.path.endsWith(imgRef.split(/[/\\]/).pop() || "___none___")),
+              );
+              if (foundShot) {
+                currentStep.screenshot = foundShot;
+              }
+            } else if (trimmed) {
+              currentStep.description = currentStep.description
+                ? `${currentStep.description}\n${trimmed}`
+                : trimmed;
+            }
+          }
+        }
+        break;
+    }
+  }
+
+  if (currentStep) {
+    parsedSteps.push(currentStep);
+  }
+
+  if (parsedSteps.length === 0 && fallbackSteps.length > 0) {
+    for (let i = 0; i < fallbackSteps.length; i++) {
+      const fs = fallbackSteps[i];
+      parsedSteps.push({
+        step: fs.step || i + 1,
+        title: fs.title,
+        description: fs.description,
+        reason: fs.reason?.trim() || undefined,
+        timestamp_ms: fs.timestamp_ms,
+        screenshot: fs.screenshot_ids[0]
+          ? screenshots.find((shot) => shot.id === fs.screenshot_ids[0])
+          : screenshots[i],
+      });
+    }
+  }
+
+  for (let i = 0; i < parsedSteps.length; i++) {
+    const st = parsedSteps[i];
+    if (!st.timestamp_ms) {
+      if (st.screenshot) {
+        st.timestamp_ms = st.screenshot.timestamp_ms;
+      } else if (fallbackSteps[i]) {
+        st.timestamp_ms = fallbackSteps[i].timestamp_ms;
+      }
+    }
+    if (!st.screenshot && screenshots[i]) {
+      st.screenshot = screenshots[i];
+    }
+  }
+
+  return {
+    title,
+    overview: overviewLines.join("\n") || defaultOverview,
+    prerequisites: prereqLines.length > 0 ? prereqLines.join("\n") : undefined,
+    steps: parsedSteps,
+    expectedResult: expectedLines.length > 0 ? expectedLines.join("\n") : undefined,
+  };
+}
+
 function sessionStartMs(startedAt: string) {
   const value = Date.parse(startedAt);
   return Number.isNaN(value) ? 0 : value;
@@ -91,14 +331,26 @@ export function ExportPanel({
   const startMs = sessionStartMs(session.started_at);
   const accentColor = exportAccentColor(options.accent, options.theme);
   const accentInk = exportAccentInk(options.theme);
-  const docTitle = session.title || "Workflow Documentation";
-  const overview =
-    t("export.overview", "A step-by-step guide generated from your recorded session with screenshots and workflow context.");
 
-  const screenshotMap = useMemo(
-    () => new Map(screenshots.map((shot) => [shot.id, shot])),
-    [screenshots],
+  const defaultOverview = t(
+    "export.overview",
+    "A step-by-step guide generated from your recorded session with screenshots and workflow context.",
   );
+
+  const parsedDoc = useMemo(
+    () =>
+      parseDocumentationMarkdown(
+        session.documentation_md || "",
+        screenshots,
+        session.title,
+        steps,
+        defaultOverview,
+      ),
+    [session.documentation_md, session.title, screenshots, steps, defaultOverview],
+  );
+
+  const docTitle = parsedDoc.title;
+  const overview = parsedDoc.overview;
 
   function patchOptions(patch: Partial<ExportOptions>) {
     setOptions((current) => ({ ...current, ...patch }));
@@ -324,7 +576,7 @@ export function ExportPanel({
                       </span>
                       <span className="cmeta">
                         <Icon name="edit" size={14} />
-                        {steps.length || "No"} steps
+                        {parsedDoc.steps.length || "No"} steps
                       </span>
                       <span className="cmeta">
                         <Icon name="monitor" size={14} />
@@ -350,19 +602,29 @@ export function ExportPanel({
                   </div>
                 </div>
 
+                {parsedDoc.prerequisites ? (
+                  <div className="prereq-card">
+                    <div className="prereq-header">
+                      <Icon name="clipboard" size={15} />
+                      <span>{t("export.prerequisites", "Prerequisiti · Prerequisites")}</span>
+                    </div>
+                    <div className="prereq-body">
+                      {renderMdBlocks(parsedDoc.prerequisites)}
+                    </div>
+                  </div>
+                ) : null}
+
                 <div className="steps-title">Steps</div>
 
-                {steps.length === 0 ? (
+                {parsedDoc.steps.length === 0 ? (
                   <div className="step" style={{ gridTemplateColumns: "1fr" }}>
                     <div>
                       <p>Generate documentation first to populate export steps.</p>
                     </div>
                   </div>
                 ) : (
-                  steps.map((step, index) => {
-                    const shot = step.screenshot_ids[0]
-                      ? screenshotMap.get(step.screenshot_ids[0])
-                      : screenshots[index];
+                  parsedDoc.steps.map((step, index) => {
+                    const shot = step.screenshot;
                     return (
                       <div
                         key={`${step.step}-${index}`}
@@ -381,16 +643,18 @@ export function ExportPanel({
                               <span className="ts">{stepTime(step.timestamp_ms, startMs)}</span>
                             ) : null}
                           </div>
-                          <p>{mdInline(step.description)}</p>
+                          <div className="step-desc">{renderMdBlocks(step.description)}</div>
+                          {step.reason ? (
+                            <div className="step-why">
+                              <span className="why-badge">WHY</span>
+                              <span className="why-text">{mdInline(step.reason)}</span>
+                            </div>
+                          ) : null}
                           {options.screenshots && shot ? (
                             <div className="shot">
                               <div className="shot-img">
                                 <img
-                                  src={convertFileSrc(
-                                    !options.annotations && shot.path.replace(/(\.[a-zA-Z0-9]+)$/, "_clean$1")
-                                      ? shot.path
-                                      : shot.path
-                                  )}
+                                  src={convertFileSrc(shot.path)}
                                   alt={step.title}
                                   onError={(event) => {
                                     (event.target as HTMLImageElement).style.display = "none";
@@ -408,6 +672,18 @@ export function ExportPanel({
                     );
                   })
                 )}
+
+                {parsedDoc.expectedResult ? (
+                  <div className="expected-card">
+                    <div className="expected-header">
+                      <Icon name="check" size={15} />
+                      <span>{t("export.expectedResult", "Risultato Atteso · Expected Result")}</span>
+                    </div>
+                    <div className="expected-body">
+                      {renderMdBlocks(parsedDoc.expectedResult)}
+                    </div>
+                  </div>
+                ) : null}
               </div>
 
               <div className="run-foot">

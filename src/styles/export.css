@@ -669,6 +669,167 @@
   color: var(--p-accent);
 }
 
+.export-doc .prereq-card {
+  margin-top: 24px;
+  margin-bottom: 28px;
+  border-radius: 12px;
+  background: var(--p-card);
+  border: 1px solid var(--p-line);
+  overflow: hidden;
+}
+
+.export-doc .prereq-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--p-dim);
+  border-bottom: 1px solid var(--p-line);
+  background: var(--p-accent-soft);
+}
+
+.export-doc .prereq-header svg {
+  width: 15px;
+  height: 15px;
+  color: var(--p-accent);
+}
+
+.export-doc .prereq-body {
+  padding: 14px 18px;
+  font-size: 14px;
+  color: var(--p-muted);
+}
+
+.export-doc .prereq-body ul {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.export-doc .prereq-body li {
+  margin-bottom: 6px;
+}
+
+.export-doc .prereq-body li:last-child {
+  margin-bottom: 0;
+}
+
+.export-doc .prereq-body p {
+  margin: 0 0 8px 0;
+}
+
+.export-doc .prereq-body p:last-child {
+  margin-bottom: 0;
+}
+
+.export-doc .step-desc {
+  color: var(--p-muted);
+  margin-top: 10px;
+  font-size: 14.5px;
+  line-height: 1.65;
+}
+
+.export-doc .step-desc p {
+  margin: 0 0 8px 0;
+}
+
+.export-doc .step-desc p:last-child {
+  margin-bottom: 0;
+}
+
+.export-doc .step-desc b {
+  color: var(--p-ink);
+  font-weight: 600;
+}
+
+.export-doc .step-desc code {
+  font-family: var(--mono);
+  font-size: 0.88em;
+  background: var(--p-accent-soft);
+  color: var(--p-accent);
+  padding: 1px 6px;
+  border-radius: 5px;
+}
+
+.export-doc .step-why {
+  margin-top: 12px;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: 8px;
+  background: var(--p-accent-soft);
+  border: 1px solid var(--p-accent-line);
+  font-size: 13px;
+  color: var(--p-ink);
+}
+
+.export-doc .why-badge {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--p-accent);
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--p-accent) 20%, transparent);
+}
+
+.export-doc .why-text {
+  font-style: italic;
+  color: var(--p-ink);
+}
+
+.export-doc .expected-card {
+  margin-top: 36px;
+  border-radius: 12px;
+  background: var(--p-card);
+  border: 1px solid var(--p-line);
+  overflow: hidden;
+}
+
+.export-doc .expected-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--p-dim);
+  border-bottom: 1px solid var(--p-line);
+  background: var(--p-accent-soft);
+}
+
+.export-doc .expected-header svg {
+  width: 15px;
+  height: 15px;
+  color: var(--p-accent);
+}
+
+.export-doc .expected-body {
+  padding: 14px 18px;
+  font-size: 14px;
+  color: var(--p-muted);
+}
+
+.export-doc .expected-body p {
+  margin: 0 0 8px 0;
+}
+
+.export-doc .expected-body p:last-child {
+  margin-bottom: 0;
+}
+
+.export-doc .expected-body b {
+  color: var(--p-ink);
+  font-weight: 600;
+}
+
 .export-doc.no-brand [data-brand] {
   display: none !important;
 }
