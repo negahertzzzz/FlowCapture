@@ -25,6 +25,10 @@ pub struct SessionBundleManifest {
     pub exports: Vec<ExportRecord>,
     pub audio_file_name: Option<String>,
     pub video_file_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_segments: Option<Vec<crate::ai::transcription::AudioSegment>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aligned_events: Option<Vec<serde_json::Value>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -170,7 +174,45 @@ pub fn export_session_bundle(
         }
     }
 
-    // 5. Write manifest.json
+    // 5. Compute aligned events with nearby_audio if audio_segments are present
+    let (audio_segments, aligned_events) = if let Some(segs_json) = &session.audio_segments_json {
+        if let Ok(segs) = serde_json::from_str::<Vec<crate::ai::transcription::AudioSegment>>(segs_json) {
+            if !segs.is_empty() {
+                const PRE_MS: i64 = 3000;
+                const POST_MS: i64 = 2000;
+                let aligned = events
+                    .iter()
+                    .map(|ev| {
+                        let w_start = ev.timestamp_ms - PRE_MS;
+                        let w_end = ev.timestamp_ms + POST_MS;
+                        let nearby: Vec<&str> = segs
+                            .iter()
+                            .filter(|s| s.start_ms <= w_end && s.end_ms >= w_start)
+                            .map(|s| s.text.as_str())
+                            .collect();
+                        let payload_val: serde_json::Value =
+                            serde_json::from_str(&ev.payload).unwrap_or(serde_json::json!({}));
+                        serde_json::json!({
+                            "id": ev.id,
+                            "event_type": ev.event_type,
+                            "app_name": ev.app_name,
+                            "payload": payload_val,
+                            "timestamp_ms": ev.timestamp_ms,
+                            "nearby_audio": nearby,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                (Some(segs), Some(aligned))
+            } else {
+                (None, None)
+            }
+        } else {
+            (None, None)
+        }
+    } else {
+        (None, None)
+    };
+
     let manifest = SessionBundleManifest {
         version: 1,
         exported_at: Utc::now().to_rfc3339(),
@@ -182,6 +224,8 @@ pub fn export_session_bundle(
         exports,
         audio_file_name,
         video_file_name,
+        audio_segments,
+        aligned_events,
     };
 
     let manifest_json = serde_json::to_vec_pretty(&manifest)?;
@@ -310,6 +354,14 @@ pub fn import_session_bundle(
         }
     } else {
         session.video_path = None;
+    }
+
+    if session.audio_segments_json.is_none() {
+        if let Some(segs) = &manifest.audio_segments {
+            if let Ok(json_str) = serde_json::to_string(segs) {
+                session.audio_segments_json = Some(json_str);
+            }
+        }
     }
 
     // If remapped, update IDs in documentation_md, steps_json, compressed_events_json

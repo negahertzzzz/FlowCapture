@@ -26,6 +26,7 @@ pub struct TranscriptionResult {
     pub segments: Vec<AudioSegment>,
 }
 
+#[allow(dead_code)]
 pub async fn transcribe_audio(
     provider: &ProviderConfig,
     audio_path: &Path,
@@ -52,35 +53,14 @@ pub async fn transcribe_audio_with_segments(
     }
 
     match provider.provider_type.as_str() {
-        "openai" => {
-            // Try local faster-whisper /segments endpoint first (works when base_url points to
-            // the local whisper-server); fall back to plain OpenAI transcription.
-            let base_url = provider
-                .base_url
-                .clone()
-                .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
-            let clean_base = base_url.trim().trim_end_matches('/');
-            let is_openai_cloud = clean_base.contains("api.openai.com");
-
-            if !is_openai_cloud {
-                // Attempt faster-whisper /segments endpoint
-                match transcribe_openai_segments(provider, audio_path, bytes.clone(), language).await {
-                    Ok(result) => return Ok(result),
-                    Err(_) => {
-                        // Fall through to plain transcription
-                    }
-                }
-            }
-            let text = transcribe_openai(provider, audio_path, bytes, language).await?;
-            Ok(TranscriptionResult { text, segments: vec![] })
-        }
+        "openai" => transcribe_openai_audio(provider, audio_path, bytes, language).await,
         "gemini" => {
             let text = transcribe_gemini(provider, audio_path, bytes, language).await?;
             Ok(TranscriptionResult { text, segments: vec![] })
         }
         "ollama" => {
-            // Try local faster-whisper /segments endpoint first
-            match transcribe_openai_segments(provider, audio_path, bytes.clone(), language).await {
+            // Try OpenAI-compatible whisper endpoint first
+            match transcribe_openai_audio(provider, audio_path, bytes.clone(), language).await {
                 Ok(result) => Ok(result),
                 Err(_) => {
                     let text = transcribe_ollama(provider, audio_path, bytes, language).await?;
@@ -94,7 +74,6 @@ pub async fn transcribe_audio_with_segments(
     }
 }
 
-
 fn create_transcription_client() -> Client {
     Client::builder()
         .connect_timeout(std::time::Duration::from_secs(15))
@@ -103,9 +82,48 @@ fn create_transcription_client() -> Client {
         .unwrap_or_else(|_| Client::new())
 }
 
-/// Calls the faster-whisper server's `/v1/audio/transcriptions/segments` endpoint and
-/// returns a `TranscriptionResult` with per-segment timing.  Falls back is handled by caller.
-async fn transcribe_openai_segments(
+pub fn parse_segments_from_json(json_val: &serde_json::Value) -> Vec<AudioSegment> {
+    json_val["segments"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|seg| {
+                    let start_ms = if let Some(ms) = seg["start_ms"].as_i64() {
+                        ms
+                    } else if let Some(s) = seg["start"].as_f64() {
+                        (s * 1000.0).round() as i64
+                    } else {
+                        return None;
+                    };
+
+                    let end_ms = if let Some(ms) = seg["end_ms"].as_i64() {
+                        ms
+                    } else if let Some(s) = seg["end"].as_f64() {
+                        (s * 1000.0).round() as i64
+                    } else {
+                        return None;
+                    };
+
+                    let seg_text = seg["text"].as_str()?.trim().to_string();
+                    if seg_text.is_empty() {
+                        return None;
+                    }
+                    let avg_logprob = seg["avg_logprob"].as_f64().unwrap_or(0.0) as f32;
+                    Some(AudioSegment {
+                        start_ms,
+                        end_ms,
+                        text: seg_text,
+                        avg_logprob,
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default()
+}
+
+/// Calls OpenAI / faster-whisper audio transcription endpoint with `response_format=verbose_json`.
+/// Automatically parses both text and timed segments. Supports fallback across candidate URLs.
+pub async fn transcribe_openai_audio(
     provider: &ProviderConfig,
     audio_path: &Path,
     bytes: Vec<u8>,
@@ -119,116 +137,29 @@ async fn transcribe_openai_segments(
     let base_url = provider
         .base_url
         .clone()
-        .unwrap_or_else(|| "http://localhost:8000".to_string());
-
-    let clean_base = base_url.trim().trim_end_matches('/');
-    // Build the /segments URL variant
-    let url = if clean_base.ends_with("/audio/transcriptions/segments") {
-        clean_base.to_string()
-    } else if clean_base.ends_with("/v1") {
-        format!("{clean_base}/audio/transcriptions/segments")
-    } else {
-        format!("{clean_base}/v1/audio/transcriptions/segments")
-    };
-
-    let file_name = audio_path
-        .file_name()
-        .map(|f| f.to_string_lossy().to_string())
-        .unwrap_or_else(|| "recording.webm".to_string());
-
-    let model_name = provider
-        .model
-        .clone()
-        .unwrap_or_else(|| "whisper-1".to_string());
-
-    let client = create_transcription_client();
-    let part = reqwest::multipart::Part::bytes(bytes).file_name(file_name);
-    let mut form = reqwest::multipart::Form::new()
-        .part("file", part)
-        .text("model", model_name)
-        .text("response_format", "verbose_json");
-
-    if let Some(lang) = language.filter(|l| !l.is_empty() && *l != "auto") {
-        form = form.text("language", lang.to_string());
-    }
-
-    let response = client
-        .post(&url)
-        .bearer_auth(&api_key)
-        .multipart(form)
-        .send()
-        .await
-        .context("segments endpoint not reachable")?;
-
-    if !response.status().is_success() {
-        anyhow::bail!("segments endpoint returned HTTP {}", response.status());
-    }
-
-    let json_val: serde_json::Value = response
-        .json()
-        .await
-        .context("invalid JSON from segments endpoint")?;
-
-    let text = json_val["text"]
-        .as_str()
-        .unwrap_or("")
-        .to_string();
-
-    let segments = json_val["segments"]
-        .as_array()
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|seg| {
-                    // Support both `start` (seconds as float) or `start_ms` (integer)
-                    let start_ms = if let Some(ms) = seg["start_ms"].as_i64() {
-                        ms
-                    } else {
-                        (seg["start"].as_f64()? * 1000.0) as i64
-                    };
-                    
-                    let end_ms = if let Some(ms) = seg["end_ms"].as_i64() {
-                        ms
-                    } else {
-                        (seg["end"].as_f64()? * 1000.0) as i64
-                    };
-                    let seg_text = seg["text"].as_str()?.to_string();
-                    let avg_logprob = seg["avg_logprob"].as_f64().unwrap_or(0.0) as f32;
-                    Some(AudioSegment { start_ms, end_ms, text: seg_text, avg_logprob })
-                })
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-
-    if text.is_empty() {
-        anyhow::bail!("empty transcript from segments endpoint");
-    }
-
-    Ok(TranscriptionResult { text, segments })
-}
-
-async fn transcribe_openai(
-    provider: &ProviderConfig,
-    audio_path: &Path,
-    bytes: Vec<u8>,
-    language: Option<&str>,
-) -> Result<String> {
-    let api_key = provider
-        .api_key
-        .clone()
-        .filter(|k| !k.trim().is_empty())
-        .unwrap_or_else(|| "not-needed".to_string());
-    let base_url = provider
-        .base_url
-        .clone()
         .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
 
     let clean_base = base_url.trim().trim_end_matches('/');
-    let url = if clean_base.ends_with("/audio/transcriptions") {
-        clean_base.to_string()
-    } else if clean_base.ends_with("/v1") || clean_base.starts_with("https://api.openai.com") {
-        format!("{clean_base}/audio/transcriptions")
+
+    let candidate_urls = if clean_base.ends_with("/audio/transcriptions/segments") {
+        vec![clean_base.to_string()]
+    } else if clean_base.ends_with("/audio/transcriptions") {
+        vec![
+            clean_base.to_string(),
+            format!("{clean_base}/segments"),
+        ]
+    } else if clean_base.ends_with("/v1") {
+        vec![
+            format!("{clean_base}/audio/transcriptions"),
+            format!("{clean_base}/audio/transcriptions/segments"),
+        ]
     } else {
-        format!("{clean_base}/v1/audio/transcriptions")
+        vec![
+            format!("{clean_base}/v1/audio/transcriptions"),
+            format!("{clean_base}/v1/audio/transcriptions/segments"),
+            format!("{clean_base}/audio/transcriptions"),
+            clean_base.to_string(),
+        ]
     };
 
     let file_name = audio_path
@@ -241,75 +172,102 @@ async fn transcribe_openai(
         .clone()
         .unwrap_or_else(|| "whisper-1".to_string());
 
-    let bytes_len = bytes.len();
     let client = create_transcription_client();
-    let part = reqwest::multipart::Part::bytes(bytes).file_name(file_name.clone());
-    let mut form = reqwest::multipart::Form::new()
-        .part("file", part)
-        .text("model", model_name.clone());
+    let bytes_len = bytes.len();
+    let mut last_err = None;
 
-    if let Some(lang) = language.filter(|l| !l.is_empty() && *l != "auto") {
-        form = form.text("language", lang.to_string());
-    }
+    for url in &candidate_urls {
+        let part = reqwest::multipart::Part::bytes(bytes.clone()).file_name(file_name.clone());
+        let mut form = reqwest::multipart::Form::new()
+            .part("file", part)
+            .text("model", model_name.clone())
+            .text("response_format", "verbose_json");
 
-    let payload_desc = format!(
-        "File: {file_name} ({bytes_len} bytes), Modello: {model_name}, Lingua: {:?}",
-        language
-    );
-    crate::logger::log_api_request("Whisper/OpenAI Audio", "POST", &url, None, &payload_desc);
-
-    let start_time = std::time::Instant::now();
-    let send_res = client
-        .post(&url)
-        .bearer_auth(&api_key)
-        .multipart(form)
-        .send()
-        .await;
-    let duration_ms = start_time.elapsed().as_millis();
-
-    let response = match send_res {
-        Ok(resp) => resp,
-        Err(e) => {
-            let err_msg = if e.is_timeout() {
-                format!("Timeout scaduto (oltre 5 minuti) in attesa di trascrizione da {url}.")
-            } else if e.is_connect() {
-                format!("Impossibile connettersi al server di trascrizione su {url}. Verifica che sia attivo.")
-            } else {
-                format!("Errore di rete verso {url}: {e}")
-            };
-            crate::logger::log_api_error("Whisper/OpenAI Audio", &url, duration_ms, &err_msg);
-            anyhow::bail!("{err_msg}");
+        if let Some(lang) = language.filter(|l| !l.is_empty() && *l != "auto") {
+            form = form.text("language", lang.to_string());
         }
-    };
 
-    let status = response.status();
-    let body = response.text().await.unwrap_or_default();
-
-    if !status.is_success() {
-        crate::logger::log_api_error(
-            "Whisper/OpenAI Audio",
-            &url,
-            duration_ms,
-            &format!("HTTP {status}: {body}"),
+        let payload_desc = format!(
+            "File: {file_name} ({bytes_len} bytes), Modello: {model_name}, Lingua: {:?}, format: verbose_json",
+            language
         );
-        anyhow::bail!("Whisper API su {url} ha risposto con errore HTTP {status}: {body}");
+        crate::logger::log_api_request("Whisper/OpenAI Audio", "POST", url, None, &payload_desc);
+
+        let start_time = std::time::Instant::now();
+        let send_res = client
+            .post(url)
+            .bearer_auth(&api_key)
+            .multipart(form)
+            .send()
+            .await;
+        let duration_ms = start_time.elapsed().as_millis();
+
+        let response = match send_res {
+            Ok(resp) => resp,
+            Err(e) => {
+                let err_msg = if e.is_timeout() {
+                    format!("Timeout scaduto (oltre 5 minuti) in attesa di trascrizione da {url}.")
+                } else if e.is_connect() {
+                    format!("Impossibile connettersi al server Whisper su {url}: {e}")
+                } else {
+                    format!("Errore di rete verso {url}: {e}")
+                };
+                crate::logger::log_api_error("Whisper/OpenAI Audio", url, duration_ms, &err_msg);
+                last_err = Some(anyhow::anyhow!("{err_msg}"));
+                continue;
+            }
+        };
+
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+
+        if status.as_u16() == 404 && candidate_urls.len() > 1 {
+            crate::logger::log_api_error(
+                "Whisper/OpenAI Audio (404 - tentando URL fallback)",
+                url,
+                duration_ms,
+                &body,
+            );
+            last_err = Some(anyhow::anyhow!("HTTP 404 su {url}"));
+            continue;
+        }
+
+        if !status.is_success() {
+            crate::logger::log_api_error(
+                "Whisper/OpenAI Audio",
+                url,
+                duration_ms,
+                &format!("HTTP {status}: {body}"),
+            );
+            anyhow::bail!("Whisper API su {url} ha risposto con errore HTTP {status}: {body}");
+        }
+
+        crate::logger::log_api_response(
+            "Whisper/OpenAI Audio",
+            url,
+            status.as_u16(),
+            duration_ms,
+            &body,
+        );
+
+        let json_val: serde_json::Value = serde_json::from_str(&body)
+            .context("risposta JSON non valida da Whisper")?;
+
+        let text = json_val["text"]
+            .as_str()
+            .map(str::to_string)
+            .unwrap_or_default();
+
+        if text.trim().is_empty() {
+            anyhow::bail!("Whisper API ha restituito una trascrizione vuota");
+        }
+
+        let segments = parse_segments_from_json(&json_val);
+
+        return Ok(TranscriptionResult { text, segments });
     }
 
-    crate::logger::log_api_response(
-        "Whisper/OpenAI Audio",
-        &url,
-        status.as_u16(),
-        duration_ms,
-        &body,
-    );
-
-    let json_val: serde_json::Value = serde_json::from_str(&body)
-        .context("risposta JSON non valida da Whisper")?;
-
-    json_val["text"]
-        .as_str()
-        .map(str::to_string)
-        .context("missing OpenAI Whisper transcription in response")
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("Nessun endpoint Whisper valido trovato")))
 }
 
 async fn transcribe_gemini(

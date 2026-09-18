@@ -104,72 +104,121 @@ impl AiPipeline {
             anyhow::bail!("cancelled by user");
         }
 
-        let audio_transcript_result = if let Some(existing) = &session.audio_transcript {
-            if !existing.trim().is_empty() {
-                emit_log(app, session_id, "Utilizzo trascrizione vocale esistente");
-                // Try to reload stored segments from DB for existing sessions
-                let segments = session.audio_segments_json
-                    .as_deref()
-                    .and_then(|j| serde_json::from_str::<Vec<AudioSegment>>(j).ok())
-                    .unwrap_or_default();
-                Some(crate::ai::transcription::TranscriptionResult { text: existing.clone(), segments })
-            } else {
-                None
-            }
-        } else if let Some(audio_path_str) = &session.audio_path {
-            let audio_path = std::path::Path::new(audio_path_str);
-            if audio_path.is_file() {
-                emit_log(app, session_id, "Avvio trascrizione audio del microfono con AI...");
+        let audio_transcript_result = {
+            let stored_segments = session
+                .audio_segments_json
+                .as_deref()
+                .and_then(|j| serde_json::from_str::<Vec<AudioSegment>>(j).ok())
+                .unwrap_or_default();
 
-                let transcription_prov_id = self.db.get_setting("transcription_provider_id").unwrap_or(None);
-                let transcription_model_override = self.db.get_setting("transcription_model").unwrap_or(None);
-                let transcription_url_override = self.db.get_setting("transcription_base_url").unwrap_or(None);
+            let has_valid_stored_segments = !stored_segments.is_empty();
+            let has_existing_text = session
+                .audio_transcript
+                .as_ref()
+                .map(|t| !t.trim().is_empty())
+                .unwrap_or(false);
 
-                let mut trans_provider = if let Some(prov_id) = transcription_prov_id.filter(|s| !s.trim().is_empty()) {
-                    self.db
-                        .list_providers()
-                        .unwrap_or_default()
-                        .into_iter()
-                        .find(|p| p.id == prov_id)
-                        .unwrap_or_else(|| provider.clone())
-                } else {
-                    provider.clone()
-                };
+            if has_valid_stored_segments && has_existing_text {
+                let existing_text = session.audio_transcript.as_ref().unwrap();
+                emit_log(
+                    app,
+                    session_id,
+                    &format!(
+                        "Utilizzo trascrizione vocale e {} segmenti temporizzati esistenti a database",
+                        stored_segments.len()
+                    ),
+                );
+                Some(crate::ai::transcription::TranscriptionResult {
+                    text: existing_text.clone(),
+                    segments: stored_segments,
+                })
+            } else if let Some(audio_path_str) = &session.audio_path {
+                let audio_path = std::path::Path::new(audio_path_str);
+                if audio_path.is_file() {
+                    if has_existing_text {
+                        emit_log(
+                            app,
+                            session_id,
+                            "Trascrizione presente ma priva di segmentazione temporizzata a DB. Avvio analisi audio con Whisper per recuperare i segmenti...",
+                        );
+                    } else {
+                        emit_log(
+                            app,
+                            session_id,
+                            "Avvio trascrizione audio del microfono con AI...",
+                        );
+                    }
 
-                if let Some(model_override) = transcription_model_override.filter(|s| !s.trim().is_empty()) {
-                    trans_provider.model = Some(model_override);
-                }
-                if let Some(url_override) = transcription_url_override.filter(|s| !s.trim().is_empty()) {
-                    trans_provider.base_url = Some(url_override);
-                }
+                    let transcription_prov_id = self.db.get_setting("transcription_provider_id").unwrap_or(None);
+                    let transcription_model_override = self.db.get_setting("transcription_model").unwrap_or(None);
+                    let transcription_url_override = self.db.get_setting("transcription_base_url").unwrap_or(None);
 
-                let transcription_lang = self.db.get_setting("transcription_language").unwrap_or(None);
+                    let mut trans_provider = if let Some(prov_id) = transcription_prov_id.filter(|s| !s.trim().is_empty()) {
+                        self.db
+                            .list_providers()
+                            .unwrap_or_default()
+                            .into_iter()
+                            .find(|p| p.id == prov_id)
+                            .unwrap_or_else(|| provider.clone())
+                    } else {
+                        provider.clone()
+                    };
 
-                match transcribe_audio_with_segments(&trans_provider, audio_path, transcription_lang.as_deref()).await {
-                    Ok(result) => {
-                        let _ = self.db.update_session_audio_transcript(session_id, &result.text);
-                        emit_log(app, session_id, &format!(
-                            "Trascrizione vocale completata con {}: {} caratteri, {} segmenti temporizzati",
-                            trans_provider.name, result.text.len(), result.segments.len()
-                        ));
-                        // Persist timed segments to DB for replay/re-alignment
-                        if !result.segments.is_empty() {
-                            if let Ok(segs_json) = serde_json::to_string(&result.segments) {
-                                let _ = self.db.update_session_audio_segments(session_id, &segs_json);
+                    if let Some(model_override) = transcription_model_override.filter(|s| !s.trim().is_empty()) {
+                        trans_provider.model = Some(model_override);
+                    }
+                    if let Some(url_override) = transcription_url_override.filter(|s| !s.trim().is_empty()) {
+                        trans_provider.base_url = Some(url_override);
+                    }
+
+                    let transcription_lang = self.db.get_setting("transcription_language").unwrap_or(None);
+
+                    match transcribe_audio_with_segments(&trans_provider, audio_path, transcription_lang.as_deref()).await {
+                        Ok(result) => {
+                            let _ = self.db.update_session_audio_transcript(session_id, &result.text);
+                            emit_log(app, session_id, &format!(
+                                "Trascrizione vocale completata con {}: {} caratteri, {} segmenti temporizzati",
+                                trans_provider.name, result.text.len(), result.segments.len()
+                            ));
+                            // Persist timed segments to DB for replay/re-alignment
+                            if !result.segments.is_empty() {
+                                if let Ok(segs_json) = serde_json::to_string(&result.segments) {
+                                    let _ = self.db.update_session_audio_segments(session_id, &segs_json);
+                                }
+                            }
+                            Some(result)
+                        }
+                        Err(err) => {
+                            emit_log(app, session_id, &format!("Trascrizione non riuscita: {err}"));
+                            if let Some(existing_text) = &session.audio_transcript {
+                                emit_log(app, session_id, "Utilizzo comunque il testo della trascrizione precedentemente salvato");
+                                Some(crate::ai::transcription::TranscriptionResult {
+                                    text: existing_text.clone(),
+                                    segments: vec![],
+                                })
+                            } else {
+                                None
                             }
                         }
-                        Some(result)
                     }
-                    Err(err) => {
-                        emit_log(app, session_id, &format!("Trascrizione non riuscita: {err}"));
-                        None
-                    }
+                } else if let Some(existing_text) = &session.audio_transcript {
+                    emit_log(app, session_id, "Utilizzo trascrizione vocale esistente (file audio non presente per ri-segmentare)");
+                    Some(crate::ai::transcription::TranscriptionResult {
+                        text: existing_text.clone(),
+                        segments: vec![],
+                    })
+                } else {
+                    None
                 }
+            } else if let Some(existing_text) = &session.audio_transcript {
+                emit_log(app, session_id, "Utilizzo trascrizione vocale esistente");
+                Some(crate::ai::transcription::TranscriptionResult {
+                    text: existing_text.clone(),
+                    segments: vec![],
+                })
             } else {
                 None
             }
-        } else {
-            None
         };
 
         if cancel_flag.load(Ordering::Relaxed) {

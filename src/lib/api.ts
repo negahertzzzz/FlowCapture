@@ -15,7 +15,15 @@ export interface Session {
   preview_screenshot_path?: string | null;
   audio_path?: string | null;
   audio_transcript?: string | null;
+  audio_segments_json?: string | null;
   full_video_path?: string | null;
+}
+
+export interface AudioSegment {
+  start_ms: number;
+  end_ms: number;
+  text: string;
+  avg_logprob?: number;
 }
 
 export interface StoredEvent {

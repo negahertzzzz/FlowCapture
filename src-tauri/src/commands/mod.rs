@@ -522,14 +522,44 @@ pub async fn transcribe_session_audio(
         &format!("Invio file '{filename}' ({file_size} bytes, lingua: {:?}). In attesa...", transcription_lang),
     );
 
-    let transcript = match crate::ai::transcription::transcribe_audio(&provider, &audio_path, transcription_lang.as_deref()).await {
-        Ok(t) => {
+    let result = match crate::ai::transcription::transcribe_audio_with_segments(&provider, &audio_path, transcription_lang.as_deref()).await {
+        Ok(res) => {
+            let seg_count = res.segments.len();
             crate::ai::emit_log(
                 &app,
                 &session_id,
-                &format!("Trascrizione vocale completata con successo ({} caratteri)!", t.len()),
+                &format!("Trascrizione vocale completata con successo ({} caratteri, {} segmenti temporizzati)!", res.text.len(), seg_count),
             );
-            t
+            if seg_count > 0 {
+                for (idx, seg) in res.segments.iter().take(3).enumerate() {
+                    let preview = if seg.text.len() > 60 { format!("{}...", &seg.text[..60]) } else { seg.text.clone() };
+                    crate::ai::emit_log(
+                        &app,
+                        &session_id,
+                        &format!(
+                            "  Seg. #{} [{:02}:{:02} - {:02}:{:02}]: \"{}\"",
+                            idx + 1,
+                            seg.start_ms / 60000, (seg.start_ms % 60000) / 1000,
+                            seg.end_ms / 60000, (seg.end_ms % 60000) / 1000,
+                            preview
+                        ),
+                    );
+                }
+                if seg_count > 3 {
+                    crate::ai::emit_log(
+                        &app,
+                        &session_id,
+                        &format!("  ... e altri {} segmenti salvati nel database.", seg_count - 3),
+                    );
+                }
+            } else {
+                crate::ai::emit_log(
+                    &app,
+                    &session_id,
+                    "Nota: Trascrizione salvata. Il server Whisper non ha restituito segmenti temporizzati.",
+                );
+            }
+            res
         }
         Err(err) => {
             let msg = format!("Errore durante la trascrizione audio: {err}");
@@ -540,11 +570,17 @@ pub async fn transcribe_session_audio(
 
     state
         .db
-        .update_session_audio_transcript(&session_id, &transcript)
+        .update_session_audio_transcript(&session_id, &result.text)
         .map_err(|err| err.to_string())?;
 
-    crate::ai::emit_log(&app, &session_id, "Testo trascritto salvato con successo nel database!");
-    Ok(transcript)
+    if !result.segments.is_empty() {
+        if let Ok(segs_json) = serde_json::to_string(&result.segments) {
+            let _ = state.db.update_session_audio_segments(&session_id, &segs_json);
+        }
+    }
+
+    crate::ai::emit_log(&app, &session_id, "Trascrizione e segmentazione vocale salvate con successo nel database!");
+    Ok(result.text)
 }
 
 #[tauri::command]

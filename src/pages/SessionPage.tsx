@@ -1,7 +1,7 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { save } from "@tauri-apps/plugin-dialog";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { ProcessingPanel } from "@/components/ai/ProcessingPanel";
 import { MarkdownEditor } from "@/components/documentation/MarkdownEditor";
@@ -15,6 +15,7 @@ import { useAiJob } from "@/context/AiJobContext";
 import { useSessionsContext } from "@/context/SessionsContext";
 import {
   api,
+  type AudioSegment,
   type ExportOptionsPayload,
   type ExportRecord,
   type RedactionSummary,
@@ -60,6 +61,18 @@ export function SessionPage() {
   const [audioLogs, setAudioLogs] = useState<string[]>([]);
   const [showAudioLog, setShowAudioLog] = useState(false);
   const [audioStatus, setAudioStatus] = useState<"idle" | "transcribing" | "success" | "error">("idle");
+  const [audioViewMode, setAudioViewMode] = useState<"segments" | "text">("segments");
+  const audioPlayerRef = useRef<HTMLAudioElement | null>(null);
+
+  const audioSegments: AudioSegment[] = useMemo(() => {
+    if (!session?.audio_segments_json) return [];
+    try {
+      const parsed = JSON.parse(session.audio_segments_json);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }, [session?.audio_segments_json]);
   const [annotatingScreenshot, setAnnotatingScreenshot] = useState<Screenshot | null>(null);
   const [exportingBundle, setExportingBundle] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -883,6 +896,7 @@ export function SessionPage() {
                   Traccia Audio Microfono:
                 </div>
                 <audio
+                  ref={audioPlayerRef}
                   controls
                   src={convertFileSrc(session.audio_path)}
                   style={{ width: "100%", height: "40px" }}
@@ -890,31 +904,175 @@ export function SessionPage() {
               </div>
 
               <div style={{ padding: "16px", background: "rgba(255,255,255,0.03)", borderRadius: "8px", border: "1px solid var(--hair)" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
-                  <div style={{ fontSize: "13px", fontWeight: 500, color: "var(--text)" }}>
-                    Trascrizione del Parlato (Speech-to-Text):
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px", flexWrap: "wrap", gap: "8px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+                    <div style={{ fontSize: "13px", fontWeight: 500, color: "var(--text)" }}>
+                      Trascrizione del Parlato (Speech-to-Text):
+                    </div>
+                    {session.audio_transcript ? (
+                      <span style={{ fontSize: "11px", color: "#34d399", fontWeight: 600, background: "rgba(52, 211, 153, 0.15)", padding: "2px 8px", borderRadius: "10px" }}>
+                        ● Trascritto
+                      </span>
+                    ) : null}
+                    {audioSegments.length > 0 ? (
+                      <span style={{ fontSize: "11px", color: "#60a5fa", fontWeight: 600, background: "rgba(96, 165, 250, 0.15)", padding: "2px 8px", borderRadius: "10px" }}>
+                        {audioSegments.length} segmenti temporizzati
+                      </span>
+                    ) : null}
                   </div>
-                  {session.audio_transcript ? (
-                    <span style={{ fontSize: "11px", color: "var(--color-primary)", fontWeight: 600 }}>
-                      ● Trascritto
-                    </span>
-                  ) : null}
+
+                  {session.audio_transcript && audioSegments.length > 0 && (
+                    <div style={{ display: "flex", background: "rgba(255, 255, 255, 0.05)", borderRadius: "6px", padding: "2px", border: "1px solid var(--hair)" }}>
+                      <button
+                        type="button"
+                        onClick={() => setAudioViewMode("segments")}
+                        style={{
+                          background: audioViewMode === "segments" ? "var(--color-primary)" : "transparent",
+                          color: audioViewMode === "segments" ? "#fff" : "var(--dim)",
+                          border: "none",
+                          borderRadius: "4px",
+                          padding: "4px 10px",
+                          fontSize: "12px",
+                          cursor: "pointer",
+                          fontWeight: audioViewMode === "segments" ? 600 : 400,
+                          transition: "all 0.15s",
+                        }}
+                      >
+                        Segmenti ({audioSegments.length})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setAudioViewMode("text")}
+                        style={{
+                          background: audioViewMode === "text" ? "var(--color-primary)" : "transparent",
+                          color: audioViewMode === "text" ? "#fff" : "var(--dim)",
+                          border: "none",
+                          borderRadius: "4px",
+                          padding: "4px 10px",
+                          fontSize: "12px",
+                          cursor: "pointer",
+                          fontWeight: audioViewMode === "text" ? 600 : 400,
+                          transition: "all 0.15s",
+                        }}
+                      >
+                        Testo Continuo
+                      </button>
+                    </div>
+                  )}
                 </div>
+
                 {session.audio_transcript ? (
-                  <div
-                    style={{
-                      whiteSpace: "pre-wrap",
-                      fontSize: "14px",
-                      lineHeight: "1.6",
-                      color: "var(--text)",
-                      background: "var(--surface)",
-                      padding: "14px 16px",
-                      borderRadius: "6px",
-                      border: "1px solid var(--hair)",
-                    }}
-                  >
-                    {session.audio_transcript}
-                  </div>
+                  audioViewMode === "segments" && audioSegments.length > 0 ? (
+                    <div style={{ display: "flex", flexDirection: "column", gap: "8px", maxHeight: "480px", overflowY: "auto", paddingRight: "4px" }}>
+                      {audioSegments.map((seg, idx) => {
+                        const startSec = Math.floor(seg.start_ms / 1000);
+                        const endSec = Math.floor(seg.end_ms / 1000);
+                        const fmtTime = (s: number) => `${Math.floor(s / 60).toString().padStart(2, "0")}:${(s % 60).toString().padStart(2, "0")}`;
+                        return (
+                          <div
+                            key={idx}
+                            style={{
+                              display: "flex",
+                              alignItems: "flex-start",
+                              gap: "12px",
+                              padding: "10px 14px",
+                              borderRadius: "6px",
+                              background: "var(--surface)",
+                              border: "1px solid var(--hair)",
+                              transition: "background 0.15s",
+                            }}
+                          >
+                            <button
+                              type="button"
+                              title="Ascolta questo segmento"
+                              onClick={() => {
+                                if (audioPlayerRef.current) {
+                                  audioPlayerRef.current.currentTime = seg.start_ms / 1000;
+                                  audioPlayerRef.current.play();
+                                }
+                              }}
+                              style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: "5px",
+                                background: "rgba(96, 165, 250, 0.12)",
+                                border: "1px solid rgba(96, 165, 250, 0.3)",
+                                borderRadius: "4px",
+                                padding: "3px 8px",
+                                color: "#60a5fa",
+                                fontSize: "11px",
+                                fontFamily: "monospace",
+                                cursor: "pointer",
+                                flexShrink: 0,
+                                marginTop: "1px",
+                              }}
+                            >
+                              <span>▶</span>
+                              <span>{fmtTime(startSec)} - {fmtTime(endSec)}</span>
+                            </button>
+                            <div style={{ flex: 1, fontSize: "13.5px", lineHeight: "1.5", color: "var(--text)" }}>
+                              {seg.text}
+                            </div>
+                            {typeof seg.avg_logprob === "number" && seg.avg_logprob !== 0 && (
+                              <span
+                                title={`Whisper logprob: ${seg.avg_logprob.toFixed(2)}`}
+                                style={{
+                                  fontSize: "10px",
+                                  padding: "2px 6px",
+                                  borderRadius: "4px",
+                                  background: seg.avg_logprob > -0.6 ? "rgba(52, 211, 153, 0.1)" : "rgba(251, 191, 36, 0.1)",
+                                  color: seg.avg_logprob > -0.6 ? "#34d399" : "#fbbf24",
+                                  fontFamily: "monospace",
+                                  flexShrink: 0,
+                                }}
+                              >
+                                {Math.round(Math.min(100, Math.max(0, Math.exp(seg.avg_logprob) * 100)))}%
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div>
+                      {audioSegments.length === 0 && (
+                        <div
+                          style={{
+                            marginBottom: "12px",
+                            padding: "10px 14px",
+                            background: "rgba(234, 179, 8, 0.08)",
+                            border: "1px solid rgba(234, 179, 8, 0.3)",
+                            borderRadius: "6px",
+                            fontSize: "12.5px",
+                            color: "#fbbf24",
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "8px",
+                          }}
+                        >
+                          <span>💡</span>
+                          <span>
+                            Questa sessione contiene una trascrizione solo testuale senza segmenti temporizzati.
+                            Clicca sul pulsante <strong>"Ritrascrivi Audio"</strong> in alto a destra per estrarre la segmentazione con il server Whisper aggiornato.
+                          </span>
+                        </div>
+                      )}
+                      <div
+                        style={{
+                          whiteSpace: "pre-wrap",
+                          fontSize: "14px",
+                          lineHeight: "1.6",
+                          color: "var(--text)",
+                          background: "var(--surface)",
+                          padding: "14px 16px",
+                          borderRadius: "6px",
+                          border: "1px solid var(--hair)",
+                        }}
+                      >
+                        {session.audio_transcript}
+                      </div>
+                    </div>
+                  )
                 ) : (
                   <div style={{ color: "var(--dim)", fontSize: "13.5px" }}>
                     Nessuna trascrizione generata finora. Clicca sul pulsante in alto a destra "Trascrivi con AI" per convertire la voce in testo.
