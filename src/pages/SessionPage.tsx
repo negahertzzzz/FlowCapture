@@ -5,17 +5,24 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { ProcessingPanel } from "@/components/ai/ProcessingPanel";
 import { MarkdownEditor } from "@/components/documentation/MarkdownEditor";
-import { ImageAnnotationModal } from "@/components/sessions/ImageAnnotationModal";
+import { MarkdownPreview } from "@/components/documentation/MarkdownPreview";
+import { ImageAnnotationModal, type AnnotationItem } from "@/components/sessions/ImageAnnotationModal";
+import { ScreenshotPickerModal } from "@/components/sessions/ScreenshotPickerModal";
+import { DuplicateScreenshotsModal } from "@/components/sessions/DuplicateScreenshotsModal";
+import { AnnotationOverlay } from "@/components/sessions/AnnotationOverlay";
 import { ExportPanel } from "@/components/export/ExportPanel";
 import { AppButton } from "@/components/ui/AppButton";
+import { ConfirmModal } from "@/components/ui/ConfirmModal";
 import { Icon } from "@/components/ui/Icon";
 import { Toast } from "@/components/ui/Toast";
+import { useDebouncedEffect } from "@/hooks/useDebouncedEffect";
 import { useSessionTitle } from "@/hooks/useSessionTitle";
 import { useAiJob } from "@/context/AiJobContext";
 import { useSessionsContext } from "@/context/SessionsContext";
 import {
   api,
   type AudioSegment,
+  type DuplicateScreenshotGroup,
   type ExportOptionsPayload,
   type ExportRecord,
   type RedactionSummary,
@@ -50,7 +57,6 @@ export function SessionPage() {
   const [screenshots, setScreenshots] = useState<Screenshot[]>([]);
   const [exports, setExports] = useState<ExportRecord[]>([]);
   const [steps, setSteps] = useState<WorkflowStep[]>([]);
-  const [markdown, setMarkdown] = useState("");
   const [busy, setBusy] = useState(false);
   const [transcribing, setTranscribing] = useState(false);
   const [translating, setTranslating] = useState(false);
@@ -81,6 +87,83 @@ export function SessionPage() {
   const [replayIndex, setReplayIndex] = useState(0);
   const [tab, setTab] = useState<TabName>("Timeline");
 
+  const [scanningDuplicates, setScanningDuplicates] = useState(false);
+  const [duplicateGroups, setDuplicateGroups] = useState<DuplicateScreenshotGroup[] | null>(null);
+
+  const [pickingScreenshotForStep, setPickingScreenshotForStep] = useState<number | null>(null);
+  const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
+  const [editingStep, setEditingStep] = useState(false);
+  const [editStepTitle, setEditStepTitle] = useState("");
+  const [editStepDesc, setEditStepDesc] = useState("");
+  const [savingStep, setSavingStep] = useState(false);
+  const [imgNaturalDims, setImgNaturalDims] = useState<{ w: number; h: number }>({ w: 1920, h: 1080 });
+  const [confirmModal, setConfirmModal] = useState<{
+    isOpen: boolean;
+    title: string;
+    message: string;
+    confirmLabel?: string;
+    cancelLabel?: string;
+    kind?: "danger" | "warning" | "primary";
+    action: () => Promise<void> | void;
+  } | null>(null);
+
+  const [hideAllScreenshots, setHideAllScreenshots] = useState(false);
+  const [collapsedEvents, setCollapsedEvents] = useState<Record<number, boolean>>({});
+
+  const eventScreenshotsMap = useMemo(() => {
+    const map = new Map<number, Screenshot[]>();
+    if (!events.length) return map;
+
+    for (let i = 0; i < events.length; i++) {
+      map.set(i, []);
+    }
+
+    for (const shot of screenshots) {
+      let targetIdx = -1;
+      for (let i = 0; i < events.length; i++) {
+        const currentStart = i === 0 ? -Infinity : events[i].timestamp_ms - 150;
+        const nextStart = i < events.length - 1 ? events[i + 1].timestamp_ms - 150 : Infinity;
+        if (shot.timestamp_ms >= currentStart && shot.timestamp_ms < nextStart) {
+          targetIdx = i;
+          break;
+        }
+      }
+      if (targetIdx === -1) {
+        targetIdx = events.length - 1;
+      }
+      map.get(targetIdx)?.push(shot);
+    }
+    return map;
+  }, [events, screenshots]);
+
+  const isEventCollapsed = useCallback(
+    (index: number) => {
+      if (collapsedEvents[index] !== undefined) {
+        return collapsedEvents[index];
+      }
+      return hideAllScreenshots;
+    },
+    [collapsedEvents, hideAllScreenshots],
+  );
+
+  const toggleEventScreenshots = useCallback(
+    (index: number) => {
+      setCollapsedEvents((prev) => {
+        const current = prev[index] !== undefined ? prev[index] : hideAllScreenshots;
+        return { ...prev, [index]: !current };
+      });
+    },
+    [hideAllScreenshots],
+  );
+
+  const toggleAllScreenshots = useCallback(() => {
+    setHideAllScreenshots((prev) => {
+      const next = !prev;
+      setCollapsedEvents({});
+      return next;
+    });
+  }, []);
+
   const isCurrentSessionGenerating =
     activeJob?.sessionId === sessionId && !activeJob.isDone;
 
@@ -99,7 +182,12 @@ export function SessionPage() {
     onSaved: handleTitleSaved,
   });
 
-  async function refresh() {
+  const [markdown, setMarkdown] = useState("");
+  const [savingMarkdown, setSavingMarkdown] = useState(false);
+  const lastSavedMarkdown = useRef<string>("");
+  const isEditingMarkdown = useRef<boolean>(false);
+
+  const refresh = useCallback(async (options?: { syncMarkdown?: boolean }) => {
     const [nextSession, nextEvents, nextScreenshots, nextExports, nextSteps] =
       await Promise.all([
         api.getSession(sessionId),
@@ -113,12 +201,44 @@ export function SessionPage() {
     setScreenshots(nextScreenshots);
     setExports(nextExports);
     setSteps(nextSteps);
-    setMarkdown(nextSession?.documentation_md ?? "");
-  }
+
+    const dbMd = nextSession?.documentation_md ?? "";
+    if (options?.syncMarkdown || (!isEditingMarkdown.current && lastSavedMarkdown.current === "")) {
+      lastSavedMarkdown.current = dbMd;
+      setMarkdown(dbMd);
+    }
+  }, [sessionId]);
+
+  const handleSaveDocumentation = useCallback(async (textToSave?: string) => {
+    const md = textToSave !== undefined ? textToSave : markdown;
+    if (!sessionId) return;
+    setSavingMarkdown(true);
+    try {
+      await api.updateDocumentation(sessionId, md);
+      lastSavedMarkdown.current = md;
+      isEditingMarkdown.current = false;
+      setToast("Documentazione salvata con successo");
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setSavingMarkdown(false);
+    }
+  }, [sessionId, markdown]);
+
+  const handleMarkdownChange = useCallback((newMd: string) => {
+    isEditingMarkdown.current = true;
+    setMarkdown(newMd);
+  }, []);
+
+  useDebouncedEffect(() => {
+    if (markdown && isEditingMarkdown.current && markdown !== lastSavedMarkdown.current) {
+      handleSaveDocumentation(markdown);
+    }
+  }, [markdown, handleSaveDocumentation], 800);
 
   useEffect(() => {
-    refresh().catch((err) => setError(String(err)));
-  }, [sessionId]);
+    refresh({ syncMarkdown: true }).catch((err) => setError(String(err)));
+  }, [sessionId, refresh]);
 
   // When activeJob completes for this session, refresh data
   useEffect(() => {
@@ -131,16 +251,41 @@ export function SessionPage() {
     }
   }, [activeJob?.sessionId, activeJob?.isDone, activeJob?.result, sessionId]);
 
+  const replayStep = steps[replayIndex];
+
   const replayScreenshot = useMemo(() => {
-    const step = steps[replayIndex];
-    if (!step) return null;
-    const screenshotId = step.screenshot_ids[0];
+    if (!replayStep) return null;
+    const screenshotId = replayStep.screenshot_ids[0];
     return (
       screenshots.find((shot) => shot.id === screenshotId) ??
       screenshots[replayIndex] ??
       null
     );
-  }, [steps, screenshots, replayIndex]);
+  }, [steps, screenshots, replayIndex, replayStep]);
+
+  const currentStepAnnotations: AnnotationItem[] = useMemo(() => {
+    if (!replayStep) return [];
+    const jsonStr = replayStep.annotations_json || replayScreenshot?.annotations_json;
+    if (!jsonStr) {
+      if (replayScreenshot?.click_x != null && replayScreenshot?.click_y != null) {
+        return [{
+          id: "click_primary",
+          type: "click",
+          x: replayScreenshot.click_x,
+          y: replayScreenshot.click_y,
+          color: "#ef4444",
+          strokeWidth: 3,
+        }];
+      }
+      return [];
+    }
+    try {
+      const parsed = JSON.parse(jsonStr);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }, [replayStep, replayScreenshot]);
 
   const [selectedVideoMode, setSelectedVideoMode] = useState<"full" | "timelapse">("full");
 
@@ -180,7 +325,7 @@ export function SessionPage() {
 
     api
       .onVideoReady(sessionId, () => {
-        refresh().catch((err) => setError(String(err)));
+        refresh({ syncMarkdown: false }).catch((err) => setError(String(err)));
       })
       .then((fn) => {
         unlistenTime = fn;
@@ -188,17 +333,28 @@ export function SessionPage() {
 
     api
       .onFullVideoReady(sessionId, () => {
-        refresh().catch((err) => setError(String(err)));
+        refresh({ syncMarkdown: false }).catch((err) => setError(String(err)));
       })
       .then((fn) => {
         unlistenFull = fn;
       });
 
-    const interval = window.setInterval(() => {
+    const interval = window.setInterval(async () => {
       if ((!session?.full_video_path || !session?.video_path) && session && session.duration > 0) {
-        refresh().catch(() => undefined);
+        try {
+          const updated = await api.getSession(sessionId);
+          if (updated && (updated.video_path !== session.video_path || updated.full_video_path !== session.full_video_path)) {
+            setSession((prev) =>
+              prev
+                ? { ...prev, video_path: updated.video_path, full_video_path: updated.full_video_path }
+                : updated,
+            );
+          }
+        } catch {
+          // ignore
+        }
       }
-    }, 2500);
+    }, 3000);
 
     return () => {
       unlistenTime?.();
@@ -207,7 +363,23 @@ export function SessionPage() {
     };
   }, [sessionId, session?.video_path, session?.full_video_path]);
 
-  async function handleGenerate() {
+  function handleGenerate() {
+    if (session?.documentation_md && session.documentation_md.trim().length > 0) {
+      setConfirmModal({
+        isOpen: true,
+        title: "Sovrascrivere la Documentazione Esistente?",
+        message: "Per questa sessione esiste già una documentazione generata.\n\nAvviando una nuova generazione con l'AI, la documentazione attuale e i passaggi salvati verranno sovrascritti con i nuovi contenuti.\n\nDesideri procedere comunque?",
+        confirmLabel: "Rigenera e Sovrascrivi",
+        cancelLabel: "Annulla",
+        kind: "warning",
+        action: () => executeGenerate(),
+      });
+    } else {
+      executeGenerate();
+    }
+  }
+
+  async function executeGenerate() {
     setBusy(true);
     setError(null);
     setToast(null);
@@ -220,37 +392,27 @@ export function SessionPage() {
     }
   }
 
-  async function handleDeleteSession() {
+  function handleDeleteSession() {
     if (!session) return;
-    if (
-      window.confirm(
-        `Sei sicuro di voler eliminare definitivamente la sessione "${session.title}"? Tutti i dati e gli screenshot verranno cancellati.`
-      )
-    ) {
-      setBusy(true);
-      try {
-        await api.deleteSession(sessionId);
-        await refreshSessions();
-        navigate("/");
-      } catch (err) {
-        setError(String(err));
-        setBusy(false);
-      }
-    }
-  }
-
-  async function handleSaveDocumentation() {
-    setBusy(true);
-    setError(null);
-    try {
-      await api.updateSessionDocumentation(sessionId, markdown);
-      setToast("Saved");
-      await refresh();
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setBusy(false);
-    }
+    setConfirmModal({
+      isOpen: true,
+      title: "Elimina Sessione",
+      message: `Sei sicuro di voler eliminare definitivamente la sessione "${session.title}"?\n\nTutti gli eventi registrati, gli screenshot e i file associati verranno cancellati in modo permanente. Questa operazione non può essere annullata.`,
+      confirmLabel: "Elimina Sessione",
+      cancelLabel: "Annulla",
+      kind: "danger",
+      action: async () => {
+        setBusy(true);
+        try {
+          await api.deleteSession(sessionId);
+          await refreshSessions();
+          navigate("/");
+        } catch (err) {
+          setError(String(err));
+          setBusy(false);
+        }
+      },
+    });
   }
 
   async function handleCopyMarkdown() {
@@ -263,7 +425,23 @@ export function SessionPage() {
     }
   }
 
-  async function handleTranscribeAudio() {
+  function handleTranscribeAudio() {
+    if (session?.audio_transcript && session.audio_transcript.trim().length > 0) {
+      setConfirmModal({
+        isOpen: true,
+        title: "Sovrascrivere la Trascrizione Audio?",
+        message: "Questa sessione possiede già una trascrizione audio salvata.\n\nAvviando una nuova trascrizione con Whisper AI, il testo e i segmenti temporali attuali verranno sostituiti.\n\nDesideri procedere?",
+        confirmLabel: "Ritrascrivi Audio",
+        cancelLabel: "Annulla",
+        kind: "warning",
+        action: () => executeTranscribeAudio(),
+      });
+    } else {
+      executeTranscribeAudio();
+    }
+  }
+
+  async function executeTranscribeAudio() {
     setTranscribing(true);
     setError(null);
     setToast(null);
@@ -280,7 +458,7 @@ export function SessionPage() {
       await api.transcribeSessionAudio(sessionId);
       setAudioStatus("success");
       setToast("Audio trascritto con successo!");
-      await refresh();
+      await refresh({ syncMarkdown: false });
     } catch (err) {
       const msg = String(err);
       setError(msg);
@@ -292,7 +470,23 @@ export function SessionPage() {
     }
   }
 
-  async function handleTranslateDocumentation(targetLanguage = "Italian") {
+  function handleTranslateDocumentation(targetLanguage = "Italian") {
+    if (markdown && markdown.trim().length > 0) {
+      setConfirmModal({
+        isOpen: true,
+        title: "Tradurre la Documentazione in Italiano?",
+        message: "Il testo attuale della guida verrà inviato al modello AI per essere tradotto in lingua italiana.\n\nI tag delle immagini e gli screenshot associati rimarranno intatti.\n\nDesideri avviare la traduzione?",
+        confirmLabel: "Avvia Traduzione",
+        cancelLabel: "Annulla",
+        kind: "primary",
+        action: () => executeTranslateDocumentation(targetLanguage),
+      });
+    } else {
+      executeTranslateDocumentation(targetLanguage);
+    }
+  }
+
+  async function executeTranslateDocumentation(targetLanguage = "Italian") {
     setTranslating(true);
     setError(null);
     setToast(null);
@@ -308,9 +502,10 @@ export function SessionPage() {
 
       const translated = await api.translateDocumentation(sessionId, targetLanguage);
       setMarkdown(translated);
+      lastSavedMarkdown.current = translated;
       setTranslationStatus("success");
       setToast("Documentazione tradotta in italiano con successo!");
-      await refresh();
+      await refresh({ syncMarkdown: false });
     } catch (err) {
       const msg = String(err);
       setError(msg);
@@ -397,7 +592,65 @@ export function SessionPage() {
     );
   }
 
-  const replayStep = steps[replayIndex];
+
+  async function handleFindDuplicates() {
+    setScanningDuplicates(true);
+    try {
+      const groups = await api.findDuplicateScreenshots(sessionId);
+      if (groups.length === 0) {
+        setToast("Nessun duplicato trovato con somiglianza ≥ 60%");
+      } else {
+        setDuplicateGroups(groups);
+      }
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setScanningDuplicates(false);
+    }
+  }
+
+  async function handleMergeDuplicates(keepId: string, removeIds: string[]) {
+    await api.mergeDuplicateScreenshots(sessionId, keepId, removeIds);
+    setToast(`Uniti ed eliminati ${removeIds.length} screenshot duplicati`);
+    await refresh();
+  }
+
+  async function handleSaveStepContent() {
+    if (!replayStep) return;
+    setSavingStep(true);
+    try {
+      await api.updateStepContent(sessionId, replayStep.step, editStepTitle, editStepDesc);
+      setSteps((prev) =>
+        prev.map((s) =>
+          s.step === replayStep.step ? { ...s, title: editStepTitle, description: editStepDesc } : s,
+        ),
+      );
+      setToast("Passo aggiornato con successo");
+      setEditingStep(false);
+      await refresh({ syncMarkdown: false });
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setSavingStep(false);
+    }
+  }
+
+  async function handleSyncStepsFromDoc() {
+    setBusy(true);
+    try {
+      const synced = await api.getReplaySteps(sessionId);
+      setSteps(synced);
+      if (synced.length > 0) {
+        setToast(`Recuperati ${synced.length} passi dalla documentazione`);
+      } else {
+        setToast("Nessun passo trovato nella documentazione");
+      }
+    } catch (err) {
+      setError(String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
 
   return (
     <div className="page">
@@ -503,29 +756,162 @@ export function SessionPage() {
 
       {tab === "Timeline" ? (
         <div className="card panel">
-          <h3>Compressed Timeline</h3>
-          <div className="pd">Deterministic event compression before AI processing.</div>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              marginBottom: "14px",
+              flexWrap: "wrap",
+              gap: "10px",
+            }}
+          >
+            <div>
+              <h3 style={{ margin: 0 }}>Compressed Timeline ({events.length})</h3>
+              <div className="pd">
+                {events.length} eventi registrati · {screenshots.length} screenshot associati nel workflow.
+              </div>
+            </div>
+            {screenshots.length > 0 && (
+              <AppButton
+                size="sm"
+                kind="ghost"
+                icon={hideAllScreenshots ? "eye" : "eyeOff"}
+                onClick={toggleAllScreenshots}
+                title={hideAllScreenshots ? "Mostra tutti gli screenshot per gli eventi" : "Nascondi tutti gli screenshot per gli eventi"}
+              >
+                {hideAllScreenshots ? "Mostra tutti gli screenshot" : "Nascondi tutti gli screenshot"}
+              </AppButton>
+            )}
+          </div>
+
           <div className="tl-list">
             {events.length === 0 ? (
               <div className="pd">No compressed events yet.</div>
             ) : (
-              events.map((event, index) => (
-                <div
-                  key={`${event.timestamp_ms}-${index}`}
-                  className={`tl-evt${event.event_type.includes("click") ? " click" : ""}`}
-                >
-                  <span className="tk">
-                    <Icon name={timelineIcon(event.event_type)} size={17} />
-                  </span>
-                  <div className="tinfo">
-                    <div className="tt">{event.event_type.replaceAll("_", " ")}</div>
-                    <div className="td">
-                      {event.app_name ?? "Unknown app"} · {JSON.stringify(event.payload)}
+              events.map((event, index) => {
+                const eventShots = eventScreenshotsMap.get(index) ?? [];
+                const isCollapsed = isEventCollapsed(index);
+
+                return (
+                  <div
+                    key={`${event.timestamp_ms}-${index}`}
+                    className={`tl-evt${event.event_type.includes("click") ? " click" : ""}`}
+                  >
+                    <div className="tl-evt-header">
+                      <span className="tk">
+                        <Icon name={timelineIcon(event.event_type)} size={17} />
+                      </span>
+                      <div className="tinfo">
+                        <div className="tt">{event.event_type.replaceAll("_", " ")}</div>
+                        <div className="td">
+                          {event.app_name ?? "Unknown app"} · {JSON.stringify(event.payload)}
+                        </div>
+                      </div>
+
+                      <div className="tl-evt-meta">
+                        {eventShots.length > 0 ? (
+                          <button
+                            type="button"
+                            className={`tl-evt-toggle-btn${isCollapsed ? " collapsed" : ""}`}
+                            onClick={() => toggleEventScreenshots(index)}
+                            title={isCollapsed ? "Mostra gli screenshot di questo evento" : "Nascondi gli screenshot di questo evento"}
+                          >
+                            <Icon name="camera" size={13} />
+                            <span>
+                              {eventShots.length} {eventShots.length === 1 ? "screen" : "screen"}
+                            </span>
+                            <Icon name={isCollapsed ? "chevronDown" : "chevronUp"} size={12} />
+                          </button>
+                        ) : (
+                          <span className="tl-evt-no-shots">Nessun screenshot</span>
+                        )}
+
+                        <div className="ttime">{event.timestamp_ms}ms</div>
+                      </div>
                     </div>
+
+                    {!isCollapsed && eventShots.length > 0 && (
+                      <div className="tl-evt-shots">
+                        {eventShots.map((shot) => {
+                          const hasClick = shot.click_x != null && shot.click_y != null;
+                          let annotationsCount = 0;
+                          if (shot.annotations_json) {
+                            try {
+                              const parsed = JSON.parse(shot.annotations_json);
+                              if (Array.isArray(parsed)) annotationsCount = parsed.length;
+                            } catch {}
+                          }
+                          const deltaMs = shot.timestamp_ms - event.timestamp_ms;
+                          const timeLabel =
+                            deltaMs === 0
+                              ? `${shot.timestamp_ms}ms`
+                              : deltaMs > 0
+                              ? `+${deltaMs}ms`
+                              : `${deltaMs}ms`;
+
+                          return (
+                            <div
+                              key={shot.id}
+                              className="tl-shot-card"
+                              onClick={() => setAnnotatingScreenshot(shot)}
+                              title="Clicca per aprire lo screenshot a schermo intero o annotare"
+                            >
+                              <div className="tl-shot-thumb">
+                                <img
+                                  src={convertFileSrc(shot.path)}
+                                  alt={shot.trigger ?? "Screenshot evento"}
+                                  loading="lazy"
+                                  onError={(e) => {
+                                    (e.target as HTMLImageElement).style.display = "none";
+                                  }}
+                                />
+                                <div className="tl-shot-badge">
+                                  <span>{shot.trigger?.replaceAll("_", " ") ?? "screenshot"}</span>
+                                </div>
+                                {hasClick && (
+                                  <div
+                                    className="tl-shot-ann-badge"
+                                    style={{ background: "rgba(16, 185, 129, 0.9)" }}
+                                    title="Punto di click registrato"
+                                  >
+                                    🎯 Click
+                                  </div>
+                                )}
+                                {annotationsCount > 0 && (
+                                  <div
+                                    className="tl-shot-ann-badge"
+                                    style={{
+                                      left: hasClick ? "65px" : "5px",
+                                    }}
+                                    title={`${annotationsCount} annotazioni`}
+                                  >
+                                    ✏️ {annotationsCount}
+                                  </div>
+                                )}
+                                <div className="tl-shot-hover-action">
+                                  <span className="tl-shot-hover-btn">
+                                    <Icon name="edit" size={12} />
+                                    <span>Modifica</span>
+                                  </span>
+                                </div>
+                              </div>
+                              <div className="tl-shot-footer">
+                                <span className="tl-shot-label" title={shot.trigger ?? "screenshot"}>
+                                  {shot.trigger?.replaceAll("_", " ") ?? "screenshot"}
+                                </span>
+                                <span className="tl-shot-time" title={`Timestamp assoluto: ${shot.timestamp_ms}ms`}>
+                                  {timeLabel}
+                                </span>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
-                  <div className="ttime">{event.timestamp_ms}ms</div>
-                </div>
-              ))
+                );
+              })
             )}
           </div>
         </div>
@@ -533,8 +919,29 @@ export function SessionPage() {
 
       {tab === "Screenshots" ? (
         <div className="card panel">
-          <h3>Captured Screenshots</h3>
-          <div className="pd">Event-driven captures, ranked by relevance for the docs.</div>
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              marginBottom: "14px",
+              flexWrap: "wrap",
+              gap: "10px",
+            }}
+          >
+            <div>
+              <h3 style={{ margin: 0 }}>Captured Screenshots ({screenshots.length})</h3>
+              <div className="pd">Catture basate sugli eventi registrati durante il workflow.</div>
+            </div>
+            <AppButton
+              size="sm"
+              disabled={scanningDuplicates || screenshots.length < 2 || busy}
+              onClick={handleFindDuplicates}
+              title="Trova immagini con somiglianza ≥ 60% e ti permette di scegliere quali unire o eliminare"
+            >
+              {scanningDuplicates ? "Scansione duplicati…" : "🔍 Elimina duplicati (≥ 60%)"}
+            </AppButton>
+          </div>
           <div className="shot-grid">
             {screenshots.length === 0 ? (
               <div className="pd">No screenshots captured yet.</div>
@@ -577,7 +984,7 @@ export function SessionPage() {
                         onClick={() =>
                           api
                             .deleteScreenshot(shot.id)
-                            .then(refresh)
+                            .then(() => refresh())
                             .catch((err) => setError(String(err)))
                         }
                       >
@@ -620,8 +1027,14 @@ export function SessionPage() {
               >
                 Copia Markdown
               </AppButton>
-              <AppButton size="sm" kind="primary" icon="save" disabled={busy || translating} onClick={handleSaveDocumentation}>
-                Salva Modifiche
+              <AppButton
+                size="sm"
+                kind="primary"
+                icon="save"
+                disabled={busy || translating || savingMarkdown}
+                onClick={() => handleSaveDocumentation(markdown)}
+              >
+                {savingMarkdown ? "Salvataggio…" : "Salva Modifiche"}
               </AppButton>
             </div>
           </div>
@@ -746,9 +1159,12 @@ export function SessionPage() {
           <div style={{ marginTop: "14px" }}>
             <MarkdownEditor
               value={markdown}
-              onChange={setMarkdown}
+              onChange={handleMarkdownChange}
               screenshots={screenshots}
               disabled={busy || translating}
+              showSaveButton={true}
+              saving={savingMarkdown}
+              onSave={() => handleSaveDocumentation(markdown)}
             />
           </div>
         </div>
@@ -1090,13 +1506,63 @@ export function SessionPage() {
 
       {tab === "Replay" ? (
         <div className="card panel">
-          <h3>Session Replay</h3>
-          <div className="pd">
-            Step through generated workflow steps with screenshots and timestamps.
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              flexWrap: "wrap",
+              gap: "10px",
+              marginBottom: "8px",
+            }}
+          >
+            <div>
+              <h3 style={{ margin: 0 }}>Session Replay</h3>
+              <div className="pd">
+                Riproduci e modifica i passaggi generati, con rendering Markdown e annotazioni interattive.
+              </div>
+            </div>
+            {steps.length === 0 && session?.documentation_md ? (
+              <AppButton
+                size="sm"
+                kind="primary"
+                icon="sparkles"
+                onClick={handleSyncStepsFromDoc}
+                disabled={busy}
+              >
+                Sincronizza Passi dalla Guida
+              </AppButton>
+            ) : null}
           </div>
+
           {steps.length === 0 ? (
-            <div className="pd" style={{ marginTop: 18 }}>
-              Generate documentation to populate replay steps.
+            <div
+              style={{
+                marginTop: 18,
+                padding: "24px",
+                background: "rgba(255,255,255,0.02)",
+                borderRadius: "8px",
+                border: "1px dashed var(--hair)",
+                textAlign: "center",
+              }}
+            >
+              <div style={{ color: "var(--dim)", marginBottom: "12px" }}>
+                Nessun passaggio strutturato trovato per questa sessione.
+              </div>
+              {session?.documentation_md ? (
+                <AppButton
+                  size="sm"
+                  kind="primary"
+                  onClick={handleSyncStepsFromDoc}
+                  disabled={busy}
+                >
+                  Recupera automaticamente i Passi dal Markdown
+                </AppButton>
+              ) : (
+                <div style={{ fontSize: "12.5px", color: "var(--dim)" }}>
+                  Genera la documentazione per popolare i passaggi di replay.
+                </div>
+              )}
             </div>
           ) : (
             <>
@@ -1104,45 +1570,266 @@ export function SessionPage() {
                 <i style={{ width: `${((replayIndex + 1) / steps.length) * 100}%` }} />
               </div>
               <div className="rp-step">
-                <div className="rpn">
-                  Step {replayIndex + 1} of {steps.length}
-                </div>
-                <h3>{replayStep.title}</h3>
-                <div className="rpd">{replayStep.description}</div>
-                <div className="rp-shot">
-                  {replayScreenshot ? (
-                    <img
-                      src={convertFileSrc(replayScreenshot.path)}
-                      alt={replayStep.title}
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    marginBottom: "8px",
+                  }}
+                >
+                  <div className="rpn">
+                    Step {replayIndex + 1} of {steps.length}
+                  </div>
+                  {!editingStep ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditStepTitle(replayStep.title);
+                        setEditStepDesc(replayStep.description);
+                        setEditingStep(true);
+                      }}
                       style={{
-                        position: "absolute",
-                        inset: 0,
-                        width: "100%",
-                        height: "100%",
-                        objectFit: "contain",
-                        backgroundColor: "rgba(0, 0, 0, 0.4)",
+                        background: "none",
+                        border: "none",
+                        color: "var(--mint, #38bdf8)",
+                        fontSize: "12px",
+                        cursor: "pointer",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "4px",
                       }}
-                      onError={(event) => {
-                        (event.target as HTMLImageElement).style.display = "none";
+                    >
+                      ✏️ Modifica Testo Passo
+                    </button>
+                  ) : (
+                    <div style={{ display: "flex", gap: "8px" }}>
+                      <button
+                        type="button"
+                        onClick={() => setEditingStep(false)}
+                        style={{
+                          background: "none",
+                          border: "none",
+                          color: "var(--dim)",
+                          fontSize: "12px",
+                          cursor: "pointer",
+                        }}
+                      >
+                        Annulla
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleSaveStepContent}
+                        disabled={savingStep}
+                        style={{
+                          background: "var(--color-primary)",
+                          border: "none",
+                          borderRadius: "4px",
+                          color: "#fff",
+                          padding: "2px 8px",
+                          fontSize: "12px",
+                          cursor: "pointer",
+                        }}
+                      >
+                        {savingStep ? "Salvataggio..." : "Salva"}
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {editingStep ? (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "12px", marginBottom: "16px" }}>
+                    <div>
+                      <div style={{ fontSize: "11px", color: "var(--dim)", marginBottom: "4px", fontWeight: 600 }}>
+                        Titolo del Passo:
+                      </div>
+                      <input
+                        type="text"
+                        value={editStepTitle}
+                        onChange={(e) => setEditStepTitle(e.target.value)}
+                        placeholder="Titolo del passo..."
+                        style={{
+                          width: "100%",
+                          padding: "8px 12px",
+                          borderRadius: "6px",
+                          border: "1px solid var(--hair)",
+                          background: "var(--bg-2)",
+                          color: "var(--text)",
+                          fontSize: "14px",
+                          fontWeight: 500,
+                        }}
+                      />
+                    </div>
+                    <div>
+                      <div style={{ fontSize: "11px", color: "var(--dim)", marginBottom: "6px", fontWeight: 600 }}>
+                        Descrizione (Editor Markdown completo, anteprima modificabile & zoom):
+                      </div>
+                      <MarkdownEditor
+                        value={editStepDesc}
+                        onChange={setEditStepDesc}
+                        screenshots={screenshots}
+                        minHeight="280px"
+                        maxHeight="520px"
+                        compact={true}
+                        hideStepTemplate={true}
+                        showSaveButton={true}
+                        onSave={handleSaveStepContent}
+                        onCancel={() => setEditingStep(false)}
+                      />
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <h3>{replayStep.title}</h3>
+                    <div
+                      className="rpd"
+                      style={{
+                        marginTop: "6px",
+                        marginBottom: "12px",
+                        lineHeight: "1.6",
                       }}
-                    />
+                    >
+                      <MarkdownPreview
+                        markdown={replayStep.description}
+                        screenshots={screenshots}
+                        editable={true}
+                        onTextChange={async (oldText, newText) => {
+                          let updatedDesc = replayStep.description;
+                          if (updatedDesc.includes(oldText)) {
+                            updatedDesc = updatedDesc.replace(oldText, newText);
+                          } else if (updatedDesc.includes(oldText.trim())) {
+                            updatedDesc = updatedDesc.replace(oldText.trim(), newText.trim());
+                          } else {
+                            const lines = updatedDesc.split("\n");
+                            const trimmedOld = oldText.trim();
+                            let matched = false;
+                            for (let i = 0; i < lines.length; i++) {
+                              const stripped = lines[i].replace(/^(\s*#+\s*|\s*[-*+]\s*|\s*\d+\.\s*|\s*>\s*)/, "").trim();
+                              if (stripped === trimmedOld || lines[i].includes(trimmedOld)) {
+                                const matchPrefix = lines[i].match(/^(\s*#+\s*|\s*[-*+]\s*|\s*\d+\.\s*|\s*>\s*)/);
+                                const prefix = matchPrefix ? matchPrefix[0] : "";
+                                lines[i] = `${prefix}${newText.trim()}`;
+                                updatedDesc = lines.join("\n");
+                                matched = true;
+                                break;
+                              }
+                            }
+                            if (!matched) {
+                              updatedDesc = newText;
+                            }
+                          }
+                          try {
+                            setSteps((prev) =>
+                              prev.map((s) => (s.step === replayStep.step ? { ...s, description: updatedDesc } : s))
+                            );
+                            await api.updateStepContent(sessionId, replayStep.step, replayStep.title, updatedDesc);
+                            setToast("Passo aggiornato con successo");
+                          } catch (err) {
+                            setError(String(err));
+                            await refresh({ syncMarkdown: false });
+                          }
+                        }}
+                      />
+                    </div>
+                  </>
+                )}
+
+                {/* Screenshot with Right-Click support & Interactive Annotation Overlay */}
+                <div
+                  className="rp-shot"
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    setPickingScreenshotForStep(replayStep.step);
+                  }}
+                  title="Tasto destro per cambiare lo screenshot di questo step"
+                  style={{ position: "relative", cursor: "crosshair" }}
+                >
+                  {replayScreenshot ? (
+                    <>
+                      <img
+                        src={convertFileSrc(replayScreenshot.path)}
+                        alt={replayStep.title}
+                        onLoad={(e) => {
+                          const target = e.currentTarget;
+                          if (target.naturalWidth && target.naturalHeight) {
+                            setImgNaturalDims({ w: target.naturalWidth, h: target.naturalHeight });
+                          }
+                        }}
+                        style={{
+                          position: "absolute",
+                          inset: 0,
+                          width: "100%",
+                          height: "100%",
+                          objectFit: "contain",
+                          backgroundColor: "rgba(0, 0, 0, 0.4)",
+                        }}
+                        onError={(event) => {
+                          (event.target as HTMLImageElement).style.display = "none";
+                        }}
+                      />
+
+                      <AnnotationOverlay
+                        items={currentStepAnnotations}
+                        naturalWidth={imgNaturalDims.w}
+                        naturalHeight={imgNaturalDims.h}
+                        onAnnotationClick={(item) => {
+                          setSelectedAnnotationId(item.id);
+                          setAnnotatingScreenshot(replayScreenshot);
+                        }}
+                        onOpenEditor={() => {
+                          setSelectedAnnotationId(null);
+                          setAnnotatingScreenshot(replayScreenshot);
+                        }}
+                        onChangeScreenshot={() => {
+                          setPickingScreenshotForStep(replayStep.step);
+                        }}
+                      />
+                    </>
                   ) : (
                     <div className="rwin" />
                   )}
                 </div>
-                {replayScreenshot && (
-                  <div style={{ marginTop: "10px", display: "flex", justifyContent: "flex-end" }}>
-                    <button
-                      type="button"
-                      className="btn btn-ghost btn-sm"
-                      onClick={() => setAnnotatingScreenshot(replayScreenshot)}
-                      style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px" }}
-                      title="Modifica questo screenshot, sposta click o aggiungi annotazioni grafiche"
-                    >
-                      🎨 Modifica / Evidenzia questo Step
-                    </button>
+
+                <div
+                  style={{
+                    marginTop: "10px",
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    flexWrap: "wrap",
+                    gap: "8px",
+                  }}
+                >
+                  <div style={{ fontSize: "11.5px", color: "var(--dim)" }}>
+                    💡 Fai clic con il tasto destro sull'immagine per sostituire lo screenshot di questo passo.
                   </div>
-                )}
+                  {replayScreenshot && (
+                    <div style={{ display: "flex", gap: "8px" }}>
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-sm"
+                        onClick={() => setPickingScreenshotForStep(replayStep.step)}
+                        style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "12px" }}
+                        title="Seleziona un altro screenshot tra quelli acquisiti"
+                      >
+                        🖼️ Cambia Immagine
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-sm"
+                        onClick={() => {
+                          setSelectedAnnotationId(null);
+                          setAnnotatingScreenshot(replayScreenshot);
+                        }}
+                        style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px" }}
+                        title="Modifica questo screenshot, sposta click o aggiungi annotazioni grafiche"
+                      >
+                        🎨 Modifica / Evidenzia Step
+                      </button>
+                    </div>
+                  )}
+                </div>
+
                 <div className="rp-nav">
                   <AppButton
                     size="sm"
@@ -1256,17 +1943,63 @@ export function SessionPage() {
         />
       ) : null}
 
+      {pickingScreenshotForStep != null && (
+        <ScreenshotPickerModal
+          stepIndex={pickingScreenshotForStep}
+          currentScreenshotId={replayScreenshot?.id}
+          screenshots={screenshots}
+          onSelect={async (newId) => {
+            await api.updateStepScreenshot(sessionId, pickingScreenshotForStep, newId);
+            setToast("Screenshot del passo aggiornato con successo!");
+            await refresh();
+          }}
+          onClose={() => setPickingScreenshotForStep(null)}
+        />
+      )}
+
+      {duplicateGroups && (
+        <DuplicateScreenshotsModal
+          groups={duplicateGroups}
+          screenshots={screenshots}
+          onMerge={handleMergeDuplicates}
+          onClose={() => setDuplicateGroups(null)}
+        />
+      )}
+
       {annotatingScreenshot && (
         <ImageAnnotationModal
           sessionId={sessionId}
           screenshot={annotatingScreenshot}
-          onClose={() => setAnnotatingScreenshot(null)}
+          stepIndex={tab === "Replay" ? replayStep?.step : undefined}
+          stepAnnotationsJson={tab === "Replay" ? (replayStep?.annotations_json || null) : null}
+          initialSelectedId={selectedAnnotationId}
+          onClose={() => {
+            setAnnotatingScreenshot(null);
+            setSelectedAnnotationId(null);
+          }}
           onSaved={async () => {
             setToast("Screenshot aggiornato con successo!");
             await refresh();
           }}
         />
       )}
+
+      <ConfirmModal
+        isOpen={Boolean(confirmModal?.isOpen)}
+        title={confirmModal?.title ?? ""}
+        message={confirmModal?.message ?? ""}
+        confirmLabel={confirmModal?.confirmLabel}
+        cancelLabel={confirmModal?.cancelLabel}
+        kind={confirmModal?.kind ?? "warning"}
+        onConfirm={async () => {
+          if (confirmModal?.action) {
+            const act = confirmModal.action;
+            setConfirmModal(null);
+            await act();
+          }
+        }}
+        onCancel={() => setConfirmModal(null)}
+      />
 
       <Toast message={toast} onDismiss={() => setToast(null)} />
     </div>

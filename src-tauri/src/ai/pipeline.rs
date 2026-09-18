@@ -257,6 +257,17 @@ impl AiPipeline {
 
         let audio_text = audio_transcript_result.as_ref().map(|r| r.text.as_str()).filter(|t| !t.trim().is_empty());
 
+        let timeout_secs = self
+            .db
+            .get_setting("ai_generation_timeout_seconds")
+            .ok()
+            .flatten()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(600);
+
+        let refine_timeout = Duration::from_secs((timeout_secs / 2).max(60));
+        let enhance_timeout = Duration::from_secs(timeout_secs.max(120));
+
         emit_log(app, session_id, "Ottimizzazione passaggi con modello LLM...");
         let refine_fut = self.refine_timeline(
             &provider,
@@ -267,9 +278,9 @@ impl AiPipeline {
             aligned_events.as_deref(),
         );
 
-        match tokio::time::timeout(Duration::from_secs(35), refine_fut).await {
+        match tokio::time::timeout(refine_timeout, refine_fut).await {
             Ok(Ok(ai_steps)) => {
-                if !ai_steps.is_empty() && ai_steps.len() <= 15 {
+                if !ai_steps.is_empty() && ai_steps.len() <= 120 {
                     steps = ai_steps;
                     emit_log(app, session_id, "Passaggi consolidati con successo dal modello AI");
                 } else {
@@ -365,7 +376,7 @@ impl AiPipeline {
             aligned_events.as_deref(),
         );
 
-        let markdown = match tokio::time::timeout(Duration::from_secs(60), enhance_fut).await {
+        let markdown = match tokio::time::timeout(enhance_timeout, enhance_fut).await {
             Ok(Ok(enhanced)) => {
                 emit_progress(app, session_id, AiJobStage::TechnicalWriter, "completed");
                 emit_log(app, session_id, "Guida generata con successo dal modello AI");
@@ -490,7 +501,8 @@ impl AiPipeline {
 Return a JSON array ONLY. Each element must have exactly these fields: \
   step (integer), title (string), description (string), reason (string or null), timestamp_ms (integer). \
 Rules: \
-- Merge duplicate navigation and repeated clicks. Keep at most 15 steps. \
+- Merge duplicate navigation and repeated clicks. Keep the steps concise, but cover the ENTIRE recorded workflow from the very beginning to the end without omitting actions. \
+- When an action or window switch involves a web browser (Google Chrome, Microsoft Edge, Mozilla Firefox, Brave, etc.), explicitly tell the user to go to or open the browser (e.g., 'Vai sul browser (Google Chrome)' / 'Apri il browser'). \
 - When an event provides 'element_name', 'element_type', or 'url', describe clicking that specific element \
   (e.g., 'Click \"Submit\" button'). \
 - 'description': explain WHAT to do, WHERE (app/window/UI element), and HOW. \
@@ -533,8 +545,9 @@ Rules:\n\
   1. Title: A specific, descriptive title for the workflow\n\
   2. Overview: What this guide is about, what the user will accomplish, and why it is useful\n\
   3. Prerequisites: Any software, accounts, or setup needed before starting (infer from the apps and URLs used)\n\
-  4. Steps: Detailed numbered steps with clear instructions\n\
+  4. Steps: Detailed numbered steps with clear instructions covering the ENTIRE recorded workflow from start to finish\n\
   5. Expected Result: What the user should see or have at the end of the workflow\n\
+- When actions occur in web browsers like Google Chrome, Microsoft Edge, or Mozilla Firefox, explicitly tell the user to open or go to the browser (e.g., 'Vai sul browser / Apri il browser (Google Chrome/Edge/Firefox)').\n\
 - Keep the same number of steps and preserve every screenshot image line (![...](...)) EXACTLY as-is, unchanged.\n\
 - For each step, explain:\n\
   (a) WHAT to do (the specific action)\n\

@@ -160,9 +160,9 @@ function AppShell() {
   useEffect(() => {
     const appWindow = getCurrentWindow();
     if (recording) {
-      void appWindow.setTitle(`REC ${formatDuration(elapsed)} — FlowCapture`);
+      void appWindow.setTitle(`REC ${formatDuration(elapsed)} — FlowCapture`).catch(() => {});
     } else {
-      void appWindow.setTitle("FlowCapture");
+      void appWindow.setTitle("FlowCapture").catch(() => {});
     }
   }, [recording, elapsed]);
 

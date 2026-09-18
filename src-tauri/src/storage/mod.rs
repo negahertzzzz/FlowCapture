@@ -243,7 +243,103 @@ impl Database {
         )?;
         let mut rows = stmt.query(params![session_id])?;
         if let Some(row) = rows.next()? {
-            Ok(Some(Session::from_row(&row)?))
+            let mut s = Session::from_row(&row)?;
+            let session_dir = self.session_dir(session_id);
+
+            // Self-healing for audio_path
+            if let Some(ref a_path) = s.audio_path {
+                let p = std::path::Path::new(a_path);
+                if !p.exists() {
+                    if let Some(fname) = p.file_name() {
+                        let candidate = session_dir.join(fname);
+                        let candidate_audio = session_dir.join("audio").join(fname);
+                        let fixed = if candidate.is_file() {
+                            Some(candidate.to_string_lossy().to_string())
+                        } else if candidate_audio.is_file() {
+                            Some(candidate_audio.to_string_lossy().to_string())
+                        } else {
+                            None
+                        };
+                        if let Some(fixed_path) = fixed {
+                            let _ = conn.execute("UPDATE sessions SET audio_path = ?1 WHERE id = ?2", params![&fixed_path, session_id]);
+                            s.audio_path = Some(fixed_path);
+                        }
+                    }
+                }
+            }
+
+            // Self-healing for video_path
+            if let Some(ref v_path) = s.video_path {
+                let p = std::path::Path::new(v_path);
+                if !p.exists() {
+                    if let Some(fname) = p.file_name() {
+                        let candidate = session_dir.join(fname);
+                        let candidate_video = session_dir.join("video").join(fname);
+                        let fixed = if candidate.is_file() {
+                            Some(candidate.to_string_lossy().to_string())
+                        } else if candidate_video.is_file() {
+                            Some(candidate_video.to_string_lossy().to_string())
+                        } else {
+                            None
+                        };
+                        if let Some(fixed_path) = fixed {
+                            let _ = conn.execute("UPDATE sessions SET video_path = ?1 WHERE id = ?2", params![&fixed_path, session_id]);
+                            s.video_path = Some(fixed_path);
+                        }
+                    }
+                }
+            }
+
+            // Self-healing for full_video_path
+            if let Some(ref fv_path) = s.full_video_path {
+                let p = std::path::Path::new(fv_path);
+                if !p.exists() {
+                    if let Some(fname) = p.file_name() {
+                        let candidate = session_dir.join(fname);
+                        let candidate_video = session_dir.join("video").join(fname);
+                        let fixed = if candidate.is_file() {
+                            Some(candidate.to_string_lossy().to_string())
+                        } else if candidate_video.is_file() {
+                            Some(candidate_video.to_string_lossy().to_string())
+                        } else {
+                            None
+                        };
+                        if let Some(fixed_path) = fixed {
+                            let _ = conn.execute("UPDATE sessions SET full_video_path = ?1 WHERE id = ?2", params![&fixed_path, session_id]);
+                            s.full_video_path = Some(fixed_path);
+                        }
+                    }
+                }
+            }
+
+            // Self-healing for documentation_md image links
+            if let Some(ref mut doc_md) = s.documentation_md {
+                let screenshots_dir = session_dir.join("screenshots");
+                let re = regex::Regex::new(r"!\[.*?\]\((.*?)\)").unwrap();
+                let mut replaced = false;
+                let mut new_md = doc_md.clone();
+                for caps in re.captures_iter(doc_md) {
+                    if let Some(m) = caps.get(1) {
+                        let path_str = m.as_str();
+                        let p = std::path::Path::new(path_str);
+                        if !p.exists() {
+                            if let Some(fname) = p.file_name() {
+                                let cand = screenshots_dir.join(fname);
+                                if cand.is_file() {
+                                    new_md = new_md.replace(path_str, &cand.to_string_lossy());
+                                    replaced = true;
+                                }
+                            }
+                        }
+                    }
+                }
+                if replaced {
+                    let _ = conn.execute("UPDATE sessions SET documentation_md = ?1 WHERE id = ?2", params![&new_md, session_id]);
+                    s.documentation_md = Some(new_md);
+                }
+            }
+
+            Ok(Some(s))
         } else {
             Ok(None)
         }
@@ -306,7 +402,29 @@ impl Database {
             "SELECT id, session_id, path, timestamp_ms, trigger, selected, click_x, click_y, annotations_json FROM screenshots WHERE session_id = ?1 ORDER BY timestamp_ms ASC",
         )?;
         let rows = stmt.query_map(params![session_id], |row| Screenshot::from_row(row))?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
+        let mut screenshots = rows.collect::<Result<Vec<_>, _>>()?;
+
+        // Self-healing path resolution: if a screenshot path does not exist on disk,
+        // check if it exists in the current session's screenshots directory!
+        let session_screenshots_dir = self.session_dir(session_id).join("screenshots");
+        for s in &mut screenshots {
+            let p = std::path::Path::new(&s.path);
+            if !p.exists() {
+                if let Some(fname) = p.file_name() {
+                    let candidate = session_screenshots_dir.join(fname);
+                    if candidate.is_file() {
+                        let fixed_path = candidate.to_string_lossy().to_string();
+                        let _ = conn.execute(
+                            "UPDATE screenshots SET path = ?1 WHERE id = ?2",
+                            params![&fixed_path, &s.id],
+                        );
+                        s.path = fixed_path;
+                    }
+                }
+            }
+        }
+
+        Ok(screenshots)
     }
 
     pub fn session_preview_screenshot_path(&self, session_id: &str) -> Result<Option<String>> {

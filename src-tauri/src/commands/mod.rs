@@ -383,6 +383,69 @@ pub fn get_compressed_timeline(
     Ok(crate::compression::compress_events(&events))
 }
 
+fn parse_steps_from_markdown(md: &str, screenshots: &[crate::storage::models::Screenshot]) -> Vec<crate::storage::models::WorkflowStep> {
+    let mut steps = Vec::new();
+    let mut current_step: Option<crate::storage::models::WorkflowStep> = None;
+    let step_header_re = regex::Regex::new(r"(?i)^#{2,4}\s+(?:Step|Passo)?\s*(\d+)[:.]\s*(.*)$").unwrap();
+    let img_re = regex::Regex::new(r"!\[.*?\]\((.*?)\)").unwrap();
+
+    for line in md.lines() {
+        let trimmed = line.trim();
+        if let Some(caps) = step_header_re.captures(trimmed) {
+            if let Some(prev) = current_step.take() {
+                steps.push(prev);
+            }
+            let step_num = caps.get(1).and_then(|m| m.as_str().parse::<usize>().ok()).unwrap_or(steps.len() + 1);
+            let title = caps.get(2).map(|m| m.as_str().trim().to_string()).unwrap_or_else(|| format!("Step {}", step_num));
+            current_step = Some(crate::storage::models::WorkflowStep {
+                step: step_num,
+                title,
+                description: String::new(),
+                reason: None,
+                timestamp_ms: 0,
+                screenshot_ids: Vec::new(),
+                annotations_json: None,
+            });
+            continue;
+        }
+
+        if let Some(step) = &mut current_step {
+            if let Some(caps) = img_re.captures(trimmed) {
+                let img_path = caps.get(1).map(|m| m.as_str().trim()).unwrap_or("");
+                let found_id = screenshots.iter().find(|s| {
+                    s.path == img_path
+                        || s.path.ends_with(img_path)
+                        || (!img_path.is_empty()
+                            && s.path.ends_with(
+                                std::path::Path::new(img_path)
+                                    .file_name()
+                                    .unwrap_or_default()
+                                    .to_str()
+                                    .unwrap_or("___none___"),
+                            ))
+                }).map(|s| s.id.clone());
+
+                if let Some(id) = found_id {
+                    if !step.screenshot_ids.contains(&id) {
+                        step.screenshot_ids.push(id);
+                    }
+                }
+            } else if !trimmed.is_empty() {
+                if !step.description.is_empty() {
+                    step.description.push('\n');
+                }
+                step.description.push_str(trimmed);
+            }
+        }
+    }
+
+    if let Some(prev) = current_step {
+        steps.push(prev);
+    }
+
+    steps
+}
+
 #[tauri::command]
 pub fn get_replay_steps(
     state: State<'_, Arc<AppState>>,
@@ -393,11 +456,35 @@ pub fn get_replay_steps(
         .get_session(&session_id)
         .map_err(|err| err.to_string())?
         .ok_or_else(|| "session not found".to_string())?;
-    if let Some(steps_json) = session.steps_json {
-        serde_json::from_str(&steps_json).map_err(|err| err.to_string())
-    } else {
-        Ok(Vec::new())
+
+    if let Some(steps_json) = &session.steps_json {
+        if let Ok(steps) = serde_json::from_str::<Vec<crate::storage::models::WorkflowStep>>(steps_json) {
+            if !steps.is_empty() {
+                return Ok(steps);
+            }
+        }
     }
+
+    // Fallback: Recover steps from documentation_md if present!
+    if let Some(doc_md) = &session.documentation_md {
+        if !doc_md.trim().is_empty() {
+            let screenshots = state.db.list_screenshots(&session_id).unwrap_or_default();
+            let parsed_steps = parse_steps_from_markdown(doc_md, &screenshots);
+            if !parsed_steps.is_empty() {
+                if let Ok(json_str) = serde_json::to_string(&parsed_steps) {
+                    let _ = state.db.save_documentation(
+                        &session_id,
+                        doc_md,
+                        &json_str,
+                        session.compressed_events_json.as_deref().unwrap_or("[]"),
+                    );
+                }
+                return Ok(parsed_steps);
+            }
+        }
+    }
+
+    Ok(Vec::new())
 }
 
 #[tauri::command]
@@ -798,24 +885,30 @@ pub fn save_annotated_screenshot(
         let stem = original_path.file_stem().unwrap_or_default().to_string_lossy();
         let ext = original_path.extension().unwrap_or_default().to_string_lossy();
         let clean_path = parent.join(format!("{stem}_clean.{ext}"));
-        if !clean_path.exists() {
-            let _ = std::fs::copy(&original_path, &clean_path);
+        if clean_path.exists() {
+            // Restore pristine file if clean backup exists, undoing any previous baking
+            let _ = std::fs::copy(&clean_path, &original_path);
         }
     }
 
-    let raw_base64 = if let Some(idx) = image_base64.find("base64,") {
-        &image_base64[idx + 7..]
-    } else {
-        &image_base64
-    };
-
-    use base64::Engine;
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(raw_base64.trim())
-        .map_err(|e| format!("Invalid base64 image data: {e}"))?;
-
-    std::fs::write(&screenshot.path, &bytes)
-        .map_err(|e| format!("Failed to save screenshot file: {e}"))?;
+    // CRITICAL CONSTRAINT: NEVER overwrite raw screenshot.path!
+    // Annotations are stored as structured JSON metadata in SQLite (annotations_json).
+    // An optional annotated preview cache can be kept as {stem}_annotated.{ext}.
+    if !image_base64.is_empty() {
+        let raw_base64 = if let Some(idx) = image_base64.find("base64,") {
+            &image_base64[idx + 7..]
+        } else {
+            &image_base64
+        };
+        use base64::Engine;
+        if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(raw_base64.trim()) {
+            let parent = original_path.parent().unwrap_or(std::path::Path::new(""));
+            let stem = original_path.file_stem().unwrap_or_default().to_string_lossy();
+            let ext = original_path.extension().unwrap_or_default().to_string_lossy();
+            let annotated_cache = parent.join(format!("{stem}_annotated.{ext}"));
+            let _ = std::fs::write(annotated_cache, &bytes);
+        }
+    }
 
     state.db.update_screenshot_annotations(&screenshot_id, annotations_json.as_deref(), click_x, click_y)
         .map_err(|err| err.to_string())?;
@@ -836,6 +929,7 @@ pub fn save_annotated_screenshot(
                 reason: None,
                 timestamp_ms: screenshot.timestamp_ms,
                 screenshot_ids: vec![screenshot.id.clone()],
+                annotations_json: annotations_json.clone(),
             };
             steps.push(new_step_obj);
 
@@ -865,6 +959,360 @@ pub fn save_annotated_screenshot(
         .into_iter()
         .find(|s| s.id == screenshot_id)
         .ok_or_else(|| "Screenshot not found after save".to_string())
+}
+
+#[tauri::command]
+pub fn update_step_screenshot(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+    step_index: usize,
+    screenshot_id: String,
+) -> Result<(), String> {
+    let session = state.db.get_session(&session_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Session not found".to_string())?;
+
+    let screenshots = state.db.list_screenshots(&session_id).map_err(|e| e.to_string())?;
+    let target_screenshot = screenshots.iter().find(|s| s.id == screenshot_id)
+        .ok_or_else(|| "Screenshot not found".to_string())?;
+
+    let mut steps: Vec<crate::storage::models::WorkflowStep> = session
+        .steps_json
+        .as_deref()
+        .and_then(|json_str| serde_json::from_str(json_str).ok())
+        .unwrap_or_default();
+
+    let mut old_screenshot_path: Option<String> = None;
+    if let Some(step) = steps.iter_mut().find(|s| s.step == step_index) {
+        if let Some(first_id) = step.screenshot_ids.first() {
+            if let Some(old_s) = screenshots.iter().find(|s| &s.id == first_id) {
+                old_screenshot_path = Some(old_s.path.clone());
+            }
+        }
+        step.screenshot_ids = vec![screenshot_id.clone()];
+    } else {
+        return Err(format!("Step {} not found", step_index));
+    }
+
+    let new_steps_json = serde_json::to_string(&steps).map_err(|e| e.to_string())?;
+
+    // Also update documentation_md if it had the old screenshot path
+    let mut doc_md = session.documentation_md.clone().unwrap_or_default();
+    if let Some(old_path) = old_screenshot_path {
+        doc_md = doc_md.replace(&old_path, &target_screenshot.path);
+    }
+
+    state.db.save_documentation(
+        &session_id,
+        &doc_md,
+        &new_steps_json,
+        session.compressed_events_json.as_deref().unwrap_or("[]"),
+    ).map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn update_step_content(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+    step_index: usize,
+    title: String,
+    description: String,
+) -> Result<(), String> {
+    let session = state.db.get_session(&session_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Session not found".to_string())?;
+
+    let mut steps: Vec<crate::storage::models::WorkflowStep> = session
+        .steps_json
+        .as_deref()
+        .and_then(|json_str| serde_json::from_str(json_str).ok())
+        .unwrap_or_default();
+
+    let (old_title, old_description) = if let Some(step) = steps.iter_mut().find(|s| s.step == step_index) {
+        let old_t = step.title.clone();
+        let old_d = step.description.clone();
+        step.title = title.clone();
+        step.description = description.clone();
+        (old_t, old_d)
+    } else {
+        return Err(format!("Step {} not found", step_index));
+    };
+
+    let new_steps_json = serde_json::to_string(&steps).map_err(|e| e.to_string())?;
+
+    let mut doc_md = session.documentation_md.clone().unwrap_or_default();
+    if !old_title.is_empty() && !title.is_empty() {
+        doc_md = doc_md.replace(&format!("### Step {}: {}", step_index, old_title), &format!("### Step {}: {}", step_index, title));
+    }
+    if !old_description.is_empty() && !description.is_empty() {
+        doc_md = doc_md.replace(&old_description, &description);
+    }
+
+    state.db.save_documentation(
+        &session_id,
+        &doc_md,
+        &new_steps_json,
+        session.compressed_events_json.as_deref().unwrap_or("[]"),
+    ).map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn update_documentation(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+    documentation_md: String,
+) -> Result<(), String> {
+    let session = state.db.get_session(&session_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Session not found".to_string())?;
+
+    let screenshots = state.db.list_screenshots(&session_id).unwrap_or_default();
+    let parsed_steps = parse_steps_from_markdown(&documentation_md, &screenshots);
+    let steps_json = if !parsed_steps.is_empty() {
+        serde_json::to_string(&parsed_steps).unwrap_or_else(|_| session.steps_json.unwrap_or_else(|| "[]".to_string()))
+    } else {
+        session.steps_json.unwrap_or_else(|| "[]".to_string())
+    };
+
+    state.db.save_documentation(
+        &session_id,
+        &documentation_md,
+        &steps_json,
+        session.compressed_events_json.as_deref().unwrap_or("[]"),
+    ).map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn save_step_annotations(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+    step_index: usize,
+    annotations_json: Option<String>,
+) -> Result<(), String> {
+    let session = state.db.get_session(&session_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Session not found".to_string())?;
+
+    let mut steps: Vec<crate::storage::models::WorkflowStep> = session
+        .steps_json
+        .as_deref()
+        .and_then(|json_str| serde_json::from_str(json_str).ok())
+        .unwrap_or_default();
+
+    if let Some(step) = steps.iter_mut().find(|s| s.step == step_index) {
+        step.annotations_json = annotations_json;
+    } else {
+        return Err(format!("Step {} not found", step_index));
+    }
+
+    let new_steps_json = serde_json::to_string(&steps).map_err(|e| e.to_string())?;
+
+    state.db.save_documentation(
+        &session_id,
+        session.documentation_md.as_deref().unwrap_or(""),
+        &new_steps_json,
+        session.compressed_events_json.as_deref().unwrap_or("[]"),
+    ).map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn find_duplicate_screenshots(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+) -> Result<Vec<crate::storage::models::DuplicateScreenshotGroup>, String> {
+    let screenshots = state.db.list_screenshots(&session_id).map_err(|e| e.to_string())?;
+    if screenshots.len() < 2 {
+        return Ok(Vec::new());
+    }
+
+    struct Thumb {
+        id: String,
+        pixels: Vec<u8>,
+    }
+
+    let mut thumbs: Vec<Thumb> = Vec::new();
+    for s in &screenshots {
+        if let Ok(img) = image::open(&s.path) {
+            let gray = img.thumbnail_exact(32, 32).to_luma8();
+            thumbs.push(Thumb {
+                id: s.id.clone(),
+                pixels: gray.into_raw(),
+            });
+        }
+    }
+
+    if thumbs.len() < 2 {
+        return Ok(Vec::new());
+    }
+
+    let n = thumbs.len();
+    let mut parent: Vec<usize> = (0..n).collect();
+    fn find(p: &mut [usize], i: usize) -> usize {
+        if p[i] == i {
+            i
+        } else {
+            let root = find(p, p[i]);
+            p[i] = root;
+            root
+        }
+    }
+    fn union(p: &mut [usize], i: usize, j: usize) {
+        let root_i = find(p, i);
+        let root_j = find(p, j);
+        if root_i != root_j {
+            p[root_i] = root_j;
+        }
+    }
+
+    let mut pair_similarities: std::collections::HashMap<(usize, usize), f64> = std::collections::HashMap::new();
+
+    for i in 0..n {
+        for j in (i + 1)..n {
+            let diff_sum: u64 = thumbs[i].pixels.iter()
+                .zip(thumbs[j].pixels.iter())
+                .map(|(&a, &b)| (a as i32 - b as i32).abs() as u64)
+                .sum();
+            let max_diff = 1024.0 * 255.0;
+            let sim = (1.0 - (diff_sum as f64 / max_diff)).max(0.0);
+            if sim >= 0.60 {
+                union(&mut parent, i, j);
+                pair_similarities.insert((i, j), sim);
+            }
+        }
+    }
+
+    let mut clusters: std::collections::HashMap<usize, Vec<usize>> = std::collections::HashMap::new();
+    for i in 0..n {
+        let root = find(&mut parent, i);
+        clusters.entry(root).or_default().push(i);
+    }
+
+    let mut result = Vec::new();
+    let mut group_counter = 1;
+    for (_root, indices) in clusters {
+        if indices.len() > 1 {
+            let mut total_sim = 0.0;
+            let mut count = 0;
+            for (idx_a_idx, &a) in indices.iter().enumerate() {
+                for &b in &indices[idx_a_idx + 1..] {
+                    let key = if a < b { (a, b) } else { (b, a) };
+                    if let Some(&sim) = pair_similarities.get(&key) {
+                        total_sim += sim;
+                        count += 1;
+                    }
+                }
+            }
+            let avg_sim = if count > 0 { (total_sim / count as f64) * 100.0 } else { 60.0 };
+
+            result.push(crate::storage::models::DuplicateScreenshotGroup {
+                group_id: format!("group_{}", group_counter),
+                similarity_pct: (avg_sim * 10.0).round() / 10.0,
+                screenshot_ids: indices.iter().map(|&idx| thumbs[idx].id.clone()).collect(),
+            });
+            group_counter += 1;
+        }
+    }
+
+    Ok(result)
+}
+
+#[tauri::command]
+pub fn merge_duplicate_screenshots(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+    keep_id: String,
+    remove_ids: Vec<String>,
+) -> Result<(), String> {
+    if remove_ids.is_empty() {
+        return Ok(());
+    }
+
+    let session = state.db.get_session(&session_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "Session not found".to_string())?;
+
+    let screenshots = state.db.list_screenshots(&session_id).map_err(|e| e.to_string())?;
+    let keep_screenshot = screenshots.iter().find(|s| s.id == keep_id)
+        .ok_or_else(|| "Keep screenshot not found".to_string())?;
+
+    let mut remove_paths: Vec<String> = Vec::new();
+    for rem_id in &remove_ids {
+        if let Some(s) = screenshots.iter().find(|s| &s.id == rem_id) {
+            remove_paths.push(s.path.clone());
+        }
+    }
+
+    // 1. Update steps_json: replace any remove_id with keep_id
+    let mut steps: Vec<crate::storage::models::WorkflowStep> = session
+        .steps_json
+        .as_deref()
+        .and_then(|json_str| serde_json::from_str(json_str).ok())
+        .unwrap_or_default();
+
+    for step in steps.iter_mut() {
+        let mut new_ids: Vec<String> = Vec::new();
+        for id in &step.screenshot_ids {
+            if remove_ids.contains(id) {
+                if !new_ids.contains(&keep_id) {
+                    new_ids.push(keep_id.clone());
+                }
+            } else {
+                if !new_ids.contains(id) {
+                    new_ids.push(id.clone());
+                }
+            }
+        }
+        step.screenshot_ids = new_ids;
+    }
+    let new_steps_json = serde_json::to_string(&steps).map_err(|e| e.to_string())?;
+
+    // 2. Update documentation_md: replace any remove_path with keep_screenshot.path
+    let mut doc_md = session.documentation_md.unwrap_or_default();
+    for rem_path in &remove_paths {
+        doc_md = doc_md.replace(rem_path, &keep_screenshot.path);
+    }
+
+    state.db.save_documentation(
+        &session_id,
+        &doc_md,
+        &new_steps_json,
+        session.compressed_events_json.as_deref().unwrap_or("[]"),
+    ).map_err(|e| e.to_string())?;
+
+    // 3. Delete removed screenshots from db and remove files from disk
+    for rem_id in &remove_ids {
+        let _ = state.db.delete_screenshot(rem_id);
+    }
+    for rem_path in &remove_paths {
+        let p = std::path::Path::new(rem_path);
+        if p.exists() {
+            let _ = std::fs::remove_file(p);
+        }
+        if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
+            if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
+                if let Some(parent) = p.parent() {
+                    let clean_p = parent.join(format!("{stem}_clean.{ext}"));
+                    if clean_p.exists() {
+                        let _ = std::fs::remove_file(clean_p);
+                    }
+                    let ann_p = parent.join(format!("{stem}_annotated.{ext}"));
+                    if ann_p.exists() {
+                        let _ = std::fs::remove_file(ann_p);
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 #[tauri::command]

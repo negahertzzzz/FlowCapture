@@ -2,13 +2,14 @@ import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { open } from "@tauri-apps/plugin-dialog";
 import { AppButton } from "@/components/ui/AppButton";
+import { ConfirmModal } from "@/components/ui/ConfirmModal";
 import { Icon } from "@/components/ui/Icon";
 import { Toast } from "@/components/ui/Toast";
 import { PermissionsBanner } from "@/components/recording/PermissionsBanner";
 import { SessionThumbnail } from "@/components/sessions/SessionThumbnail";
 import { useRecordingContext } from "@/context/RecordingContext";
 import { useSessionsContext } from "@/context/SessionsContext";
-import { api } from "@/lib/api";
+import { api, type Session } from "@/lib/api";
 import { statusBadgeClass } from "@/lib/icons";
 import { formatDuration, formatTimestamp } from "@/lib/utils";
 
@@ -42,6 +43,8 @@ export function HomePage() {
   const [transcriptionLanguage, setTranscriptionLanguage] = useState("it");
   const [importing, setImporting] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [sessionToDelete, setSessionToDelete] = useState<Session | null>(null);
+  const [deletingSession, setDeletingSession] = useState(false);
 
   async function handleImportSession() {
     try {
@@ -519,16 +522,9 @@ export function HomePage() {
               <button
                 type="button"
                 title="Elimina sessione"
-                onClick={async (e) => {
+                onClick={(e) => {
                   e.stopPropagation();
-                  if (window.confirm(`Sei sicuro di voler eliminare la sessione "${session.title}"?`)) {
-                    try {
-                      await api.deleteSession(session.id);
-                      await refreshSessions();
-                    } catch (delErr) {
-                      setError(String(delErr));
-                    }
-                  }
+                  setSessionToDelete(session);
                 }}
                 style={{
                   background: "transparent",
@@ -552,6 +548,31 @@ export function HomePage() {
           ))
         )}
       </div>
+
+      <ConfirmModal
+        isOpen={Boolean(sessionToDelete)}
+        title="Elimina Sessione"
+        message={`Sei sicuro di voler eliminare definitivamente la sessione "${sessionToDelete?.title}"?\n\nTutti gli eventi, gli screenshot e i file associati verranno rimossi in modo permanente.`}
+        confirmLabel="Elimina Sessione"
+        cancelLabel="Annulla"
+        kind="danger"
+        isLoading={deletingSession}
+        onConfirm={async () => {
+          if (!sessionToDelete) return;
+          setDeletingSession(true);
+          try {
+            await api.deleteSession(sessionToDelete.id);
+            await refreshSessions();
+            setToastMessage(`Sessione "${sessionToDelete.title}" eliminata.`);
+            setSessionToDelete(null);
+          } catch (delErr) {
+            setError(String(delErr));
+          } finally {
+            setDeletingSession(false);
+          }
+        }}
+        onCancel={() => setSessionToDelete(null)}
+      />
 
       <Toast message={toastMessage} onDismiss={() => setToastMessage(null)} />
     </div>

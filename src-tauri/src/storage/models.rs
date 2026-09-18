@@ -276,6 +276,15 @@ pub struct WorkflowStep {
     pub reason: Option<String>,
     pub timestamp_ms: i64,
     pub screenshot_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub annotations_json: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DuplicateScreenshotGroup {
+    pub group_id: String,
+    pub similarity_pct: f64,
+    pub screenshot_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

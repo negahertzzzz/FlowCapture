@@ -5,6 +5,59 @@ use serde_json::json;
 
 use crate::storage::models::{Screenshot, SessionEvent, WorkflowStep};
 
+pub fn is_web_browser(app_name: &str) -> bool {
+    let lower = app_name.to_lowercase();
+    lower.contains("chrome")
+        || lower.contains("edge")
+        || lower.contains("firefox")
+        || lower.contains("mozilla")
+        || lower.contains("brave")
+        || lower.contains("opera")
+        || lower.contains("safari")
+        || lower.contains("vivaldi")
+}
+
+pub fn format_browser_name(app_name: &str) -> &'static str {
+    let lower = app_name.to_lowercase();
+    if lower.contains("chrome") {
+        "Google Chrome"
+    } else if lower.contains("edge") {
+        "Microsoft Edge"
+    } else if lower.contains("firefox") || lower.contains("mozilla") {
+        "Mozilla Firefox"
+    } else if lower.contains("brave") {
+        "Brave"
+    } else if lower.contains("opera") {
+        "Opera"
+    } else if lower.contains("safari") {
+        "Safari"
+    } else {
+        "Browser"
+    }
+}
+
+pub fn clean_browser_window_title(title: &str, browser_name: &str) -> String {
+    let mut cleaned = title.trim();
+    for suffix in &[
+        " - Google Chrome",
+        " - Microsoft Edge",
+        " - Microsoft​ Edge",
+        " - Mozilla Firefox",
+        " - Brave",
+        " - Opera",
+        " - Google",
+        " — Mozilla Firefox",
+    ] {
+        if let Some(stripped) = cleaned.strip_suffix(suffix) {
+            cleaned = stripped.trim();
+        }
+    }
+    if cleaned.eq_ignore_ascii_case(browser_name) {
+        return String::new();
+    }
+    cleaned.to_string()
+}
+
 pub fn build_workflow_steps(events: &[SessionEvent]) -> Vec<WorkflowStep> {
     let mut steps = Vec::new();
     let mut last_window: Option<(String, String)> = None;
@@ -35,13 +88,40 @@ pub fn build_workflow_steps(events: &[SessionEvent]) -> Vec<WorkflowStep> {
                 last_window = Some((app.clone(), title.clone()));
                 last_click_key = None;
 
+                let (step_title, step_desc) = if is_web_browser(&app) {
+                    let bname = format_browser_name(&app);
+                    let page_title = clean_browser_window_title(&title, bname);
+                    let is_empty_page = page_title.is_empty()
+                        || page_title.eq_ignore_ascii_case("nuova scheda")
+                        || page_title.eq_ignore_ascii_case("new tab")
+                        || page_title.eq_ignore_ascii_case("blank");
+
+                    if is_empty_page {
+                        (
+                            "Vai sul browser".to_string(),
+                            format!("Apri il browser (**{bname}**)."),
+                        )
+                    } else {
+                        (
+                            format!("Vai sul browser - {page_title}"),
+                            format!("Vai sul browser (**{bname}**) e apri **{page_title}**."),
+                        )
+                    }
+                } else {
+                    (
+                        format!("Open {title}"),
+                        format!("Switch to **{app}** and open **{title}**."),
+                    )
+                };
+
                 steps.push(WorkflowStep {
                     step: 0,
-                    title: format!("Open {title}"),
-                    description: format!("Switch to **{app}** and open **{title}**."),
+                    title: step_title,
+                    description: step_desc,
                     reason: None,
                     timestamp_ms: event.timestamp_ms,
                     screenshot_ids: Vec::new(),
+                    annotations_json: None,
                 });
             }
             "mouse_click" => {
@@ -73,7 +153,19 @@ pub fn build_workflow_steps(events: &[SessionEvent]) -> Vec<WorkflowStep> {
 
                 let context = last_window
                     .as_ref()
-                    .map(|(app, title)| format!(" in **{title}** ({app})"))
+                    .map(|(app, title)| {
+                        if is_web_browser(app) {
+                            let bname = format_browser_name(app);
+                            let ptitle = clean_browser_window_title(title, bname);
+                            if ptitle.is_empty() {
+                                format!(" nel browser (**{bname}**)")
+                            } else {
+                                format!(" nel browser su **{ptitle}** ({bname})")
+                            }
+                        } else {
+                            format!(" in **{title}** ({app})")
+                        }
+                    })
                     .unwrap_or_default();
                 let click_key = format!("{button}:{x}:{y}:{context}:{:?}", elem_name);
 
@@ -121,6 +213,7 @@ pub fn build_workflow_steps(events: &[SessionEvent]) -> Vec<WorkflowStep> {
                     reason: None,
                     timestamp_ms: event.timestamp_ms,
                     screenshot_ids: Vec::new(),
+                    annotations_json: None,
                 });
             }
             "typed_text" => {
@@ -143,6 +236,7 @@ pub fn build_workflow_steps(events: &[SessionEvent]) -> Vec<WorkflowStep> {
                     reason: None,
                     timestamp_ms: event.timestamp_ms,
                     screenshot_ids: Vec::new(),
+                    annotations_json: None,
                 });
             }
             "manual_marker" => {
@@ -153,6 +247,7 @@ pub fn build_workflow_steps(events: &[SessionEvent]) -> Vec<WorkflowStep> {
                     reason: None,
                     timestamp_ms: event.timestamp_ms,
                     screenshot_ids: Vec::new(),
+                    annotations_json: None,
                 });
             }
             _ => {}
@@ -161,7 +256,10 @@ pub fn build_workflow_steps(events: &[SessionEvent]) -> Vec<WorkflowStep> {
 
     renumber_steps(&mut steps);
     collapse_duplicate_steps(&mut steps);
-    steps.truncate(24);
+    // Removed the arbitrary 150-step truncation to preserve the complete workflow.
+    // if steps.len() > 150 {
+    //     steps.truncate(150);
+    // }
     renumber_steps(&mut steps);
     steps
 }
@@ -483,7 +581,7 @@ fn collapse_duplicate_steps(steps: &mut Vec<WorkflowStep>) {
 pub fn events_for_prompt(events: &[SessionEvent]) -> serde_json::Value {
     let compact: Vec<_> = events
         .iter()
-        .take(120)
+        .take(90000)
         .map(|event| {
             json!({
                 "type": event.event_type,

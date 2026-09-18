@@ -7,6 +7,9 @@ import { api, type Screenshot, type NewStepPayload } from "@/lib/api";
 interface ImageAnnotationModalProps {
   sessionId: string;
   screenshot: Screenshot;
+  stepIndex?: number;
+  stepAnnotationsJson?: string | null;
+  initialSelectedId?: string | null;
   onClose: () => void;
   onSaved: (updatedScreenshotId: string) => void;
 }
@@ -32,6 +35,9 @@ export interface AnnotationItem {
 export function ImageAnnotationModal({
   sessionId,
   screenshot,
+  stepIndex,
+  stepAnnotationsJson,
+  initialSelectedId,
   onClose,
   onSaved,
 }: ImageAnnotationModalProps) {
@@ -69,15 +75,17 @@ export function ImageAnnotationModal({
     screenshot.trigger ? t("md.step_prefix", "Step: ") + screenshot.trigger : t("md.step_new", "New Step")
   );
   const [stepDescription, setStepDescription] = useState("");
+  const [scopeToStep, setScopeToStep] = useState<boolean>(Boolean(stepIndex));
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let initialItems: AnnotationItem[] = [];
-    if (screenshot.annotations_json) {
+    const jsonToParse = stepAnnotationsJson || screenshot.annotations_json;
+    if (jsonToParse) {
       try {
-        const parsed = JSON.parse(screenshot.annotations_json);
+        const parsed = JSON.parse(jsonToParse);
         if (Array.isArray(parsed)) {
           initialItems = parsed;
         }
@@ -99,6 +107,11 @@ export function ImageAnnotationModal({
 
     setItems(initialItems);
 
+    if (initialSelectedId) {
+      setSelectedId(initialSelectedId);
+      setActiveTool("select");
+    }
+
     const highestBadge = initialItems
       .filter((i) => i.type === "badge" && i.badgeNumber != null)
       .reduce((max, i) => Math.max(max, i.badgeNumber || 0), 0);
@@ -111,11 +124,15 @@ export function ImageAnnotationModal({
     img.onerror = () => {
       img.src = convertFileSrc(screenshot.path) + `?t=${Date.now()}`;
     };
+    const initialSelectedItem = initialSelectedId
+      ? initialItems.find((i) => i.id === initialSelectedId) || null
+      : null;
+
     img.onload = () => {
       imageRef.current = img;
-      redraw(img, initialItems, null, null);
+      redraw(img, initialItems, null, initialSelectedItem);
     };
-  }, [screenshot]);
+  }, [screenshot, stepAnnotationsJson, initialSelectedId]);
 
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
@@ -642,6 +659,10 @@ export function ImageAnnotationModal({
         };
       }
 
+      if (stepIndex != null && scopeToStep) {
+        await api.saveStepAnnotations(sessionId, stepIndex, annotationsJson);
+      }
+
       await api.saveAnnotatedScreenshot(
         sessionId,
         screenshot.id,
@@ -693,6 +714,20 @@ export function ImageAnnotationModal({
           <h3 style={{ margin: 0, fontSize: "16px", fontWeight: 600 }}>
             Editor Screenshot & Annotazioni Interattivo
           </h3>
+          {stepIndex != null && (
+            <span
+              style={{
+                fontSize: "12px",
+                background: "rgba(56, 189, 248, 0.2)",
+                color: "#38bdf8",
+                padding: "2px 8px",
+                borderRadius: "10px",
+                fontWeight: 600,
+              }}
+            >
+              Passo {stepIndex}
+            </span>
+          )}
           <span style={{ fontSize: "12px", color: "var(--dim)" }}>
             {items.length} elementi · {selectedItem ? `Selezionato: ${selectedItem.type}` : "Nessuna selezione"}
           </span>
@@ -755,6 +790,39 @@ export function ImageAnnotationModal({
             overflowY: "auto",
           }}
         >
+          {stepIndex != null && (
+            <div
+              style={{
+                padding: "10px",
+                background: "rgba(56, 189, 248, 0.08)",
+                borderRadius: "8px",
+                border: "1px solid rgba(56, 189, 248, 0.25)",
+              }}
+            >
+              <label
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "8px",
+                  fontSize: "12px",
+                  cursor: "pointer",
+                  color: "var(--text)",
+                  fontWeight: 600,
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={scopeToStep}
+                  onChange={(e) => setScopeToStep(e.target.checked)}
+                />
+                <span>Associa a Passo {stepIndex}</span>
+              </label>
+              <div style={{ fontSize: "10.5px", color: "var(--dim)", marginTop: "4px", lineHeight: "1.3" }}>
+                Salva queste annotazioni specificamente per questo step.
+              </div>
+            </div>
+          )}
+
           <div>
             <div style={{ fontSize: "11px", textTransform: "uppercase", color: "var(--dim)", marginBottom: "6px", fontWeight: 700 }}>
               Strumenti

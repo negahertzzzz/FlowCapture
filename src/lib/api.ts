@@ -99,7 +99,15 @@ export interface WorkflowStep {
   step: number;
   title: string;
   description: string;
+  reason?: string | null;
   timestamp_ms: number;
+  screenshot_ids: string[];
+  annotations_json?: string | null;
+}
+
+export interface DuplicateScreenshotGroup {
+  group_id: string;
+  similarity_pct: number;
   screenshot_ids: string[];
 }
 
@@ -255,6 +263,18 @@ export const api = {
       newStep,
       annotationsJson,
     }),
+  updateStepScreenshot: (sessionId: string, stepIndex: number, screenshotId: string) =>
+    invoke<void>("update_step_screenshot", { sessionId, stepIndex, screenshotId }),
+  updateStepContent: (sessionId: string, stepIndex: number, title: string, description: string) =>
+    invoke<void>("update_step_content", { sessionId, stepIndex, title, description }),
+  updateDocumentation: (sessionId: string, documentationMd: string) =>
+    invoke<void>("update_documentation", { sessionId, documentationMd }),
+  saveStepAnnotations: (sessionId: string, stepIndex: number, annotationsJson: string | null) =>
+    invoke<void>("save_step_annotations", { sessionId, stepIndex, annotationsJson }),
+  findDuplicateScreenshots: (sessionId: string) =>
+    invoke<DuplicateScreenshotGroup[]>("find_duplicate_screenshots", { sessionId }),
+  mergeDuplicateScreenshots: (sessionId: string, keepId: string, removeIds: string[]) =>
+    invoke<void>("merge_duplicate_screenshots", { sessionId, keepId, removeIds }),
   onAiProgress: (
     sessionId: string,
     handler: (event: AiProgressEvent) => void,

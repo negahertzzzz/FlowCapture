@@ -24,6 +24,7 @@ export function SettingsPage() {
   const [aiThinkingMode, setAiThinkingMode] = useState("auto");
   const [aiCustomParams, setAiCustomParams] = useState("{\n  \"temperature\": 0.2\n}");
   const [customParamsError, setCustomParamsError] = useState<string | null>(null);
+  const [aiGenerationTimeout, setAiGenerationTimeout] = useState("300");
   const [recordFullVideo, setRecordFullVideo] = useState(true);
   const [fullVideoFps, setFullVideoFps] = useState("30");
   const [message, setMessage] = useState<string | null>(null);
@@ -68,6 +69,7 @@ export function SettingsPage() {
       nextMonitors,
       nextRecordFullVideo,
       nextFullVideoFps,
+      nextAiTimeout,
     ] = await Promise.all([
       api.listProviders(),
       api.getSetting("redaction_enabled"),
@@ -86,6 +88,7 @@ export function SettingsPage() {
       api.listMonitors().catch(() => [] as MonitorInfo[]),
       api.getSetting("record_full_video"),
       api.getSetting("full_video_fps"),
+      api.getSetting("ai_generation_timeout_seconds"),
     ]);
     setProviders(nextProviders);
     setRedactionEnabled((nextSetting ?? "true") === "true");
@@ -98,6 +101,7 @@ export function SettingsPage() {
     setTranscriptionBaseUrl(nextTransUrl ?? "");
     setTranscriptionLanguage(nextTransLang ?? "it");
     setAiThinkingMode(nextThinkingMode ?? "auto");
+    setAiGenerationTimeout(nextAiTimeout || "300");
     setRecordFullVideo((nextRecordFullVideo ?? "true") !== "false");
     setFullVideoFps(nextFullVideoFps || "30");
     if (nextCustomParams) {
@@ -869,6 +873,66 @@ export function SettingsPage() {
               <span style={{ color: "#38bdf8" }}>
                 ⚡ No-Think forzato (traduzione diretta, massima velocità e zero riflessioni interne)
               </span>
+            </div>
+          </div>
+        </div>
+
+        <div style={{ marginTop: 18, marginBottom: 20 }}>
+          <label style={{ fontWeight: 600, display: "block", marginBottom: 6 }}>
+            Timeout Generazione Documentazione AI
+          </label>
+          <div className="sub" style={{ fontSize: "12.5px", color: "var(--muted)", marginBottom: 8 }}>
+            Tempo massimo di attesa per il consolidamento dei passaggi e la stesura della documentazione con i modelli LLM. Per sessioni lunghe o modelli locali (Ollama / LM Studio), è consigliato un valore tra 180s e 600s.
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
+            <div className="seg" style={{ display: "inline-flex" }}>
+              {[
+                { label: "60s", val: "60" },
+                { label: "120s (2m)", val: "120" },
+                { label: "180s (3m)", val: "180" },
+                { label: "300s (5m - Consigliato)", val: "300" },
+                { label: "600s (10m)", val: "600" },
+              ].map((item) => (
+                <button
+                  key={item.val}
+                  type="button"
+                  className={aiGenerationTimeout === item.val ? "on" : ""}
+                  onClick={async () => {
+                    setAiGenerationTimeout(item.val);
+                    await api.setSetting("ai_generation_timeout_seconds", item.val);
+                    setMessage(`Timeout AI impostato a ${item.val} secondi`);
+                  }}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+              <input
+                type="number"
+                min="30"
+                max="3600"
+                step="10"
+                value={aiGenerationTimeout}
+                onChange={async (e) => {
+                  const val = e.target.value;
+                  setAiGenerationTimeout(val);
+                  if (val && !isNaN(Number(val)) && Number(val) >= 10) {
+                    await api.setSetting("ai_generation_timeout_seconds", val);
+                  }
+                }}
+                style={{
+                  width: "85px",
+                  padding: "5px 8px",
+                  borderRadius: "6px",
+                  background: "var(--surface)",
+                  border: "1px solid var(--hair)",
+                  color: "var(--text)",
+                  fontFamily: "var(--mono)",
+                  fontSize: "13px",
+                }}
+              />
+              <span style={{ fontSize: "12px", color: "var(--dim)" }}>sec</span>
             </div>
           </div>
         </div>
