@@ -3,8 +3,10 @@ import { AppButton } from "@/components/ui/AppButton";
 import { api, type ProviderConfig, type MonitorInfo } from "@/lib/api";
 import { Icon } from "@/components/ui/Icon";
 import { providerGlyph } from "@/lib/icons";
+import { useLanguage } from "@/i18n";
 
 export function SettingsPage() {
+  const { t, language, setLanguage } = useLanguage();
   const [providers, setProviders] = useState<ProviderConfig[]>([]);
   const [redactionEnabled, setRedactionEnabled] = useState(true);
   const [recordAudio, setRecordAudio] = useState(false);
@@ -130,20 +132,20 @@ export function SettingsPage() {
       setCustomParamsError(null);
       setAiCustomParams("{}");
       await api.setSetting("ai_custom_parameters", "{}");
-      setMessage("Parametri personalizzati salvati ({})");
+      setMessage(t("settings.custom_params.saved_empty", "Custom parameters saved ({})"));
       return;
     }
     try {
       const parsed = JSON.parse(trimmed);
       if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-        setCustomParamsError("I parametri devono essere un oggetto JSON valido (es. {\"temperature\": 0.2})");
+        setCustomParamsError(t("settings.custom_params.err_obj", "Parameters must be a valid JSON object"));
         return;
       }
       setCustomParamsError(null);
       const formatted = JSON.stringify(parsed, null, 2);
       setAiCustomParams(formatted);
       await api.setSetting("ai_custom_parameters", formatted);
-      setMessage("Parametri personalizzati salvati con successo");
+      setMessage(t("settings.custom_params.saved_success", "Custom parameters saved successfully"));
     } catch (e: any) {
       setCustomParamsError(`Errore sintassi JSON: ${e?.message ?? e}`);
     }
@@ -154,7 +156,7 @@ export function SettingsPage() {
     setAiCustomParams(formatted);
     setCustomParamsError(null);
     api.setSetting("ai_custom_parameters", formatted).then(() => {
-      setMessage("Preset parametri personalizzati applicato");
+      setMessage(t("settings.custom_params.preset_applied", "Custom parameters preset applied"));
     });
   }
 
@@ -234,12 +236,32 @@ export function SettingsPage() {
         </div>
       ) : null}
 
-      <div className="card set-card">
-        <h3>Privacy</h3>
-        <div className="sub">
-          Sensitive data — passwords, API keys, tokens, emails — is redacted before any
-          prompt is sent to a cloud provider.
+            <div className="card set-card">
+        <h3>{t("settings.language.title")}</h3>
+        <div className="sub">{t("settings.language.sub")}</div>
+        <div className="field" style={{ maxWidth: 420 }}>
+          <select
+            value={language}
+            onChange={(e) => setLanguage(e.target.value as any)}
+            style={{
+              width: "100%",
+              background: "var(--bg-3, #151b23)",
+              color: "var(--text-1)",
+              border: "1px solid var(--border)",
+              padding: "8px 12px",
+              borderRadius: "6px",
+              fontSize: "13px",
+            }}
+          >
+            <option value="en">English (US)</option>
+            <option value="it">Italiano (IT)</option>
+          </select>
         </div>
+      </div>
+
+<div className="card set-card">
+        <h3>{t("settings.privacy.title")}</h3>
+        <div className="sub">{t("settings.privacy.sub")}</div>
         <div
           className="field"
           style={{
@@ -249,7 +271,7 @@ export function SettingsPage() {
             maxWidth: 420,
           }}
         >
-          <label style={{ margin: 0 }}>Redaction</label>
+          <label style={{ margin: 0 }}>{t("settings.redaction.label")}</label>
           <div className="seg">
             <button
               type="button"
@@ -258,9 +280,7 @@ export function SettingsPage() {
                 setRedactionEnabled(true);
                 await api.setSetting("redaction_enabled", "true");
               }}
-            >
-              Enabled
-            </button>
+            >{t("settings.enabled")}</button>
             <button
               type="button"
               className={!redactionEnabled ? "on" : ""}
@@ -268,31 +288,27 @@ export function SettingsPage() {
                 setRedactionEnabled(false);
                 await api.setSetting("redaction_enabled", "false");
               }}
-            >
-              Disabled
-            </button>
+            >{t("settings.disabled")}</button>
           </div>
         </div>
       </div>
 
       <div className="card set-card">
-        <h3>Diagnostica & Log</h3>
-        <div className="sub">
-          I file di log dettagliati (comprese tutte le chiamate API a LLM e Whisper) vengono archiviati giornalmente nella cartella <code>log/</code> dell'applicazione.
-        </div>
+        <h3>{t("settings.diagnostics.title")}</h3>
+        <div className="sub">{t("settings.diagnostics.sub")}</div>
         <div style={{ marginTop: 14 }}>
           <AppButton
             kind="ghost"
             onClick={async () => {
               try {
                 const path = await api.openLogsFolder();
-                setMessage(`Cartella log aperta: ${path}`);
+                setMessage(`Logs folder opened: ${path}`);
               } catch (e: any) {
-                setError(`Impossibile aprire la cartella log: ${e?.message ?? e}`);
+                setError(`Could not open logs folder: ${e?.message ?? e}`);
               }
             }}
           >
-            📂 Apri Cartella Log
+            {t("settings.open_logs")}
           </AppButton>
         </div>
       </div>
@@ -300,26 +316,24 @@ export function SettingsPage() {
       <div className="card set-card">
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "10px" }}>
           <div>
-            <h3>Estensione Browser (Google Chrome / Edge)</h3>
-            <div className="sub">
-              Cattura con precisione l'elemento web cliccato (testo pulsanti, link, campi input), l'URL completo delle pagine e i selettori CSS.
-            </div>
+            <h3>{t("settings.extension.title")}</h3>
+            <div className="sub">{t("settings.extension.sub")}</div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", background: "rgba(34, 197, 94, 0.1)", color: "#4ade80", border: "1px solid rgba(34, 197, 94, 0.25)", padding: "4px 10px", borderRadius: "16px" }}>
             <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#22c55e", display: "inline-block" }}></span>
-            Bridge attivo (127.0.0.1:{bridgeInfo?.port ?? 41789})
+            {t("settings.bridge_active")} (127.0.0.1:{bridgeInfo?.port ?? 41789})
           </div>
         </div>
 
-        <div style={{ marginTop: 14, padding: "12px", background: "rgba(0,0,0,0.2)", borderRadius: "8px", border: "1px solid var(--border)", fontSize: "12px", color: "var(--text-1)", lineHeight: "1.6" }}>
-          <div style={{ fontWeight: 600, color: "#38bdf8", marginBottom: 6 }}>Come installare l'estensione nel browser:</div>
+        <div style={{ marginTop: 14, padding: "12px", background: "rgba(0,0,0,0.2)", borderRadius: "8px", border: "1px solid var(--hair)", fontSize: "12px", color: "var(--text)", lineHeight: "1.6" }}>
+          <div style={{ fontWeight: 600, color: "#38bdf8", marginBottom: 6 }}>{t("settings.extension.install_title")}</div>
           <ol style={{ paddingLeft: 20, margin: 0 }}>
-            <li>Fai clic sul pulsante <strong>"Apri Cartella Estensione"</strong> qui sotto.</li>
-            <li>In Google Chrome o Edge, visita <code>chrome://extensions</code> e attiva la <strong>Modalità sviluppatore</strong> (in alto a destra).</li>
-            <li>Fai clic su <strong>"Carica estensione non pacchettizzata"</strong> e seleziona la cartella aperta (<code>browser-extension</code>).</li>
+            <li>{t("settings.extension.step1")}</li>
+            <li>{t("settings.extension.step2")}</li>
+            <li>{t("settings.extension.step3")}</li>
           </ol>
           <div style={{ marginTop: 8, color: "var(--dim)" }}>
-            💡 <em>Nota:</em> Se non installi l'estensione, FlowCapture usa comunque in automatico la <strong>Windows UI Automation (UIA)</strong> nativa per identificare gli elementi del sistema operativo e delle applicazioni desktop.
+            {t("settings.extension.note")}
           </div>
         </div>
 
@@ -329,22 +343,20 @@ export function SettingsPage() {
             onClick={async () => {
               try {
                 const path = await api.openBrowserExtensionFolder();
-                setMessage(`Cartella estensione aperta: ${path}`);
+                setMessage(`Extension folder opened: ${path}`);
               } catch (e: any) {
-                setError(`Impossibile aprire la cartella estensione: ${e?.message ?? e}`);
+                setError(`Could not open extension folder: ${e?.message ?? e}`);
               }
             }}
           >
-            🧩 Apri Cartella Estensione
+            {t("settings.open_extension")}
           </AppButton>
         </div>
       </div>
 
       <div className="card set-card">
-        <h3>Recording & Audio Options</h3>
-        <div className="sub">
-          Configura l'acquisizione del microfono, la trascrizione vocale automatica e l'evidenziazione dei click del mouse.
-        </div>
+        <h3>{t("settings.recording.title")}</h3>
+        <div className="sub">{t("settings.recording.sub")}</div>
 
         <div
           className="field"
@@ -357,10 +369,8 @@ export function SettingsPage() {
           }}
         >
           <div>
-            <label style={{ margin: 0 }}>Evidenzia click del mouse</label>
-            <div style={{ fontSize: "12px", color: "var(--dim)" }}>
-              Disegna un cerchio evidente ad alto contrasto dove viene cliccato negli screenshot
-            </div>
+            <label style={{ margin: 0 }}>{t("settings.highlight.label")}</label>
+            <div style={{ fontSize: "12px", color: "var(--dim)" }}>{t("settings.highlight.sub")}</div>
           </div>
           <div className="seg">
             <button
@@ -370,9 +380,7 @@ export function SettingsPage() {
                 setHighlightClicks(true);
                 await api.setSetting("highlight_clicks", "true");
               }}
-            >
-              Attivo
-            </button>
+            >{t("settings.active")}</button>
             <button
               type="button"
               className={!highlightClicks ? "on" : ""}
@@ -380,9 +388,7 @@ export function SettingsPage() {
                 setHighlightClicks(false);
                 await api.setSetting("highlight_clicks", "false");
               }}
-            >
-              Disattivo
-            </button>
+            >{t("settings.inactive")}</button>
           </div>
         </div>
 
@@ -397,10 +403,8 @@ export function SettingsPage() {
           }}
         >
           <div>
-            <label style={{ margin: 0 }}>Registrazione Video HD Continua</label>
-            <div style={{ fontSize: "12px", color: "var(--dim)" }}>
-              Registra un video fluido dell'intero schermo con audio sincronizzato in parallelo agli screenshot
-            </div>
+            <label style={{ margin: 0 }}>{t("settings.video.label")}</label>
+            <div style={{ fontSize: "12px", color: "var(--dim)" }}>{t("settings.video.sub")}</div>
           </div>
           <div className="seg">
             <button
@@ -410,9 +414,7 @@ export function SettingsPage() {
                 setRecordFullVideo(true);
                 await api.setSetting("record_full_video", "true");
               }}
-            >
-              Attivo
-            </button>
+            >{t("settings.active")}</button>
             <button
               type="button"
               className={!recordFullVideo ? "on" : ""}
@@ -420,9 +422,7 @@ export function SettingsPage() {
                 setRecordFullVideo(false);
                 await api.setSetting("record_full_video", "false");
               }}
-            >
-              Disattivo
-            </button>
+            >{t("settings.inactive")}</button>
           </div>
         </div>
 
@@ -438,10 +438,8 @@ export function SettingsPage() {
             }}
           >
             <div>
-              <label style={{ margin: 0 }}>Framerate Video HD</label>
-              <div style={{ fontSize: "12px", color: "var(--dim)" }}>
-                Fluidità di acquisizione (15 FPS leggero, 30 FPS standard fluido, 60 FPS ultra fluido)
-              </div>
+              <label style={{ margin: 0 }}>{t("settings.fps.label")}</label>
+              <div style={{ fontSize: "12px", color: "var(--dim)" }}>{t("settings.fps.sub")}</div>
             </div>
             <div className="seg">
               <button
@@ -489,10 +487,8 @@ export function SettingsPage() {
           }}
         >
           <div>
-            <label style={{ margin: 0 }}>Registra audio microfono</label>
-            <div style={{ fontSize: "12px", color: "var(--dim)" }}>
-              Registra l'audio vocale dal microfono scelto durante le sessioni
-            </div>
+            <label style={{ margin: 0 }}>{t("settings.mic.label")}</label>
+            <div style={{ fontSize: "12px", color: "var(--dim)" }}>{t("settings.mic.sub")}</div>
           </div>
           <div className="seg">
             <button
@@ -502,9 +498,7 @@ export function SettingsPage() {
                 setRecordAudio(true);
                 await api.setSetting("record_audio", "true");
               }}
-            >
-              Attivo
-            </button>
+            >{t("settings.active")}</button>
             <button
               type="button"
               className={!recordAudio ? "on" : ""}
@@ -512,9 +506,7 @@ export function SettingsPage() {
                 setRecordAudio(false);
                 await api.setSetting("record_audio", "false");
               }}
-            >
-              Disattivo
-            </button>
+            >{t("settings.inactive")}</button>
           </div>
         </div>
 
@@ -529,10 +521,8 @@ export function SettingsPage() {
           }}
         >
           <div>
-            <label style={{ margin: 0 }}>Trascrizione audio automatica (AI)</label>
-            <div style={{ fontSize: "12px", color: "var(--dim)" }}>
-              Trascrive il parlato e lo usa per generare la documentazione dei passaggi
-            </div>
+            <label style={{ margin: 0 }}>{t("settings.transcription.label")}</label>
+            <div style={{ fontSize: "12px", color: "var(--dim)" }}>{t("settings.transcription.sub")}</div>
           </div>
           <div className="seg">
             <button
@@ -542,9 +532,7 @@ export function SettingsPage() {
                 setTranscribeAudio(true);
                 await api.setSetting("transcribe_audio", "true");
               }}
-            >
-              Attivo
-            </button>
+            >{t("settings.active")}</button>
             <button
               type="button"
               className={!transcribeAudio ? "on" : ""}
@@ -552,9 +540,7 @@ export function SettingsPage() {
                 setTranscribeAudio(false);
                 await api.setSetting("transcribe_audio", "false");
               }}
-            >
-              Disattivo
-            </button>
+            >{t("settings.inactive")}</button>
           </div>
         </div>
 
@@ -564,7 +550,7 @@ export function SettingsPage() {
               marginTop: 10,
               padding: "10px 14px",
               background: "rgba(255, 255, 255, 0.03)",
-              border: "1px solid var(--border)",
+              border: "1px solid var(--hair)",
               borderRadius: "6px",
               maxWidth: 520,
               display: "flex",
@@ -572,14 +558,12 @@ export function SettingsPage() {
               gap: "10px",
             }}
           >
-            <div style={{ fontSize: "12px", color: "var(--text-1)", fontWeight: 500 }}>
+            <div style={{ fontSize: "12px", color: "var(--text)", fontWeight: 500 }}>
               Configurazione Motore di Trascrizione
             </div>
 
             <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
-              <label style={{ fontSize: "12px", minWidth: "140px", color: "var(--dim)", margin: 0 }}>
-                Provider Trascrizione:
-              </label>
+              <label style={{ fontSize: "12px", minWidth: "140px", color: "var(--dim)", margin: 0 }}>{t("settings.transcription_provider")}</label>
               <select
                 value={transcriptionProviderId}
                 onChange={async (e) => {
@@ -589,9 +573,9 @@ export function SettingsPage() {
                 }}
                 style={{
                   flex: 1,
-                  background: "var(--bg-3, #151b23)",
-                  color: "var(--text-1)",
-                  border: "1px solid var(--border)",
+                  background: "var(--surface)",
+                  color: "var(--text)",
+                  border: "1px solid var(--hair)",
                   padding: "5px 10px",
                   borderRadius: "5px",
                   fontSize: "12.5px",
@@ -607,9 +591,7 @@ export function SettingsPage() {
             </div>
 
             <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
-              <label style={{ fontSize: "12px", minWidth: "140px", color: "var(--dim)", margin: 0 }}>
-                Modello Audio:
-              </label>
+              <label style={{ fontSize: "12px", minWidth: "140px", color: "var(--dim)", margin: 0 }}>{t("settings.transcription_model")}</label>
               <input
                 type="text"
                 placeholder="es. whisper-1, gemini-2.5-flash, whisper, faster-whisper"
@@ -620,9 +602,9 @@ export function SettingsPage() {
                 }}
                 style={{
                   flex: 1,
-                  background: "var(--bg-3, #151b23)",
-                  color: "var(--text-1)",
-                  border: "1px solid var(--border)",
+                  background: "var(--surface)",
+                  color: "var(--text)",
+                  border: "1px solid var(--hair)",
                   padding: "5px 10px",
                   borderRadius: "5px",
                   fontSize: "12.5px",
@@ -631,9 +613,7 @@ export function SettingsPage() {
             </div>
 
             <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
-              <label style={{ fontSize: "12px", minWidth: "140px", color: "var(--dim)", margin: 0 }}>
-                Base URL Trascrizione:
-              </label>
+              <label style={{ fontSize: "12px", minWidth: "140px", color: "var(--dim)", margin: 0 }}>{t("settings.transcription_url")}</label>
               <input
                 type="text"
                 placeholder="es. http://localhost:11434 o http://localhost:8000"
@@ -644,9 +624,9 @@ export function SettingsPage() {
                 }}
                 style={{
                   flex: 1,
-                  background: "var(--bg-3, #151b23)",
-                  color: "var(--text-1)",
-                  border: "1px solid var(--border)",
+                  background: "var(--surface)",
+                  color: "var(--text)",
+                  border: "1px solid var(--hair)",
                   padding: "5px 10px",
                   borderRadius: "5px",
                   fontSize: "12.5px",
@@ -655,9 +635,7 @@ export function SettingsPage() {
             </div>
 
             <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
-              <label style={{ fontSize: "12px", minWidth: "140px", color: "var(--dim)", margin: 0 }}>
-                Lingua Trascrizione:
-              </label>
+              <label style={{ fontSize: "12px", minWidth: "140px", color: "var(--dim)", margin: 0 }}>{t("settings.transcription_lang")}</label>
               <select
                 value={transcriptionLanguage}
                 onChange={async (e) => {
@@ -667,26 +645,24 @@ export function SettingsPage() {
                 }}
                 style={{
                   flex: 1,
-                  background: "var(--bg-3, #151b23)",
-                  color: "var(--text-1)",
-                  border: "1px solid var(--border)",
+                  background: "var(--surface)",
+                  color: "var(--text)",
+                  border: "1px solid var(--hair)",
                   padding: "5px 10px",
                   borderRadius: "5px",
                   fontSize: "12.5px",
                 }}
               >
                 <option value="it">Italiano (it)</option>
-                <option value="en">Inglese (en)</option>
-                <option value="es">Spagnolo (es)</option>
-                <option value="fr">Francese (fr)</option>
-                <option value="de">Tedesco (de)</option>
-                <option value="auto">Rilevamento automatico (auto)</option>
+                <option value="en">English (en)</option>
+                <option value="es">Español (es)</option>
+                <option value="fr">Français (fr)</option>
+                <option value="de">Deutsch (de)</option>
+                <option value="auto">Auto-detect (auto)</option>
               </select>
             </div>
 
-            <div style={{ fontSize: "11px", color: "var(--dim)" }}>
-              💡 Per <b>Ollama o server self-hosted</b>: puoi configurare un URL personalizzato (es. <code>http://localhost:11434</code> o <code>http://localhost:8000</code> per un server whisper.cpp / faster-whisper locale).
-            </div>
+            <div style={{ fontSize: "11px", color: "var(--dim)" }}>{t("settings.transcription_note")}</div>
           </div>
         )}
 
@@ -701,10 +677,8 @@ export function SettingsPage() {
           }}
         >
           <div>
-            <label style={{ margin: 0 }}>Screenshot su ogni evento (Modalità densa)</label>
-            <div style={{ fontSize: "12px", color: "var(--dim)" }}>
-              Cattura screenshot per qualsiasi tasto e scorrimento rotellina, non solo click del mouse
-            </div>
+            <label style={{ margin: 0 }}>{t("settings.dense.label")}</label>
+            <div style={{ fontSize: "12px", color: "var(--dim)" }}>{t("settings.dense.sub")}</div>
           </div>
           <div className="seg">
             <button
@@ -714,9 +688,7 @@ export function SettingsPage() {
                 setCaptureAllEvents(true);
                 await api.setSetting("capture_all_events", "true");
               }}
-            >
-              Attivo
-            </button>
+            >{t("settings.active")}</button>
             <button
               type="button"
               className={!captureAllEvents ? "on" : ""}
@@ -724,14 +696,12 @@ export function SettingsPage() {
                 setCaptureAllEvents(false);
                 await api.setSetting("capture_all_events", "false");
               }}
-            >
-              Disattivo
-            </button>
+            >{t("settings.inactive")}</button>
           </div>
         </div>
 
         <div className="field" style={{ maxWidth: 520, marginTop: 14 }}>
-          <label htmlFor="settings-mon-select">Schermo predefinito da registrare</label>
+          <label htmlFor="settings-mon-select">{t("settings.monitor.label")}</label>
           <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
             <select
               id="settings-mon-select"
@@ -743,9 +713,9 @@ export function SettingsPage() {
               }}
               style={{
                 flex: 1,
-                background: "var(--bg-3, #151b23)",
-                color: "var(--text-1)",
-                border: "1px solid var(--border)",
+                background: "var(--surface)",
+                color: "var(--text)",
+                border: "1px solid var(--hair)",
                 padding: "8px 12px",
                 borderRadius: "6px",
                 fontSize: "13px",
@@ -757,7 +727,7 @@ export function SettingsPage() {
                 </option>
               ))}
               {monitors.length === 0 && (
-                <option value="">Schermo Principale</option>
+                <option value="">{t("settings.primary_screen")}</option>
               )}
             </select>
             <button
@@ -765,21 +735,19 @@ export function SettingsPage() {
               onClick={() => refreshMonitors()}
               style={{
                 background: "transparent",
-                border: "1px solid var(--border)",
+                border: "1px solid var(--hair)",
                 padding: "8px 12px",
                 borderRadius: "6px",
-                color: "var(--text-1)",
+                color: "var(--text)",
                 fontSize: "12px",
                 cursor: "pointer",
               }}
-            >
-              Rileva
-            </button>
+            >{t("settings.detect")}</button>
           </div>
         </div>
 
         <div className="field" style={{ maxWidth: 520, marginTop: 14 }}>
-          <label htmlFor="settings-mic-select">Microfono predefinito</label>
+          <label htmlFor="settings-mic-select">{t("settings.mic_default.label")}</label>
           <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
             <select
               id="settings-mic-select"
@@ -791,15 +759,15 @@ export function SettingsPage() {
               }}
               style={{
                 flex: 1,
-                background: "var(--bg-3, #151b23)",
-                color: "var(--text-1)",
-                border: "1px solid var(--border)",
+                background: "var(--surface)",
+                color: "var(--text)",
+                border: "1px solid var(--hair)",
                 padding: "8px 12px",
                 borderRadius: "6px",
                 fontSize: "13px",
               }}
             >
-              <option value="">Microfono di Sistema Predefinito</option>
+              <option value="">{t("settings.system_default")}</option>
               {audioDevices.map((d, i) => (
                 <option key={d.deviceId || i} value={d.deviceId}>
                   {d.label || `Microfono ${i + 1}`}
@@ -819,16 +787,14 @@ export function SettingsPage() {
               }}
               style={{
                 background: "transparent",
-                border: "1px solid var(--border)",
+                border: "1px solid var(--hair)",
                 padding: "8px 12px",
                 borderRadius: "6px",
-                color: "var(--text-1)",
+                color: "var(--text)",
                 fontSize: "12px",
                 cursor: "pointer",
               }}
-            >
-              Rileva
-            </button>
+            >{t("settings.detect")}</button>
           </div>
         </div>
       </div>
@@ -884,7 +850,7 @@ export function SettingsPage() {
               padding: "12px 16px",
               borderRadius: "8px",
               background: "rgba(255, 255, 255, 0.03)",
-              border: "1px solid var(--border)",
+              border: "1px solid var(--hair)",
               fontSize: "12px",
               lineHeight: 1.5,
               marginBottom: 20,
@@ -918,12 +884,12 @@ export function SettingsPage() {
                 onClick={() => applyPreset({ temperature: 0.2 })}
                 style={{
                   background: "transparent",
-                  border: "1px solid var(--border)",
+                  border: "1px solid var(--hair)",
                   borderRadius: "4px",
                   padding: "3px 8px",
                   fontSize: "11px",
                   cursor: "pointer",
-                  color: "var(--text-1)",
+                  color: "var(--text)",
                 }}
               >
                 Preset Base
@@ -939,12 +905,12 @@ export function SettingsPage() {
                 }
                 style={{
                   background: "transparent",
-                  border: "1px solid var(--border)",
+                  border: "1px solid var(--hair)",
                   borderRadius: "4px",
                   padding: "3px 8px",
                   fontSize: "11px",
                   cursor: "pointer",
-                  color: "var(--text-1)",
+                  color: "var(--text)",
                 }}
               >
                 Preset LM Studio / OpenAI
@@ -961,12 +927,12 @@ export function SettingsPage() {
                 }
                 style={{
                   background: "transparent",
-                  border: "1px solid var(--border)",
+                  border: "1px solid var(--hair)",
                   borderRadius: "4px",
                   padding: "3px 8px",
                   fontSize: "11px",
                   cursor: "pointer",
-                  color: "var(--text-1)",
+                  color: "var(--text)",
                 }}
               >
                 Preset Ollama
@@ -976,7 +942,7 @@ export function SettingsPage() {
                 onClick={() => applyPreset({})}
                 style={{
                   background: "transparent",
-                  border: "1px solid var(--border)",
+                  border: "1px solid var(--hair)",
                   borderRadius: "4px",
                   padding: "3px 8px",
                   fontSize: "11px",
@@ -1016,8 +982,8 @@ export function SettingsPage() {
               padding: "10px",
               borderRadius: "6px",
               background: "rgba(0, 0, 0, 0.25)",
-              border: customParamsError ? "1px solid var(--rose)" : "1px solid var(--border)",
-              color: "var(--text-1)",
+              border: customParamsError ? "1px solid var(--rose)" : "1px solid var(--hair)",
+              color: "var(--text)",
               resize: "vertical",
             }}
             placeholder={'{\n  "temperature": 0.2\n}'}

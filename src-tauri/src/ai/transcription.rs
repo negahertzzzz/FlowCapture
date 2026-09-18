@@ -145,7 +145,8 @@ async fn transcribe_openai_segments(
     let part = reqwest::multipart::Part::bytes(bytes).file_name(file_name);
     let mut form = reqwest::multipart::Form::new()
         .part("file", part)
-        .text("model", model_name);
+        .text("model", model_name)
+        .text("response_format", "verbose_json");
 
     if let Some(lang) = language.filter(|l| !l.is_empty() && *l != "auto") {
         form = form.text("language", lang.to_string());
@@ -178,8 +179,18 @@ async fn transcribe_openai_segments(
         .map(|arr| {
             arr.iter()
                 .filter_map(|seg| {
-                    let start_ms = seg["start_ms"].as_i64()?;
-                    let end_ms = seg["end_ms"].as_i64()?;
+                    // Support both `start` (seconds as float) or `start_ms` (integer)
+                    let start_ms = if let Some(ms) = seg["start_ms"].as_i64() {
+                        ms
+                    } else {
+                        (seg["start"].as_f64()? * 1000.0) as i64
+                    };
+                    
+                    let end_ms = if let Some(ms) = seg["end_ms"].as_i64() {
+                        ms
+                    } else {
+                        (seg["end"].as_f64()? * 1000.0) as i64
+                    };
                     let seg_text = seg["text"].as_str()?.to_string();
                     let avg_logprob = seg["avg_logprob"].as_f64().unwrap_or(0.0) as f32;
                     Some(AudioSegment { start_ms, end_ms, text: seg_text, avg_logprob })

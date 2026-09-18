@@ -157,7 +157,7 @@ export function HomePage() {
             margin: "18px 0",
             padding: "14px 16px",
             background: "rgba(255,255,255,0.03)",
-            border: "1px solid var(--border)",
+            border: "1px solid var(--hair)",
             borderRadius: "8px",
             display: "flex",
             flexDirection: "column",
@@ -165,7 +165,7 @@ export function HomePage() {
           }}
         >
           {/* Schermo da registrare */}
-          <div style={{ borderBottom: "1px solid var(--border)", paddingBottom: "12px" }}>
+          <div style={{ borderBottom: "1px solid var(--hair)", paddingBottom: "12px" }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "10px" }}>
               <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                 <span style={{ fontSize: "16px" }}>🖥️</span>
@@ -184,9 +184,9 @@ export function HomePage() {
                   value={selectedMonitorId}
                   onChange={(e) => setSelectedMonitorId(e.target.value)}
                   style={{
-                    background: "var(--bg-3, #151b23)",
-                    color: "var(--text-1)",
-                    border: "1px solid var(--border)",
+                    background: "var(--surface)",
+                    color: "var(--text)",
+                    border: "1px solid var(--hair)",
                     borderRadius: "6px",
                     padding: "5px 10px",
                     fontSize: "12.5px",
@@ -240,7 +240,7 @@ export function HomePage() {
             </div>
           </div>
 
-          <div style={{ borderTop: "1px solid var(--border)", paddingTop: "12px" }}>
+          <div style={{ borderTop: "1px solid var(--hair)", paddingTop: "12px" }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "10px" }}>
               <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
                 <span style={{ fontSize: "16px" }}>🎙️</span>
@@ -278,9 +278,9 @@ export function HomePage() {
                     value={selectedMicId}
                     onChange={(e) => setSelectedMicId(e.target.value)}
                     style={{
-                      background: "var(--bg-3, #151b23)",
-                      color: "var(--text-1)",
-                      border: "1px solid var(--border)",
+                      background: "var(--surface)",
+                      color: "var(--text)",
+                      border: "1px solid var(--hair)",
                       padding: "6px 12px",
                       borderRadius: "6px",
                       fontSize: "13px",
@@ -308,7 +308,7 @@ export function HomePage() {
                     style={{
                       background: "transparent",
                       border: "none",
-                      color: "var(--color-primary, #60a5fa)",
+                      color: "var(--mint)",
                       fontSize: "12px",
                       cursor: "pointer",
                       textDecoration: "underline",
@@ -354,9 +354,9 @@ export function HomePage() {
                         await api.setSetting("transcription_language", val);
                       }}
                       style={{
-                        background: "var(--bg-3, #151b23)",
-                        color: "var(--text-1)",
-                        border: "1px solid var(--border)",
+                        background: "var(--surface)",
+                        color: "var(--text)",
+                        border: "1px solid var(--hair)",
                         padding: "4px 8px",
                         borderRadius: "6px",
                         fontSize: "12px",
@@ -375,7 +375,7 @@ export function HomePage() {
             ) : null}
           </div>
 
-          <div style={{ borderTop: "1px solid var(--border)", paddingTop: "12px", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "10px" }}>
+          <div style={{ borderTop: "1px solid var(--hair)", paddingTop: "12px", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "10px" }}>
             <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
               <span style={{ fontSize: "16px" }}>📸</span>
               <div>

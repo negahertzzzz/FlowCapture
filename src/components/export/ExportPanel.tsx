@@ -18,6 +18,7 @@ import {
 } from "@/lib/exportOptions";
 import { exportTypeClass } from "@/lib/icons";
 import { formatDuration } from "@/lib/utils";
+import { useLanguage } from "@/i18n";
 
 type ExportPanelProps = {
   session: Session;
@@ -81,6 +82,7 @@ export function ExportPanel({
   onExport,
   onRevealExport,
 }: ExportPanelProps) {
+  const { t } = useLanguage();
   const [format, setFormat] = useState<ExportFormat>("pdf");
   const [options, setOptions] = useState<ExportOptions>(DEFAULT_EXPORT_OPTIONS);
   const [copied, setCopied] = useState(false);
@@ -91,7 +93,7 @@ export function ExportPanel({
   const accentInk = exportAccentInk(options.theme);
   const docTitle = session.title || "Workflow Documentation";
   const overview =
-    "A step-by-step guide generated from your recorded session with screenshots and workflow context.";
+    t("export.overview", "A step-by-step guide generated from your recorded session with screenshots and workflow context.");
 
   const screenshotMap = useMemo(
     () => new Map(screenshots.map((shot) => [shot.id, shot])),
@@ -130,14 +132,14 @@ export function ExportPanel({
         <div className="cfg-head">
           <Logo size={34} />
           <div>
-            <div className="lt">Export</div>
-            <div className="ls">Configure your document</div>
+            <div className="lt">{t("session.export.btn", "Export")}</div>
+            <div className="ls">{t("export.options", "Export Options")}</div>
           </div>
         </div>
 
         <div className="cfg-body">
           <div className="cfg-sec">
-            <h4>Format</h4>
+            <h4>{t("export.format", "Format")}</h4>
             <div className="seg">
               {(["pdf", "html"] as ExportFormat[]).map((value) => (
                 <button
@@ -154,7 +156,7 @@ export function ExportPanel({
           </div>
 
           <div className="cfg-sec">
-            <h4>Theme</h4>
+            <h4>{t("export.theme", "Theme")}</h4>
             <div className="seg">
               {(["dark", "light"] as ExportTheme[]).map((value) => (
                 <button
@@ -170,7 +172,7 @@ export function ExportPanel({
           </div>
 
           <div className="cfg-sec">
-            <h4>Accent</h4>
+            <h4>{t("export.accent", "Accent Color")}</h4>
             <div className="swatches">
               {(Object.keys(ACCENT_COLORS) as ExportAccent[]).map((accent) => (
                 <button
@@ -186,7 +188,7 @@ export function ExportPanel({
           </div>
 
           <div className={`cfg-sec${format === "html" ? " dimmed" : ""}`}>
-            <h4>Page size</h4>
+            <h4>{t("export.page_size", "Page Size")}</h4>
             <select
               className="selectish"
               value={options.pageSize}

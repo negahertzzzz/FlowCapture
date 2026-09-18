@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { AppButton } from "@/components/ui/AppButton";
+import { useLanguage } from "@/i18n";
 import { api, type Screenshot, type NewStepPayload } from "@/lib/api";
 
 interface ImageAnnotationModalProps {
@@ -28,23 +29,24 @@ export interface AnnotationItem {
   text?: string;
 }
 
-const PALETTE = [
-  { label: "Rosso", val: "#ef4444" },
-  { label: "Giallo", val: "#facc15" },
-  { label: "Blu", val: "#3b82f6" },
-  { label: "Verde", val: "#22c55e" },
-  { label: "Viola", val: "#a855f7" },
-  { label: "Arancione", val: "#f97316" },
-  { label: "Cyan", val: "#06b6d4" },
-  { label: "Bianco", val: "#ffffff" },
-];
-
 export function ImageAnnotationModal({
   sessionId,
   screenshot,
   onClose,
   onSaved,
 }: ImageAnnotationModalProps) {
+  const { t } = useLanguage();
+
+  const PALETTE = [
+    { label: t("annotation.color.red", "Red"), val: "#ef4444" },
+    { label: t("annotation.color.yellow", "Yellow"), val: "#facc15" },
+    { label: t("annotation.color.blue", "Blue"), val: "#3b82f6" },
+    { label: t("annotation.color.green", "Green"), val: "#22c55e" },
+    { label: t("annotation.color.purple", "Purple"), val: "#a855f7" },
+    { label: t("annotation.color.orange", "Orange"), val: "#f97316" },
+    { label: "Cyan", val: "#06b6d4" },
+    { label: t("annotation.color.white", "White"), val: "#ffffff" },
+  ];
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
 
@@ -64,7 +66,7 @@ export function ImageAnnotationModal({
 
   const [asNewStep, setAsNewStep] = useState(false);
   const [stepTitle, setStepTitle] = useState(
-    screenshot.trigger ? `Passo: ${screenshot.trigger}` : "Nuovo Passo"
+    screenshot.trigger ? t("md.step_prefix", "Step: ") + screenshot.trigger : t("md.step_new", "New Step")
   );
   const [stepDescription, setStepDescription] = useState("");
 
@@ -482,7 +484,7 @@ export function ImageAnnotationModal({
     }
 
     if (activeTool === "text") {
-      const userText = prompt("Inserisci il testo per l'annotazione:") || "";
+      const userText = prompt(t("annotation.prompt_text", "Enter annotation text:")) || "";
       if (!userText.trim()) return;
       const newTextItem: AnnotationItem = {
         id: `text_${Date.now()}`,
@@ -683,7 +685,7 @@ export function ImageAnnotationModal({
           justifyContent: "space-between",
           padding: "10px 20px",
           background: "var(--bg-2, #161e2b)",
-          borderBottom: "1px solid var(--border)",
+          borderBottom: "1px solid var(--hair)",
         }}
       >
         <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
@@ -744,8 +746,8 @@ export function ImageAnnotationModal({
         <div
           style={{
             width: "210px",
-            background: "var(--bg-card, #121822)",
-            borderRight: "1px solid var(--border)",
+            background: "var(--surface)",
+            borderRight: "1px solid var(--hair)",
             padding: "14px",
             display: "flex",
             flexDirection: "column",
@@ -826,7 +828,7 @@ export function ImageAnnotationModal({
 
           <div>
             <div style={{ fontSize: "11px", textTransform: "uppercase", color: "var(--dim)", marginBottom: "6px", fontWeight: 700 }}>
-              Colore {selectedItem ? "(Elemento)" : "(Nuovo)"}
+              Colore {selectedItem ? "(Element)" : "(New)"}
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "6px" }}>
               {PALETTE.map((c) => {
@@ -853,7 +855,7 @@ export function ImageAnnotationModal({
 
           <div>
             <div style={{ fontSize: "11px", textTransform: "uppercase", color: "var(--dim)", marginBottom: "4px", fontWeight: 700 }}>
-              Spessore: {strokeWidth}px
+              {t("annotation.stroke", "Thickness")}: {strokeWidth}px
             </div>
             <input
               type="range"
@@ -866,7 +868,7 @@ export function ImageAnnotationModal({
             />
           </div>
 
-          <div style={{ fontSize: "11px", color: "var(--dim)", marginTop: "auto", borderTop: "1px solid var(--border)", paddingTop: "8px" }}>
+          <div style={{ fontSize: "11px", color: "var(--dim)", marginTop: "auto", borderTop: "1px solid var(--hair)", paddingTop: "8px" }}>
             💡 Clicca su un elemento per selezionarlo e spostarlo. Trascina la casella di testo del badge per posizionarla dove preferisci!
           </div>
         </div>
@@ -906,8 +908,8 @@ export function ImageAnnotationModal({
         <div
           style={{
             width: "290px",
-            background: "var(--bg-card, #121822)",
-            borderLeft: "1px solid var(--border)",
+            background: "var(--surface)",
+            borderLeft: "1px solid var(--hair)",
             padding: "16px",
             display: "flex",
             flexDirection: "column",
@@ -915,7 +917,7 @@ export function ImageAnnotationModal({
             overflowY: "auto",
           }}
         >
-          <div style={{ borderBottom: "1px solid var(--border)", paddingBottom: "14px" }}>
+          <div style={{ borderBottom: "1px solid var(--hair)", paddingBottom: "14px" }}>
             <div style={{ fontSize: "11px", textTransform: "uppercase", color: "var(--dim)", fontWeight: 700, marginBottom: "8px" }}>
               Elemento Selezionato
             </div>
@@ -924,7 +926,7 @@ export function ImageAnnotationModal({
               <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                   <span style={{ fontSize: "13px", fontWeight: 600 }}>
-                    Tipo: <span style={{ color: "var(--color-primary, #60a5fa)" }}>{selectedItem.type.toUpperCase()}</span>
+                    Tipo: <span style={{ color: "var(--mint)" }}>{selectedItem.type.toUpperCase()}</span>
                   </span>
                   <button
                     type="button"
@@ -947,9 +949,9 @@ export function ImageAnnotationModal({
                         onChange={(e) => updateSelectedBadgeProps({ badgeNumber: Number(e.target.value) })}
                         style={{
                           width: "100%",
-                          background: "var(--bg-3, #151b23)",
-                          color: "var(--text-1)",
-                          border: "1px solid var(--border)",
+                          background: "var(--surface)",
+                          color: "var(--text)",
+                          border: "1px solid var(--hair)",
                           borderRadius: "4px",
                           padding: "4px 8px",
                           fontSize: "12px",
@@ -966,9 +968,9 @@ export function ImageAnnotationModal({
                         onChange={(e) => updateSelectedBadgeProps({ badgeText: e.target.value })}
                         style={{
                           width: "100%",
-                          background: "var(--bg-3, #151b23)",
-                          color: "var(--text-1)",
-                          border: "1px solid var(--border)",
+                          background: "var(--surface)",
+                          color: "var(--text)",
+                          border: "1px solid var(--hair)",
                           borderRadius: "4px",
                           padding: "5px 8px",
                           fontSize: "12px",
@@ -1041,9 +1043,9 @@ export function ImageAnnotationModal({
                       }}
                       style={{
                         width: "100%",
-                        background: "var(--bg-3, #151b23)",
-                        color: "var(--text-1)",
-                        border: "1px solid var(--border)",
+                        background: "var(--surface)",
+                        color: "var(--text)",
+                        border: "1px solid var(--hair)",
                         borderRadius: "4px",
                         padding: "5px 8px",
                         fontSize: "12px",
@@ -1089,9 +1091,9 @@ export function ImageAnnotationModal({
                     onChange={(e) => setStepTitle(e.target.value)}
                     style={{
                       width: "100%",
-                      background: "var(--bg-3, #151b23)",
-                      color: "var(--text-1)",
-                      border: "1px solid var(--border)",
+                      background: "var(--surface)",
+                      color: "var(--text)",
+                      border: "1px solid var(--hair)",
                       borderRadius: "4px",
                       padding: "5px 8px",
                       fontSize: "12px",
@@ -1108,9 +1110,9 @@ export function ImageAnnotationModal({
                     placeholder="Descrivi dettagliatamente l'operazione..."
                     style={{
                       width: "100%",
-                      background: "var(--bg-3, #151b23)",
-                      color: "var(--text-1)",
-                      border: "1px solid var(--border)",
+                      background: "var(--surface)",
+                      color: "var(--text)",
+                      border: "1px solid var(--hair)",
                       borderRadius: "4px",
                       padding: "5px 8px",
                       fontSize: "12px",
@@ -1122,7 +1124,7 @@ export function ImageAnnotationModal({
             )}
           </div>
 
-          <div style={{ marginTop: "auto", borderTop: "1px solid var(--border)", paddingTop: "10px", fontSize: "11px", color: "var(--dim)" }}>
+          <div style={{ marginTop: "auto", borderTop: "1px solid var(--hair)", paddingTop: "10px", fontSize: "11px", color: "var(--dim)" }}>
             💾 I dati vettoriali delle modifiche rimangono salvati e modificabili in ogni momento.
           </div>
         </div>

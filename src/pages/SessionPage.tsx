@@ -878,8 +878,8 @@ export function SessionPage() {
 
           {session.audio_path ? (
             <div style={{ marginTop: "16px", display: "flex", flexDirection: "column", gap: "16px" }}>
-              <div style={{ padding: "16px", background: "rgba(255,255,255,0.03)", borderRadius: "8px", border: "1px solid var(--border)" }}>
-                <div style={{ fontSize: "13px", fontWeight: 500, marginBottom: "8px", color: "var(--text-1)" }}>
+              <div style={{ padding: "16px", background: "rgba(255,255,255,0.03)", borderRadius: "8px", border: "1px solid var(--hair)" }}>
+                <div style={{ fontSize: "13px", fontWeight: 500, marginBottom: "8px", color: "var(--text)" }}>
                   Traccia Audio Microfono:
                 </div>
                 <audio
@@ -889,9 +889,9 @@ export function SessionPage() {
                 />
               </div>
 
-              <div style={{ padding: "16px", background: "rgba(255,255,255,0.03)", borderRadius: "8px", border: "1px solid var(--border)" }}>
+              <div style={{ padding: "16px", background: "rgba(255,255,255,0.03)", borderRadius: "8px", border: "1px solid var(--hair)" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
-                  <div style={{ fontSize: "13px", fontWeight: 500, color: "var(--text-1)" }}>
+                  <div style={{ fontSize: "13px", fontWeight: 500, color: "var(--text)" }}>
                     Trascrizione del Parlato (Speech-to-Text):
                   </div>
                   {session.audio_transcript ? (
@@ -906,11 +906,11 @@ export function SessionPage() {
                       whiteSpace: "pre-wrap",
                       fontSize: "14px",
                       lineHeight: "1.6",
-                      color: "var(--text-1)",
-                      background: "var(--bg-3, #0d1117)",
+                      color: "var(--text)",
+                      background: "var(--surface)",
                       padding: "14px 16px",
                       borderRadius: "6px",
-                      border: "1px solid var(--border)",
+                      border: "1px solid var(--hair)",
                     }}
                   >
                     {session.audio_transcript}

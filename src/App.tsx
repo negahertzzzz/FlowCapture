@@ -14,6 +14,7 @@ import { formatDuration } from "@/lib/utils";
 function FloatingAiProgress() {
   const { activeJob, cancelJob, clearJob } = useAiJob();
   const navigate = useNavigate();
+  const { t } = useLanguage();
 
   if (!activeJob) return null;
 
@@ -41,14 +42,14 @@ function FloatingAiProgress() {
         <div style={{ display: "flex", alignItems: "center", gap: "8px", fontWeight: 600, fontSize: "13px" }}>
           {activeJob.isDone ? (
             activeJob.error ? (
-              <span style={{ color: "#ef4444" }}>❌ Errore AI</span>
+              <span style={{ color: "#ef4444" }}>❌ {t("session.status.error") || "Error"}</span>
             ) : (
-              <span style={{ color: "#22c55e" }}>✨ Documento Pronto!</span>
+              <span style={{ color: "#22c55e" }}>✨ {t("session.status.ready") || "Document Ready!"}</span>
             )
           ) : (
             <>
               <span className="pulse" style={{ width: "8px", height: "8px" }} />
-              <span>Generazione AI in corso...</span>
+              <span>{t("session.status.processing") || "AI processing..."}</span>
             </>
           )}
         </div>
@@ -74,7 +75,7 @@ function FloatingAiProgress() {
       </div>
 
       <div style={{ fontSize: "11px", color: "#888" }}>
-        Fase: <span style={{ color: "#eee" }}>{activeJob.stage.replaceAll("_", " ")}</span>
+        {t("session.stage") || "Stage"}: <span style={{ color: "#eee" }}>{activeJob.stage.replaceAll("_", " ")}</span>
       </div>
 
       <div style={{ display: "flex", gap: "8px", marginTop: "4px" }}>
@@ -92,7 +93,7 @@ function FloatingAiProgress() {
             cursor: "pointer",
           }}
         >
-          Vai alla sessione
+          {t("session.back") || "View session"}
         </button>
         {!activeJob.isDone && (
           <button
@@ -108,7 +109,7 @@ function FloatingAiProgress() {
               cursor: "pointer",
             }}
           >
-            Annulla
+            {t("annotation.cancel") || "Cancel"}
           </button>
         )}
       </div>
@@ -117,6 +118,7 @@ function FloatingAiProgress() {
 }
 
 function AppShell() {
+  const { t } = useLanguage();
   const {
     recording,
     loading,
@@ -183,9 +185,9 @@ function AppShell() {
               type="button"
               className="btn-toggle-sidebar"
               onClick={() => toggleSidebar(true)}
-              title="Mostra barra laterale"
+              title={t("sidebar.show", "Show sidebar")}
             >
-              ☰ Menu
+              ☰ {t("sidebar.menu", "Menu")}
             </button>
           )}
           <Routes>
@@ -222,14 +224,19 @@ function AppShell() {
   );
 }
 
+import { LanguageProvider, useLanguage } from "@/i18n";
+
 export default function App() {
   return (
-    <RecordingProvider>
-      <SessionsProvider>
-        <AiJobProvider>
-          <AppShell />
-        </AiJobProvider>
-      </SessionsProvider>
-    </RecordingProvider>
+    <LanguageProvider>
+      <RecordingProvider>
+        <SessionsProvider>
+          <AiJobProvider>
+            <AppShell />
+          </AiJobProvider>
+        </SessionsProvider>
+      </RecordingProvider>
+    </LanguageProvider>
   );
 }
+

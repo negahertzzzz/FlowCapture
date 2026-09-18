@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import type { Screenshot } from "@/lib/api";
 import { MarkdownPreview } from "./MarkdownPreview";
+import { useLanguage } from "@/i18n";
 
 interface MarkdownEditorProps {
   value: string;
@@ -15,6 +16,7 @@ export function MarkdownEditor({
   screenshots,
   disabled = false,
 }: MarkdownEditorProps) {
+  const { t } = useLanguage();
   const [viewMode, setViewMode] = useState<"split" | "edit" | "preview">("split");
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const [showScreenshotPicker, setShowScreenshotPicker] = useState(false);
@@ -58,18 +60,18 @@ export function MarkdownEditor({
 
   function insertScreenshotMarkdown(shot: Screenshot, index: number) {
     const filename = shot.path.split(/[/\\]/).pop() ?? `screenshot_${index + 1}.jpg`;
-    const snippet = `\n\n![Passo ${index + 1} - ${shot.trigger || "Screenshot"}](${filename})\n`;
+    const snippet = `\n\n![{t("md.step", "Step")} ${index + 1} - ${shot.trigger || "Screenshot"}](${filename})\n`;
     insertFormatting(snippet, "", "");
     setShowScreenshotPicker(false);
   }
 
   function insertStepTemplate() {
-    const snippet = `\n\n### Passo: [Titolo Passo]\nDescrivi dettagliatamente cosa deve fare l'utente in questo passaggio.\n\n- **Azione**: Clicca su...\n- **Risultato atteso**: La finestra si apre...\n`;
+    const snippet = `\n\n### {t("md.step", "Step")}: [Titolo {t("md.step", "Step")}]\n{t("md.step_desc", "Describe in detail what the user needs to do in this step.")}\n\n- **{t("md.action", "Action")}**: {t("md.click_on", "Click on...")}\n- **{t("md.expected", "Expected result")}**: {t("md.window_opens", "The window opens...")}\n`;
     insertFormatting(snippet, "", "");
   }
 
   function insertTable() {
-    const tableSnippet = `\n\n| Parametro | Descrizione | Obbligatorio |\n| :--- | :--- | :--- |\n| Valore 1 | Spiegazione del primo campo | Sì |\n| Valore 2 | Spiegazione del secondo campo | No |\n`;
+    const tableSnippet = `\n\n| {t("md.param", "Parameter")} | {t("md.desc", "Description")} | {t("md.required", "Required")} |\n| :--- | :--- | :--- |\n| {t("md.val1", "Value 1")} | {t("md.desc1", "Explanation of the first field")} | {t("md.yes", "Yes")} |\n| {t("md.val2", "Value 2")} | {t("md.desc2", "Explanation of the second field")} | No |\n`;
     insertFormatting(tableSnippet, "", "");
   }
 
@@ -81,10 +83,10 @@ export function MarkdownEditor({
         flexDirection: "column",
         height: "100%",
         minHeight: "580px",
-        border: "1px solid var(--border)",
+        border: "1px solid var(--hair)",
         borderRadius: "8px",
         overflow: "hidden",
-        background: "var(--bg-card, #12171f)",
+        background: "var(--surface)",
       }}
     >
       {/* Toolbar */}
@@ -97,7 +99,7 @@ export function MarkdownEditor({
           gap: "6px",
           padding: "8px 12px",
           background: "var(--bg-2, #18202c)",
-          borderBottom: "1px solid var(--border)",
+          borderBottom: "1px solid var(--hair)",
         }}
       >
         {/* Formatting actions */}
@@ -105,8 +107,8 @@ export function MarkdownEditor({
           <button
             type="button"
             className="btn btn-ghost btn-sm"
-            onClick={() => insertFormatting("**", "**", "testo in grassetto")}
-            title="Grassetto (Ctrl+B)"
+            onClick={() => insertFormatting("**", "**", t("md.bold_text", "bold text"))}
+            title={t("md.bold_title", "Bold (Ctrl+B)")}
             style={{ fontWeight: "bold", padding: "4px 8px" }}
           >
             B
@@ -114,8 +116,8 @@ export function MarkdownEditor({
           <button
             type="button"
             className="btn btn-ghost btn-sm"
-            onClick={() => insertFormatting("*", "*", "testo in corsivo")}
-            title="Corsivo (Ctrl+I)"
+            onClick={() => insertFormatting("*", "*", t("md.italic_text", "italic text"))}
+            title={t("md.italic_title", "Italic (Ctrl+I)")}
             style={{ fontStyle: "italic", padding: "4px 8px" }}
           >
             I
@@ -123,20 +125,20 @@ export function MarkdownEditor({
           <button
             type="button"
             className="btn btn-ghost btn-sm"
-            onClick={() => insertFormatting("~~", "~~", "testo barrato")}
-            title="Barrato"
+            onClick={() => insertFormatting("~~", "~~", t("md.strike_text", "strikethrough text"))}
+            title={t("md.strike_title", "Strikethrough")}
             style={{ textDecoration: "line-through", padding: "4px 8px" }}
           >
             S
           </button>
 
-          <span style={{ width: 1, height: 18, background: "var(--border)", margin: "0 4px" }} />
+          <span style={{ width: 1, height: 18, background: "var(--hair)", margin: "0 4px" }} />
 
           <button
             type="button"
             className="btn btn-ghost btn-sm"
             onClick={() => insertLinePrefix("# ")}
-            title="Titolo H1"
+            title={t("md.h1_title", "Heading 1")}
             style={{ fontWeight: "bold", fontSize: "11px", padding: "4px 6px" }}
           >
             H1
@@ -145,7 +147,7 @@ export function MarkdownEditor({
             type="button"
             className="btn btn-ghost btn-sm"
             onClick={() => insertLinePrefix("## ")}
-            title="Titolo H2"
+            title={t("md.h2_title", "Heading 2")}
             style={{ fontWeight: "bold", fontSize: "11px", padding: "4px 6px" }}
           >
             H2
@@ -154,52 +156,52 @@ export function MarkdownEditor({
             type="button"
             className="btn btn-ghost btn-sm"
             onClick={() => insertLinePrefix("### ")}
-            title="Titolo H3"
+            title={t("md.h3_title", "Heading 3")}
             style={{ fontWeight: "bold", fontSize: "11px", padding: "4px 6px" }}
           >
             H3
           </button>
 
-          <span style={{ width: 1, height: 18, background: "var(--border)", margin: "0 4px" }} />
+          <span style={{ width: 1, height: 18, background: "var(--hair)", margin: "0 4px" }} />
 
           <button
             type="button"
             className="btn btn-ghost btn-sm"
             onClick={() => insertLinePrefix("- ")}
-            title="Elenco puntato"
+            title={t("md.ul_title", "Bulleted list")}
             style={{ padding: "4px 7px" }}
           >
-            • Lista
+            • {t("md.list", "List")}
           </button>
           <button
             type="button"
             className="btn btn-ghost btn-sm"
             onClick={() => insertLinePrefix("1. ")}
-            title="Elenco numerato"
+            title={t("md.ol_title", "Numbered list")}
             style={{ padding: "4px 7px" }}
           >
-            1. Lista
+            1. {t("md.list", "List")}
           </button>
           <button
             type="button"
             className="btn btn-ghost btn-sm"
             onClick={() => insertLinePrefix("- [ ] ")}
-            title="Attività checklist"
+            title={t("md.task_title", "Task list")}
             style={{ padding: "4px 7px" }}
           >
-            ☑ Task
+            ☑ {t("md.task", "Task")}
           </button>
           <button
             type="button"
             className="btn btn-ghost btn-sm"
             onClick={() => insertLinePrefix("> ")}
-            title="Citazione / Callout"
+            title={t("md.quote_title", "Quote / Callout")}
             style={{ padding: "4px 7px" }}
           >
-            ❝ Citazione
+            ❝ {t("md.quote", "Quote")}
           </button>
 
-          <span style={{ width: 1, height: 18, background: "var(--border)", margin: "0 4px" }} />
+          <span style={{ width: 1, height: 18, background: "var(--hair)", margin: "0 4px" }} />
 
           <button
             type="button"
@@ -238,7 +240,7 @@ export function MarkdownEditor({
             🔗 Link
           </button>
 
-          <span style={{ width: 1, height: 18, background: "var(--border)", margin: "0 4px" }} />
+          <span style={{ width: 1, height: 18, background: "var(--hair)", margin: "0 4px" }} />
 
           {/* Screenshot dropdown selector */}
           <div style={{ position: "relative" }}>
@@ -252,7 +254,7 @@ export function MarkdownEditor({
                 alignItems: "center",
                 gap: "4px",
                 padding: "4px 9px",
-                borderColor: "var(--border)",
+                borderColor: "var(--hair)",
               }}
             >
               🖼️ Inserisci Screenshot {screenshots.length > 0 ? `(${screenshots.length})` : ""} ▾
@@ -265,8 +267,8 @@ export function MarkdownEditor({
                   top: "100%",
                   left: 0,
                   marginTop: "4px",
-                  background: "var(--bg-card, #1c2431)",
-                  border: "1px solid var(--border)",
+                  background: "var(--surface)",
+                  border: "1px solid var(--hair)",
                   borderRadius: "6px",
                   boxShadow: "0 8px 24px rgba(0,0,0,0.5)",
                   zIndex: 50,
@@ -298,18 +300,18 @@ export function MarkdownEditor({
                           borderRadius: "4px",
                           background: "transparent",
                           border: "none",
-                          color: "var(--text-1)",
+                          color: "var(--text)",
                           cursor: "pointer",
                           fontSize: "12px",
                         }}
                         onMouseEnter={(e) => {
-                          e.currentTarget.style.background = "var(--bg-3, #2a3547)";
+                          e.currentTarget.style.background = "var(--surface)";
                         }}
                         onMouseLeave={(e) => {
                           e.currentTarget.style.background = "transparent";
                         }}
                       >
-                        <span style={{ fontWeight: "bold", color: "var(--color-primary, #60a5fa)", minWidth: "22px" }}>
+                        <span style={{ fontWeight: "bold", color: "var(--mint)", minWidth: "22px" }}>
                           #{idx + 1}
                         </span>
                         <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
@@ -329,9 +331,9 @@ export function MarkdownEditor({
             className="btn btn-ghost btn-sm"
             onClick={insertStepTemplate}
             title="Aggiungi struttura step"
-            style={{ padding: "4px 8px", color: "var(--color-primary, #60a5fa)" }}
+            style={{ padding: "4px 8px", color: "var(--mint)" }}
           >
-            + Aggiungi Passo
+            + Aggiungi {t("md.step", "Step")}
           </button>
         </div>
 
@@ -385,8 +387,8 @@ export function MarkdownEditor({
               flex: viewMode === "split" ? "1 1 50%" : "1 1 100%",
               display: "flex",
               flexDirection: "column",
-              borderRight: viewMode === "split" ? "1px solid var(--border)" : "none",
-              background: "var(--bg-3, #0d1117)",
+              borderRight: viewMode === "split" ? "1px solid var(--hair)" : "none",
+              background: "var(--surface)",
             }}
           >
             <textarea
@@ -422,7 +424,7 @@ export function MarkdownEditor({
               flex: viewMode === "split" ? "1 1 50%" : "1 1 100%",
               overflowY: "auto",
               padding: "16px 24px",
-              background: "var(--bg-card, #12171f)",
+              background: "var(--surface)",
               minHeight: "520px",
               maxHeight: "850px",
             }}
