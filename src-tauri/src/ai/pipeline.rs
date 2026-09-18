@@ -12,6 +12,7 @@ use crate::ai::documentation::{
     normalize_screenshot_references, render_documentation_markdown, sanitize_markdown,
 };
 use crate::ai::providers::build_provider;
+use crate::ai::transcription::{AudioSegment, transcribe_audio_with_segments};
 use crate::compression::compress_events;
 use crate::security::redact_events;
 use crate::storage::Database;
@@ -19,6 +20,17 @@ use crate::storage::models::{
     AiJobStage, AiJobStatus, Documentation, DocumentationMetadata, ProviderConfig, RedactionSummary,
     SessionEvent, Screenshot, WorkflowStep,
 };
+
+/// Increment this when prompts are changed, so every ai_jobs row records which version was used.
+const PROMPT_VERSION: &str = "v2";
+
+/// An event paired with nearby spoken audio segments (within a ±5s window).
+#[derive(serde::Serialize)]
+struct AlignedEvent<'a> {
+    event: &'a SessionEvent,
+    /// Text of audio segments that temporally overlap this event (3s before → 2s after).
+    nearby_audio: Vec<&'a str>,
+}
 
 pub struct AiPipeline {
     db: Arc<Database>,
@@ -92,10 +104,15 @@ impl AiPipeline {
             anyhow::bail!("cancelled by user");
         }
 
-        let audio_transcript = if let Some(existing) = &session.audio_transcript {
+        let audio_transcript_result = if let Some(existing) = &session.audio_transcript {
             if !existing.trim().is_empty() {
                 emit_log(app, session_id, "Utilizzo trascrizione vocale esistente");
-                Some(existing.clone())
+                // Try to reload stored segments from DB for existing sessions
+                let segments = session.audio_segments_json
+                    .as_deref()
+                    .and_then(|j| serde_json::from_str::<Vec<AudioSegment>>(j).ok())
+                    .unwrap_or_default();
+                Some(crate::ai::transcription::TranscriptionResult { text: existing.clone(), segments })
             } else {
                 None
             }
@@ -103,7 +120,7 @@ impl AiPipeline {
             let audio_path = std::path::Path::new(audio_path_str);
             if audio_path.is_file() {
                 emit_log(app, session_id, "Avvio trascrizione audio del microfono con AI...");
-                
+
                 let transcription_prov_id = self.db.get_setting("transcription_provider_id").unwrap_or(None);
                 let transcription_model_override = self.db.get_setting("transcription_model").unwrap_or(None);
                 let transcription_url_override = self.db.get_setting("transcription_base_url").unwrap_or(None);
@@ -128,11 +145,20 @@ impl AiPipeline {
 
                 let transcription_lang = self.db.get_setting("transcription_language").unwrap_or(None);
 
-                match crate::ai::transcription::transcribe_audio(&trans_provider, audio_path, transcription_lang.as_deref()).await {
-                    Ok(transcript) => {
-                        let _ = self.db.update_session_audio_transcript(session_id, &transcript);
-                        emit_log(app, session_id, &format!("Trascrizione vocale completata con {}: {} caratteri", trans_provider.name, transcript.len()));
-                        Some(transcript)
+                match transcribe_audio_with_segments(&trans_provider, audio_path, transcription_lang.as_deref()).await {
+                    Ok(result) => {
+                        let _ = self.db.update_session_audio_transcript(session_id, &result.text);
+                        emit_log(app, session_id, &format!(
+                            "Trascrizione vocale completata con {}: {} caratteri, {} segmenti temporizzati",
+                            trans_provider.name, result.text.len(), result.segments.len()
+                        ));
+                        // Persist timed segments to DB for replay/re-alignment
+                        if !result.segments.is_empty() {
+                            if let Ok(segs_json) = serde_json::to_string(&result.segments) {
+                                let _ = self.db.update_session_audio_segments(session_id, &segs_json);
+                            }
+                        }
+                        Some(result)
                     }
                     Err(err) => {
                         emit_log(app, session_id, &format!("Trascrizione non riuscita: {err}"));
@@ -159,13 +185,33 @@ impl AiPipeline {
         emit_log(app, session_id, "Costruzione sequenza temporale e raggruppamento azioni...");
         let mut steps = build_workflow_steps(&redacted_events);
 
+        // Build pre-aligned event+audio pairs in Rust (deterministic, no AI guesswork needed)
+        let aligned_events = if let Some(ref result) = audio_transcript_result {
+            if !result.segments.is_empty() {
+                let aligned = align_audio_to_events(&redacted_events, &result.segments);
+                emit_log(app, session_id, &format!(
+                    "Allineamento deterministico audio-eventi: {}/{} eventi con audio associato",
+                    aligned.iter().filter(|a| !a.nearby_audio.is_empty()).count(),
+                    aligned.len()
+                ));
+                Some(aligned)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let audio_text = audio_transcript_result.as_ref().map(|r| r.text.as_str()).filter(|t| !t.trim().is_empty());
+
         emit_log(app, session_id, "Ottimizzazione passaggi con modello LLM...");
         let refine_fut = self.refine_timeline(
             &provider,
             &session.title,
             &redacted_events,
             &steps,
-            audio_transcript.as_deref(),
+            audio_text,
+            aligned_events.as_deref(),
         );
 
         match tokio::time::timeout(Duration::from_secs(35), refine_fut).await {
@@ -196,7 +242,7 @@ impl AiPipeline {
         self.db.finish_ai_job(
             &timeline_job.id,
             AiJobStatus::Completed,
-            Some(serde_json::to_string(&steps)?),
+            Some(json!({ "steps": steps, "prompt_version": PROMPT_VERSION }).to_string()),
             None,
         )?;
 
@@ -247,7 +293,7 @@ impl AiPipeline {
         }
 
         let (doc_title, overview) =
-            infer_workflow_summary(&session.title, &redacted_events, &steps, audio_transcript.as_deref());
+            infer_workflow_summary(&session.title, &redacted_events, &steps, audio_text);
         let base_markdown = render_documentation_markdown(&doc_title, &overview, &steps, &screenshots);
 
         let writer_job = self
@@ -255,14 +301,15 @@ impl AiPipeline {
             .create_ai_job(session_id, AiJobStage::TechnicalWriter)?;
         emit_progress(app, session_id, AiJobStage::TechnicalWriter, "running");
         emit_log(app, session_id, "Generazione guida e arricchimento tecnico con modello LLM...");
-        
+
         let enhance_fut = self.enhance_documentation(
             &provider,
             &doc_title,
             &overview,
             &steps,
             &base_markdown,
-            audio_transcript.as_deref(),
+            audio_text,
+            aligned_events.as_deref(),
         );
 
         let markdown = match tokio::time::timeout(Duration::from_secs(60), enhance_fut).await {
@@ -272,7 +319,7 @@ impl AiPipeline {
                 self.db.finish_ai_job(
                     &writer_job.id,
                     AiJobStatus::Completed,
-                    Some(json!({ "length": enhanced.len() }).to_string()),
+                    Some(json!({ "length": enhanced.len(), "prompt_version": PROMPT_VERSION }).to_string()),
                     None,
                 )?;
                 enhanced
@@ -366,16 +413,14 @@ impl AiPipeline {
         events: &[SessionEvent],
         steps: &[WorkflowStep],
         audio_transcript: Option<&str>,
+        aligned_events: Option<&[AlignedEvent<'_>]>,
     ) -> Result<Vec<WorkflowStep>> {
         if steps.len() <= 3 {
             return Ok(steps.to_vec());
         }
 
-        let audio_section = if let Some(transcript) = audio_transcript.filter(|t| !t.trim().is_empty()) {
-            format!("\nUser's Spoken Microphone Explanation (Audio Transcript):\n\"\"\"\n{}\n\"\"\"\n", transcript.trim())
-        } else {
-            String::new()
-        };
+        // Build the audio context section for the prompt
+        let audio_section = build_audio_context_section(audio_transcript, aligned_events);
 
         let options = crate::ai::providers::get_ai_generate_options(
             &self.db,
@@ -387,27 +432,23 @@ impl AiPipeline {
             serde_json::to_string_pretty(steps)?,
             events_for_prompt(events)
         );
-        let response = llm
-            .generate(
-                "You consolidate noisy desktop recordings into concise, instructive workflow steps. \
-Return JSON array only with fields step, title, description, timestamp_ms. \
+
+        let system = "You consolidate noisy desktop recordings into concise, instructive workflow steps. \
+Return a JSON array ONLY. Each element must have exactly these fields: \
+  step (integer), title (string), description (string), reason (string or null), timestamp_ms (integer). \
 Rules: \
 - Merge duplicate navigation and repeated clicks. Keep at most 15 steps. \
-- When an event provides 'element_name', 'element_type', or 'url', explicitly describe clicking that specific element \
-(e.g., 'Click \"Submit\" button' instead of generic 'Click target element'). \
-- If a User's Spoken Audio Transcript is provided, USE IT to: \
-(a) understand the user's intent and goal for each action, \
-(b) enrich step descriptions with the user's own explanations and context, \
-(c) match spoken explanations to the corresponding events by timing. \
-- Each step description must explain WHAT to do AND WHY (the purpose of the action). \
-- Include app names, window titles, menu paths, and UI element names in descriptions. \
-- Do not invent actions that are not supported by the events. \
-- Do not use placeholders.",
-                &prompt,
-                &options,
-            )
-            .await?;
-        parse_steps_json(&response)
+- When an event provides 'element_name', 'element_type', or 'url', describe clicking that specific element \
+  (e.g., 'Click \"Submit\" button'). \
+- 'description': explain WHAT to do, WHERE (app/window/UI element), and HOW. \
+- 'reason': explain WHY this step is needed in the overall workflow. \
+  If the user's audio transcript contains a spoken explanation for this step, use it verbatim or paraphrase it. \
+  If no reason can be inferred, set reason to null. \
+- When pre-aligned audio is provided, each event already has 'nearby_audio' — use those phrases directly to fill 'reason'. \
+- Do not invent actions not supported by the events. Do not use placeholders.";
+
+        let response = llm.generate(system, &prompt, &options).await?;
+        parse_steps_json_with_retry(&*llm, system, &response, &options).await
     }
 
     async fn enhance_documentation(
@@ -418,12 +459,9 @@ Rules: \
         steps: &[WorkflowStep],
         base_markdown: &str,
         audio_transcript: Option<&str>,
+        aligned_events: Option<&[AlignedEvent<'_>]>,
     ) -> Result<String> {
-        let audio_section = if let Some(transcript) = audio_transcript.filter(|t| !t.trim().is_empty()) {
-            format!("\nUser's Spoken Microphone Explanation (Audio Transcript):\n\"\"\"\n{}\n\"\"\"\n", transcript.trim())
-        } else {
-            String::new()
-        };
+        let audio_section = build_audio_context_section(audio_transcript, aligned_events);
 
         let options = crate::ai::providers::get_ai_generate_options(
             &self.db,
@@ -435,7 +473,7 @@ Rules: \
 Title: {title}\n\
 Overview: {overview}\n\
 {audio_section}\
-Steps JSON:\n{}\n\
+Steps JSON (each step may include a 'reason' field with the user's spoken explanation):\n{}\n\
 Current Markdown:\n{base_markdown}\n\n\
 Rules:\n\
 - Write a COMPLETE USER GUIDE in Markdown with these sections:\n\
@@ -449,11 +487,10 @@ Rules:\n\
   (a) WHAT to do (the specific action)\n\
   (b) WHERE to do it (which app, window, panel, or menu)\n\
   (c) HOW to do it (click which button, type what text, navigate which menu path)\n\
-  (d) WHY (the purpose of this action in the overall workflow)\n\
+  (d) WHY — if a 'reason' is present in the step JSON, use it as the basis for this explanation;\n\
+      if pre-aligned audio is provided, use the 'nearby_audio' phrases for context.\n\
 - Use the event data fields: 'element_name' for exact UI element names, 'element_type' \
 for element kinds (button, link, input), and 'url' for web addresses.\n\
-- If a User's Spoken Audio Transcript is provided, integrate the user's own \
-explanations to describe each step's purpose and add context not visible from clicks alone.\n\
 - Infer the user's goal from the recorded actions and audio explanation, and write a clear overview.\n\
 - Replace generic session titles with a specific workflow title when possible.\n\
 - Write concrete instructions using real app names, window titles, and menu paths from the steps.\n\
@@ -495,6 +532,33 @@ fn parse_steps_json(response: &str) -> Result<Vec<WorkflowStep>> {
     serde_json::from_str(&extract_json_array(response)).context("invalid steps json")
 }
 
+/// Attempts to parse steps JSON from the AI response. If parsing fails, sends a correction
+/// prompt asking the model to fix its own output before giving up.
+async fn parse_steps_json_with_retry(
+    llm: &dyn crate::ai::providers::LlmProvider,
+    system: &str,
+    response: &str,
+    options: &crate::ai::providers::GenerateOptions,
+) -> Result<Vec<WorkflowStep>> {
+    // First attempt
+    match parse_steps_json(response) {
+        Ok(steps) if !steps.is_empty() => return Ok(steps),
+        _ => {}
+    }
+
+    // Second attempt: ask the model to correct its own output
+    let correction_prompt = format!(
+        "Your previous output could not be parsed as a valid JSON array. \
+The required schema is: [{{\"step\": integer, \"title\": string, \"description\": string, \
+\"reason\": string_or_null, \"timestamp_ms\": integer}}, ...]. \
+Return ONLY the corrected JSON array, nothing else. \
+Previous output:\n{response}"
+    );
+
+    let corrected = llm.generate(system, &correction_prompt, options).await?;
+    parse_steps_json(&corrected)
+}
+
 fn extract_json_array(response: &str) -> String {
     if let Some(start) = response.find('[') {
         if let Some(end) = response.rfind(']') {
@@ -502,6 +566,79 @@ fn extract_json_array(response: &str) -> String {
         }
     }
     "[]".to_string()
+}
+
+/// Deterministically aligns audio segments to events by timestamp proximity.
+/// For each event, finds all segments whose `[start_ms - PRE_MS, end_ms + POST_MS]` window
+/// overlaps the event's timestamp. The model then receives already-paired data.
+fn align_audio_to_events<'a>(
+    events: &'a [SessionEvent],
+    segments: &'a [AudioSegment],
+) -> Vec<AlignedEvent<'a>> {
+    // Window: 3s before event (user often explains before clicking) to 2s after
+    const PRE_MS: i64 = 3000;
+    const POST_MS: i64 = 2000;
+
+    events
+        .iter()
+        .map(|event| {
+            let nearby_audio = segments
+                .iter()
+                .filter(|seg| {
+                    // Segment overlaps [event_ms - PRE_MS, event_ms + POST_MS]
+                    let window_start = event.timestamp_ms - PRE_MS;
+                    let window_end = event.timestamp_ms + POST_MS;
+                    seg.start_ms <= window_end && seg.end_ms >= window_start
+                })
+                .map(|seg| seg.text.as_str())
+                .collect::<Vec<_>>();
+            AlignedEvent { event, nearby_audio }
+        })
+        .collect()
+}
+
+/// Builds the audio context block for an AI prompt.
+/// If pre-aligned events are available, formats them as structured JSON pairs (deterministic).
+/// Otherwise falls back to a plain transcript blob.
+fn build_audio_context_section(
+    audio_transcript: Option<&str>,
+    aligned_events: Option<&[AlignedEvent<'_>]>,
+) -> String {
+    if let Some(aligned) = aligned_events {
+        // Only include events that have nearby audio
+        let with_audio: Vec<_> = aligned
+            .iter()
+            .filter(|a| !a.nearby_audio.is_empty())
+            .collect();
+
+        if !with_audio.is_empty() {
+            let pairs_json = with_audio
+                .iter()
+                .map(|a| {
+                    serde_json::json!({
+                        "event_type": a.event.event_type,
+                        "app": a.event.app_name,
+                        "timestamp_ms": a.event.timestamp_ms,
+                        "nearby_audio": a.nearby_audio,
+                    })
+                })
+                .collect::<Vec<_>>();
+            return format!(
+                "\nPre-aligned Audio-Event pairs (audio already matched to the nearest event by timestamp):\n{}\n\n",
+                serde_json::to_string_pretty(&pairs_json).unwrap_or_default()
+            );
+        }
+    }
+
+    // Fallback: plain blob
+    if let Some(transcript) = audio_transcript.filter(|t| !t.trim().is_empty()) {
+        format!(
+            "\nUser's Spoken Microphone Explanation (Audio Transcript):\n\"\"\"\n{}\n\"\"\"\n",
+            transcript.trim()
+        )
+    } else {
+        String::new()
+    }
 }
 
 fn emit_progress(app: &AppHandle, session_id: &str, stage: AiJobStage, status: &str) {

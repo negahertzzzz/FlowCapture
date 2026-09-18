@@ -10,7 +10,7 @@ import sys
 import tempfile
 import argparse
 import logging
-from typing import Optional, Dict
+from typing import Optional, Dict, List
 
 # Su Windows con Python >= 3.8, registra esplicitamente le cartelle dei pacchetti nvidia
 # contenenti le librerie CUDA (cublas64_12.dll, cudnn64_9.dll, nvrtc64_120_0.dll, ecc.)
@@ -162,6 +162,8 @@ def root():
         "endpoints": [
             "POST /v1/audio/transcriptions",
             "POST /audio/transcriptions",
+            "POST /v1/audio/transcriptions/segments  (with timed segments + confidence)",
+            "POST /audio/transcriptions/segments     (with timed segments + confidence)",
         ],
     }
 
@@ -192,6 +194,7 @@ async def handle_transcription(
     language: Optional[str],
     temperature: Optional[float],
     prompt: Optional[str],
+    include_segments: bool = False,
 ):
     """Elabora la trascrizione del file audio usando faster-whisper."""
     if not file:
@@ -228,13 +231,28 @@ async def handle_transcription(
         if prompt:
             transcribe_kwargs["initial_prompt"] = prompt
 
-        try:
-            segments, info = whisper.transcribe(temp_path, **transcribe_kwargs)
+        def _run_transcription(whisper_model):
+            segs, info = whisper_model.transcribe(temp_path, **transcribe_kwargs)
             transcript_parts = []
-            for segment in segments:
-                text = segment.text.strip()
+            segments_data: List[dict] = []
+            for seg in segs:
+                text = seg.text.strip()
                 if text:
                     transcript_parts.append(text)
+                    if include_segments:
+                        segments_data.append({
+                            "start": round(seg.start, 3),
+                            "end": round(seg.end, 3),
+                            # Convert to ms for easier Rust-side arithmetic
+                            "start_ms": int(seg.start * 1000),
+                            "end_ms": int(seg.end * 1000),
+                            "text": text,
+                            "avg_logprob": round(float(getattr(seg, "avg_logprob", 0.0)), 4),
+                        })
+            return transcript_parts, segments_data, info
+
+        try:
+            transcript_parts, segments_data, info = _run_transcription(whisper)
         except Exception as run_err:
             err_str = str(run_err).lower()
             if "cublas" in err_str or "cuda" in err_str or "cudnn" in err_str or "out of memory" in err_str:
@@ -244,12 +262,7 @@ async def handle_transcription(
                 )
                 whisper_cpu = WhisperModel(model or default_model_name, device="cpu", compute_type="int8")
                 models_cache[model or default_model_name] = whisper_cpu
-                segments, info = whisper_cpu.transcribe(temp_path, **transcribe_kwargs)
-                transcript_parts = []
-                for segment in segments:
-                    text = segment.text.strip()
-                    if text:
-                        transcript_parts.append(text)
+                transcript_parts, segments_data, info = _run_transcription(whisper_cpu)
             else:
                 raise run_err
 
@@ -258,11 +271,15 @@ async def handle_transcription(
         detected_prob = getattr(info, "language_probability", 1.0)
         logger.info(f"Trascrizione completata ({len(full_text)} caratteri, lingua rilevata={detected_lang} prob={detected_prob:.2f})")
 
-        return {
+        result = {
             "text": full_text,
             "language": detected_lang,
             "duration": getattr(info, "duration", 0),
         }
+        if include_segments:
+            result["segments"] = segments_data
+
+        return result
 
     except Exception as e:
         logger.error(f"Errore durante la trascrizione: {e}", exc_info=True)
@@ -297,6 +314,31 @@ async def transcribe_direct(
     prompt: Optional[str] = Form(None),
 ):
     return await handle_transcription(file, model, language, temperature, prompt)
+
+
+# Endpoint con segmenti temporizzati: /v1/audio/transcriptions/segments
+# Restituisce {"text": "...", "language": "...", "duration": ..., "segments": [{start_ms, end_ms, text, avg_logprob}, ...]}
+@app.post("/v1/audio/transcriptions/segments")
+async def transcribe_v1_segments(
+    file: UploadFile = File(...),
+    model: Optional[str] = Form(None),
+    language: Optional[str] = Form(None),
+    temperature: Optional[float] = Form(None),
+    prompt: Optional[str] = Form(None),
+):
+    return await handle_transcription(file, model, language, temperature, prompt, include_segments=True)
+
+
+# Endpoint con segmenti temporizzati alternativo: /audio/transcriptions/segments
+@app.post("/audio/transcriptions/segments")
+async def transcribe_direct_segments(
+    file: UploadFile = File(...),
+    model: Optional[str] = Form(None),
+    language: Optional[str] = Form(None),
+    temperature: Optional[float] = Form(None),
+    prompt: Optional[str] = Form(None),
+):
+    return await handle_transcription(file, model, language, temperature, prompt, include_segments=True)
 
 
 def main():

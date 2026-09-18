@@ -797,6 +797,7 @@ pub fn save_annotated_screenshot(
                 step: next_step_num,
                 title: step_data.title.clone(),
                 description: step_data.description.clone(),
+                reason: None,
                 timestamp_ms: screenshot.timestamp_ms,
                 screenshot_ids: vec![screenshot.id.clone()],
             };

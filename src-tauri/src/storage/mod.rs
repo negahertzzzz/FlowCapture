@@ -45,6 +45,7 @@ impl Database {
         let _ = conn.execute("ALTER TABLE sessions ADD COLUMN audio_path TEXT", []);
         let _ = conn.execute("ALTER TABLE sessions ADD COLUMN audio_transcript TEXT", []);
         let _ = conn.execute("ALTER TABLE sessions ADD COLUMN full_video_path TEXT", []);
+        let _ = conn.execute("ALTER TABLE sessions ADD COLUMN audio_segments_json TEXT", []);
         let _ = conn.execute("ALTER TABLE screenshots ADD COLUMN click_x INTEGER", []);
         let _ = conn.execute("ALTER TABLE screenshots ADD COLUMN click_y INTEGER", []);
         let _ = conn.execute("ALTER TABLE screenshots ADD COLUMN annotations_json TEXT", []);
@@ -208,6 +209,14 @@ impl Database {
         Ok(())
     }
 
+    pub fn update_session_audio_segments(&self, session_id: &str, segments_json: &str) -> Result<()> {
+        self.conn.lock().execute(
+            "UPDATE sessions SET audio_segments_json = ?1 WHERE id = ?2",
+            params![segments_json, session_id],
+        )?;
+        Ok(())
+    }
+
     pub fn delete_session(&self, session_id: &str) -> Result<()> {
         let session_dir = self.session_dir(session_id);
         let _ = std::fs::remove_dir_all(&session_dir);
@@ -221,7 +230,7 @@ impl Database {
     pub fn list_sessions(&self) -> Result<Vec<Session>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, title, status, started_at, ended_at, video_path, duration, documentation_md, steps_json, compressed_events_json, audio_path, audio_transcript, full_video_path FROM sessions ORDER BY started_at DESC",
+            "SELECT id, title, status, started_at, ended_at, video_path, duration, documentation_md, steps_json, compressed_events_json, audio_path, audio_transcript, full_video_path, audio_segments_json FROM sessions ORDER BY started_at DESC",
         )?;
         let rows = stmt.query_map([], |row| Session::from_row(row))?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
@@ -230,7 +239,7 @@ impl Database {
     pub fn get_session(&self, session_id: &str) -> Result<Option<Session>> {
         let conn = self.conn.lock();
         let mut stmt = conn.prepare(
-            "SELECT id, title, status, started_at, ended_at, video_path, duration, documentation_md, steps_json, compressed_events_json, audio_path, audio_transcript, full_video_path FROM sessions WHERE id = ?1",
+            "SELECT id, title, status, started_at, ended_at, video_path, duration, documentation_md, steps_json, compressed_events_json, audio_path, audio_transcript, full_video_path, audio_segments_json FROM sessions WHERE id = ?1",
         )?;
         let mut rows = stmt.query(params![session_id])?;
         if let Some(row) = rows.next()? {

@@ -2,15 +2,48 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use base64::Engine;
 use reqwest::Client;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::storage::models::ProviderConfig;
+
+/// A single timed speech segment from Whisper, with start/end in milliseconds and a confidence score.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AudioSegment {
+    pub start_ms: i64,
+    pub end_ms: i64,
+    pub text: String,
+    /// Whisper avg_logprob for the segment (0.0 = unavailable). More negative = less confident.
+    pub avg_logprob: f32,
+}
+
+/// Full result of a timed transcription.
+#[derive(Debug, Clone)]
+pub struct TranscriptionResult {
+    /// Concatenated full transcript (same as returned by plain /v1/audio/transcriptions).
+    pub text: String,
+    /// Per-segment timed data. Empty when the provider doesn't support segments (e.g. cloud APIs).
+    pub segments: Vec<AudioSegment>,
+}
 
 pub async fn transcribe_audio(
     provider: &ProviderConfig,
     audio_path: &Path,
     language: Option<&str>,
 ) -> Result<String> {
+    transcribe_audio_with_segments(provider, audio_path, language)
+        .await
+        .map(|r| r.text)
+}
+
+/// Like `transcribe_audio` but also returns per-segment timing data when available.
+/// For local faster-whisper it calls the `/segments` endpoint; for cloud providers it
+/// falls back to the standard endpoint and returns an empty `segments` vec.
+pub async fn transcribe_audio_with_segments(
+    provider: &ProviderConfig,
+    audio_path: &Path,
+    language: Option<&str>,
+) -> Result<TranscriptionResult> {
     let bytes = std::fs::read(audio_path)
         .with_context(|| format!("failed to read audio file at {}", audio_path.display()))?;
 
@@ -19,14 +52,48 @@ pub async fn transcribe_audio(
     }
 
     match provider.provider_type.as_str() {
-        "openai" => transcribe_openai(provider, audio_path, bytes, language).await,
-        "gemini" => transcribe_gemini(provider, audio_path, bytes, language).await,
-        "ollama" => transcribe_ollama(provider, audio_path, bytes, language).await,
+        "openai" => {
+            // Try local faster-whisper /segments endpoint first (works when base_url points to
+            // the local whisper-server); fall back to plain OpenAI transcription.
+            let base_url = provider
+                .base_url
+                .clone()
+                .unwrap_or_else(|| "https://api.openai.com/v1".to_string());
+            let clean_base = base_url.trim().trim_end_matches('/');
+            let is_openai_cloud = clean_base.contains("api.openai.com");
+
+            if !is_openai_cloud {
+                // Attempt faster-whisper /segments endpoint
+                match transcribe_openai_segments(provider, audio_path, bytes.clone(), language).await {
+                    Ok(result) => return Ok(result),
+                    Err(_) => {
+                        // Fall through to plain transcription
+                    }
+                }
+            }
+            let text = transcribe_openai(provider, audio_path, bytes, language).await?;
+            Ok(TranscriptionResult { text, segments: vec![] })
+        }
+        "gemini" => {
+            let text = transcribe_gemini(provider, audio_path, bytes, language).await?;
+            Ok(TranscriptionResult { text, segments: vec![] })
+        }
+        "ollama" => {
+            // Try local faster-whisper /segments endpoint first
+            match transcribe_openai_segments(provider, audio_path, bytes.clone(), language).await {
+                Ok(result) => Ok(result),
+                Err(_) => {
+                    let text = transcribe_ollama(provider, audio_path, bytes, language).await?;
+                    Ok(TranscriptionResult { text, segments: vec![] })
+                }
+            }
+        }
         other => {
             anyhow::bail!("Audio transcription is supported with OpenAI (Whisper), Gemini, and Local/Self-hosted (Whisper/Ollama). Configured provider: {other}")
         }
     }
 }
+
 
 fn create_transcription_client() -> Client {
     Client::builder()
@@ -34,6 +101,98 @@ fn create_transcription_client() -> Client {
         .timeout(std::time::Duration::from_secs(300))
         .build()
         .unwrap_or_else(|_| Client::new())
+}
+
+/// Calls the faster-whisper server's `/v1/audio/transcriptions/segments` endpoint and
+/// returns a `TranscriptionResult` with per-segment timing.  Falls back is handled by caller.
+async fn transcribe_openai_segments(
+    provider: &ProviderConfig,
+    audio_path: &Path,
+    bytes: Vec<u8>,
+    language: Option<&str>,
+) -> Result<TranscriptionResult> {
+    let api_key = provider
+        .api_key
+        .clone()
+        .filter(|k| !k.trim().is_empty())
+        .unwrap_or_else(|| "not-needed".to_string());
+    let base_url = provider
+        .base_url
+        .clone()
+        .unwrap_or_else(|| "http://localhost:8000".to_string());
+
+    let clean_base = base_url.trim().trim_end_matches('/');
+    // Build the /segments URL variant
+    let url = if clean_base.ends_with("/audio/transcriptions/segments") {
+        clean_base.to_string()
+    } else if clean_base.ends_with("/v1") {
+        format!("{clean_base}/audio/transcriptions/segments")
+    } else {
+        format!("{clean_base}/v1/audio/transcriptions/segments")
+    };
+
+    let file_name = audio_path
+        .file_name()
+        .map(|f| f.to_string_lossy().to_string())
+        .unwrap_or_else(|| "recording.webm".to_string());
+
+    let model_name = provider
+        .model
+        .clone()
+        .unwrap_or_else(|| "whisper-1".to_string());
+
+    let client = create_transcription_client();
+    let part = reqwest::multipart::Part::bytes(bytes).file_name(file_name);
+    let mut form = reqwest::multipart::Form::new()
+        .part("file", part)
+        .text("model", model_name);
+
+    if let Some(lang) = language.filter(|l| !l.is_empty() && *l != "auto") {
+        form = form.text("language", lang.to_string());
+    }
+
+    let response = client
+        .post(&url)
+        .bearer_auth(&api_key)
+        .multipart(form)
+        .send()
+        .await
+        .context("segments endpoint not reachable")?;
+
+    if !response.status().is_success() {
+        anyhow::bail!("segments endpoint returned HTTP {}", response.status());
+    }
+
+    let json_val: serde_json::Value = response
+        .json()
+        .await
+        .context("invalid JSON from segments endpoint")?;
+
+    let text = json_val["text"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+
+    let segments = json_val["segments"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|seg| {
+                    let start_ms = seg["start_ms"].as_i64()?;
+                    let end_ms = seg["end_ms"].as_i64()?;
+                    let seg_text = seg["text"].as_str()?.to_string();
+                    let avg_logprob = seg["avg_logprob"].as_f64().unwrap_or(0.0) as f32;
+                    Some(AudioSegment { start_ms, end_ms, text: seg_text, avg_logprob })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    if text.is_empty() {
+        anyhow::bail!("empty transcript from segments endpoint");
+    }
+
+    Ok(TranscriptionResult { text, segments })
 }
 
 async fn transcribe_openai(

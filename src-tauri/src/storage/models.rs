@@ -41,6 +41,9 @@ pub struct Session {
     pub full_video_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preview_screenshot_path: Option<String>,
+    /// JSON array of timed Whisper segments: [{start_ms, end_ms, text, avg_logprob}]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audio_segments_json: Option<String>,
 }
 
 impl Session {
@@ -60,6 +63,7 @@ impl Session {
             audio_transcript: row.get(11)?,
             full_video_path: row.get(12).unwrap_or(None),
             preview_screenshot_path: None,
+            audio_segments_json: row.get(13).unwrap_or(None),
         })
     }
 }
@@ -266,6 +270,10 @@ pub struct WorkflowStep {
     pub step: usize,
     pub title: String,
     pub description: String,
+    /// Optional explanation of WHY this step is needed, sourced from audio transcript.
+    /// Present when AI could extract a reason from audio; null otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
     pub timestamp_ms: i64,
     pub screenshot_ids: Vec<String>,
 }

@@ -39,6 +39,7 @@ pub fn build_workflow_steps(events: &[SessionEvent]) -> Vec<WorkflowStep> {
                     step: 0,
                     title: format!("Open {title}"),
                     description: format!("Switch to **{app}** and open **{title}**."),
+                    reason: None,
                     timestamp_ms: event.timestamp_ms,
                     screenshot_ids: Vec::new(),
                 });
@@ -117,6 +118,7 @@ pub fn build_workflow_steps(events: &[SessionEvent]) -> Vec<WorkflowStep> {
                     step: 0,
                     title: title_text,
                     description: desc_text,
+                    reason: None,
                     timestamp_ms: event.timestamp_ms,
                     screenshot_ids: Vec::new(),
                 });
@@ -138,6 +140,7 @@ pub fn build_workflow_steps(events: &[SessionEvent]) -> Vec<WorkflowStep> {
                     step: 0,
                     title: "Enter text".to_string(),
                     description: format!("In **{app}**, type `{text}`."),
+                    reason: None,
                     timestamp_ms: event.timestamp_ms,
                     screenshot_ids: Vec::new(),
                 });
@@ -147,6 +150,7 @@ pub fn build_workflow_steps(events: &[SessionEvent]) -> Vec<WorkflowStep> {
                     step: 0,
                     title: "Manual step".to_string(),
                     description: "Complete the marked manual step before continuing.".to_string(),
+                    reason: None,
                     timestamp_ms: event.timestamp_ms,
                     screenshot_ids: Vec::new(),
                 });
@@ -275,6 +279,11 @@ pub fn render_documentation_markdown(
     for step in steps {
         output.push_str(&format!("### Step {}: {}\n\n", step.step, step.title));
         output.push_str(&format!("{}\n\n", step.description));
+        if let Some(reason) = &step.reason {
+            if !reason.trim().is_empty() {
+                output.push_str(&format!("> **Why:** {}\n\n", reason.trim()));
+            }
+        }
         if let Some(id) = step.screenshot_ids.first() {
             if let Some(shot) = lookup.get(id.as_str()) {
                 output.push_str(&format!(
