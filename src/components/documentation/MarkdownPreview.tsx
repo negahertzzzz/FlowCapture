@@ -1,8 +1,22 @@
-import { useState, useRef } from "react";
+import { useCallback, useMemo, useRef, useState, type CSSProperties } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Screenshot } from "@/lib/api";
+import { ContextMenu, type ContextMenuItem } from "@/components/ui/ContextMenu";
+import { ImageLightbox } from "@/components/ui/ImageLightbox";
+
+export type PreviewImageInfo = {
+  /** 1-based Markdown line of the image, used to rewrite its target. */
+  line?: number;
+  screenshot?: Screenshot;
+  alt?: string;
+};
+
+export type PreviewImageActions = {
+  onChange?: (info: PreviewImageInfo) => void;
+  onAnnotate?: (info: PreviewImageInfo) => void;
+};
 
 interface MarkdownPreviewProps {
   markdown: string;
@@ -10,11 +24,22 @@ interface MarkdownPreviewProps {
   editable?: boolean;
   onTextChange?: (oldText: string, newText: string) => void;
   zoom?: number;
+  imageActions?: PreviewImageActions;
+  /** Bump after an image was annotated so the browser reloads the cached file. */
+  imageVersion?: number;
 }
 
 function screenshotFilename(path: string) {
   return path.split(/[/\\]/).pop() ?? path;
 }
+
+/** `foo.png` → `foo_annotated.png`: the render saved by the annotation editor. */
+export function annotatedVariantPath(path: string) {
+  return path.replace(/(\.[a-zA-Z0-9]+)$/, "_annotated$1");
+}
+
+/** `path@version` keys whose annotated variant does not exist, to avoid re-requesting a 404. */
+const missingAnnotated = new Set<string>();
 
 function getTextContent(node: React.ReactNode): string {
   if (node == null) return "";
@@ -31,7 +56,6 @@ function EditableBlock({
   children,
   editable,
   onTextChange,
-  style,
   className,
   "data-source-line": dataSourceLine,
 }: {
@@ -39,16 +63,14 @@ function EditableBlock({
   children: React.ReactNode;
   editable?: boolean;
   onTextChange?: (oldText: string, newText: string) => void;
-  style?: React.CSSProperties;
   className?: string;
   "data-source-line"?: number;
 }) {
-  const [isFocused, setIsFocused] = useState(false);
   const elementRef = useRef<HTMLElement | null>(null);
 
   if (!editable || !onTextChange) {
     return (
-      <Component data-source-line={dataSourceLine} style={style} className={className}>
+      <Component data-source-line={dataSourceLine} className={className}>
         {children}
       </Component>
     );
@@ -62,9 +84,7 @@ function EditableBlock({
       data-source-line={dataSourceLine}
       contentEditable={true}
       suppressContentEditableWarning={true}
-      onFocus={() => setIsFocused(true)}
       onBlur={() => {
-        setIsFocused(false);
         if (elementRef.current) {
           const currentText = elementRef.current.innerText.trim();
           if (currentText && currentText !== initialText) {
@@ -72,34 +92,21 @@ function EditableBlock({
           }
         }
       }}
-      title="Clicca per modificare direttamente questo testo nell'anteprima"
-      style={{
-        ...style,
-        outline: isFocused ? "2px solid #38bdf8" : "none",
-        outlineOffset: "2px",
-        borderRadius: "4px",
-        background: isFocused ? "rgba(56, 189, 248, 0.08)" : undefined,
-        cursor: "text",
-        transition: "background 0.15s, outline 0.15s",
-      }}
-      className={className}
+      title="Clicca per modificare direttamente questo testo"
+      className={["md-editable", className].filter(Boolean).join(" ")}
     >
       {children}
     </Component>
   );
 }
 
-function resolveImageSrc(src: string | undefined, screenshots: Screenshot[]) {
-  if (!src) {
-    return undefined;
-  }
-
+function resolveScreenshot(src: string | undefined, screenshots: Screenshot[]): Screenshot | undefined {
+  if (!src) return undefined;
   const normalized = src.trim();
+  if (!normalized) return undefined;
 
   const byExactPath = screenshots.find((shot) => normalized === shot.path);
-  if (byExactPath) {
-    return `${convertFileSrc(byExactPath.path)}?t=${byExactPath.timestamp_ms}`;
-  }
+  if (byExactPath) return byExactPath;
 
   const filename = screenshotFilename(normalized);
   const byFilename = screenshots.find(
@@ -107,25 +114,102 @@ function resolveImageSrc(src: string | undefined, screenshots: Screenshot[]) {
       filename === screenshotFilename(shot.path) ||
       normalized === `screenshots/${screenshotFilename(shot.path)}`,
   );
-  if (byFilename) {
-    return `${convertFileSrc(byFilename.path)}?t=${byFilename.timestamp_ms}`;
-  }
+  if (byFilename) return byFilename;
 
-  const uuidMatch = normalized.match(
-    /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i,
-  );
-  if (uuidMatch) {
-    const byId = screenshots.find((shot) => shot.id === uuidMatch[0]);
-    if (byId) {
-      return `${convertFileSrc(byId.path)}?t=${byId.timestamp_ms}`;
-    }
-  }
-
-  if (normalized.startsWith("/") || normalized.includes(":\\")) {
-    return convertFileSrc(normalized);
-  }
-
+  const uuidMatch = normalized.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+  if (uuidMatch) return screenshots.find((shot) => shot.id === uuidMatch[0]);
   return undefined;
+}
+
+function PreviewImage({
+  src,
+  alt,
+  line,
+  screenshots,
+  imageActions,
+  imageVersion,
+}: {
+  src?: string;
+  alt?: string;
+  line?: number;
+  screenshots: Screenshot[];
+  imageActions?: PreviewImageActions;
+  imageVersion: number;
+}) {
+  const screenshot = resolveScreenshot(src, screenshots);
+  const rawPath =
+    screenshot?.path ?? (src && (src.startsWith("/") || src.includes(":\\")) ? src : undefined);
+  const annotatedKey = screenshot ? `${screenshot.path}@${imageVersion}` : "";
+  const [useAnnotated, setUseAnnotated] = useState(() => !missingAnnotated.has(annotatedKey));
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const [fullscreen, setFullscreen] = useState(false);
+  const closeMenu = useCallback(() => setMenu(null), []);
+
+  if (!rawPath) return null;
+
+  const cacheKey = `?t=${screenshot?.timestamp_ms ?? 0}-${imageVersion}`;
+  const resolved =
+    screenshot && useAnnotated
+      ? `${convertFileSrc(annotatedVariantPath(screenshot.path))}${cacheKey}`
+      : `${convertFileSrc(rawPath)}${cacheKey}`;
+  const info: PreviewImageInfo = { line, screenshot, alt };
+  const canChange = Boolean(imageActions?.onChange && line);
+  const canAnnotate = Boolean(imageActions?.onAnnotate && screenshot);
+
+  const menuItems: ContextMenuItem[] = [
+    { label: "Ingrandisci a schermo intero", icon: "⛶", onSelect: () => setFullscreen(true) },
+  ];
+  if (canChange) {
+    menuItems.push({ label: "Cambia immagine…", icon: "🖼️", onSelect: () => imageActions?.onChange?.(info) });
+  }
+  if (canAnnotate) {
+    menuItems.push({ label: "Annota / evidenzia…", icon: "🎨", onSelect: () => imageActions?.onAnnotate?.(info) });
+  }
+
+  return (
+    <span className="md-img" data-source-line={line} contentEditable={false}>
+      <span
+        className="md-img-frame"
+        onContextMenu={(event) => {
+          event.preventDefault();
+          setMenu({ x: event.clientX, y: event.clientY });
+        }}
+        onDoubleClick={() => setFullscreen(true)}
+        title="Tasto destro: schermo intero, cambia immagine o annota"
+      >
+        <img
+          src={resolved}
+          alt={alt ?? "Workflow screenshot"}
+          onError={() => {
+            if (useAnnotated) {
+              missingAnnotated.add(annotatedKey);
+              setUseAnnotated(false);
+            }
+          }}
+        />
+        <span className="md-img-actions">
+          <button type="button" onClick={() => setFullscreen(true)} title="Schermo intero">
+            ⛶
+          </button>
+          {canChange ? (
+            <button type="button" onClick={() => imageActions?.onChange?.(info)} title="Cambia immagine">
+              🖼️ Cambia
+            </button>
+          ) : null}
+          {canAnnotate ? (
+            <button type="button" onClick={() => imageActions?.onAnnotate?.(info)} title="Annota / evidenzia">
+              🎨 Annota
+            </button>
+          ) : null}
+        </span>
+      </span>
+      {alt && alt !== "Workflow screenshot" ? <span className="md-img-caption">{alt}</span> : null}
+      {menu ? <ContextMenu position={menu} items={menuItems} onClose={closeMenu} /> : null}
+      {fullscreen ? (
+        <ImageLightbox src={resolved} alt={alt} onClose={() => setFullscreen(false)} />
+      ) : null}
+    </span>
+  );
 }
 
 export function MarkdownPreview({
@@ -134,184 +218,108 @@ export function MarkdownPreview({
   editable = false,
   onTextChange,
   zoom = 100,
+  imageActions,
+  imageVersion = 0,
 }: MarkdownPreviewProps) {
+  const zoomFactor = zoom / 100;
+
+  // ReactMarkdown treats every `components` entry as a component type: recreating them on each
+  // render would remount every block and image (reloading images and dropping their menu state)
+  // on each keystroke. Keep them stable and read the latest props through a ref.
+  const latest = useRef({ screenshots, imageActions, imageVersion, editable, onTextChange });
+  latest.current = { screenshots, imageActions, imageVersion, editable, onTextChange };
+
+  const components = useMemo(() => {
+    const getLine = (node: any) => node?.position?.start?.line;
+    const editableBlock = (as: string, className?: string) =>
+      function Block({ children, node }: any) {
+        const { editable: isEditable, onTextChange: onChange } = latest.current;
+        return (
+          <EditableBlock
+            as={as}
+            data-source-line={getLine(node)}
+            className={className}
+            editable={isEditable}
+            onTextChange={onChange}
+          >
+            {children}
+          </EditableBlock>
+        );
+      };
+    const Paragraph = editableBlock("p");
+    return {
+      img: function Img({ src, alt, node }: any) {
+        const ctx = latest.current;
+        return (
+          <PreviewImage
+            src={typeof src === "string" ? src : undefined}
+            alt={alt}
+            line={getLine(node)}
+            screenshots={ctx.screenshots}
+            imageActions={ctx.imageActions}
+            imageVersion={ctx.imageVersion}
+          />
+        );
+      },
+      h1: editableBlock("h1"),
+      h2: editableBlock("h2"),
+      h3: editableBlock("h3"),
+      h4: editableBlock("h4"),
+      p: function P(props: any) {
+        // Paragraphs holding a screenshot stay non-editable so the image controls never end up
+        // inside a contentEditable region (their labels would leak into the text).
+        if (props.node?.children?.some((child: any) => child.tagName === "img")) {
+          return (
+            <div data-source-line={getLine(props.node)} className="md-img-block">
+              {props.children}
+            </div>
+          );
+        }
+        return <Paragraph {...props} />;
+      },
+      li: editableBlock("li"),
+      blockquote: editableBlock("blockquote", "md-quote"),
+      ul: ({ children, node }: any) => (
+        <ul data-source-line={getLine(node)} className="md-list">
+          {children}
+        </ul>
+      ),
+      ol: ({ children, node }: any) => (
+        <ol data-source-line={getLine(node)} className="md-list">
+          {children}
+        </ol>
+      ),
+      table: ({ children, node }: any) => (
+        <table data-source-line={getLine(node)} className="md-table">
+          {children}
+        </table>
+      ),
+      pre: ({ children, node }: any) => (
+        <pre data-source-line={getLine(node)} className="md-pre">
+          {children}
+        </pre>
+      ),
+      code: ({ children }: any) => <code className="md-code">{children}</code>,
+      strong: ({ children }: any) => <strong>{children}</strong>,
+    };
+  }, []);
+
   if (!markdown.trim()) {
     return (
       <div className="doc-render">
-        <p style={{ color: "var(--muted)", textAlign: "center" }}>
+        <p className="md-empty">
           Nessun contenuto da visualizzare. Genera la documentazione per visualizzare la guida qui.
         </p>
       </div>
     );
   }
 
-  const zoomFactor = zoom / 100;
-  const getLine = (node: any) => node?.position?.start?.line;
-
   return (
-    <div
-      className="doc-render"
-      style={{
-        ["--doc-zoom" as any]: zoomFactor.toString(),
-        fontSize: `calc(15px * ${zoomFactor})`,
-        lineHeight: "1.7",
-        transition: "font-size 0.15s ease",
-      }}
-    >
-      {editable && onTextChange && (
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: "8px",
-            padding: "6px 12px",
-            marginBottom: "14px",
-            borderRadius: "6px",
-            background: "rgba(56, 189, 248, 0.08)",
-            border: "1px solid rgba(56, 189, 248, 0.25)",
-            fontSize: "12px",
-            color: "#38bdf8",
-          }}
-        >
-          <span>✏️</span>
-          <span>
-            <strong>Modalità Modifica Attiva sull'Anteprima:</strong> Clicca direttamente su titoli, paragrafi o elenchi per modificarli. Le modifiche si sincronizzano istantaneamente con il Markdown.
-          </span>
-        </div>
-      )}
-
+    <div className="doc-render md-preview" style={{ "--doc-zoom": String(zoomFactor) } as CSSProperties}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
         urlTransform={(url) => url}
-        components={{
-          img: ({ src, alt, node }: any) => {
-            const resolved = resolveImageSrc(
-              typeof src === "string" ? src : undefined,
-              screenshots,
-            );
-            if (!resolved) {
-              return null;
-            }
-
-            return (
-              <div
-                data-source-line={getLine(node)}
-                style={{
-                  marginTop: 16,
-                  marginBottom: 16,
-                  width: "100%",
-                  display: "flex",
-                  flexDirection: "column",
-                  alignItems: "center",
-                }}
-              >
-                <img
-                  src={resolved}
-                  alt={alt ?? "Workflow screenshot"}
-                  style={{
-                    maxHeight: 420,
-                    width: "100%",
-                    borderRadius: 10,
-                    border: "1px solid var(--hair-2)",
-                    objectFit: "contain",
-                    boxShadow: "0 8px 24px rgba(0, 0, 0, 0.3)",
-                  }}
-                />
-                {alt && alt !== "Workflow screenshot" && (
-                  <span
-                    style={{
-                      fontSize: `calc(12px * var(--doc-zoom, 1))`,
-                      color: "var(--dim)",
-                      marginTop: 6,
-                      fontStyle: "italic",
-                    }}
-                  >
-                    {alt}
-                  </span>
-                )}
-              </div>
-            );
-          },
-          h1: ({ children, node }: any) => (
-            <EditableBlock as="h1" data-source-line={getLine(node)} editable={editable} onTextChange={onTextChange}>
-              {children}
-            </EditableBlock>
-          ),
-          h2: ({ children, node }: any) => (
-            <EditableBlock as="h2" data-source-line={getLine(node)} editable={editable} onTextChange={onTextChange}>
-              {children}
-            </EditableBlock>
-          ),
-          h3: ({ children, node }: any) => (
-            <EditableBlock as="h3" data-source-line={getLine(node)} editable={editable} onTextChange={onTextChange}>
-              {children}
-            </EditableBlock>
-          ),
-          h4: ({ children, node }: any) => (
-            <EditableBlock as="h4" data-source-line={getLine(node)} editable={editable} onTextChange={onTextChange}>
-              {children}
-            </EditableBlock>
-          ),
-          p: ({ children, node }: any) => (
-            <EditableBlock as="p" data-source-line={getLine(node)} editable={editable} onTextChange={onTextChange}>
-              {children}
-            </EditableBlock>
-          ),
-          li: ({ children, node }: any) => (
-            <EditableBlock as="li" data-source-line={getLine(node)} editable={editable} onTextChange={onTextChange}>
-              {children}
-            </EditableBlock>
-          ),
-          blockquote: ({ children, node }: any) => (
-            <EditableBlock
-              as="blockquote"
-              data-source-line={getLine(node)}
-              editable={editable}
-              onTextChange={onTextChange}
-              style={{
-                borderLeft: "3px solid var(--mint, #38bdf8)",
-                paddingLeft: 12,
-                margin: "12px 0",
-                color: "var(--text-2, #94a3b8)",
-                fontStyle: "italic",
-              }}
-            >
-              {children}
-            </EditableBlock>
-          ),
-          ul: ({ children, node }: any) => (
-            <ul data-source-line={getLine(node)} style={{ marginTop: 12, paddingLeft: 24, color: "var(--text-2)" }}>
-              {children}
-            </ul>
-          ),
-          ol: ({ children, node }: any) => (
-            <ol data-source-line={getLine(node)} style={{ marginTop: 12, paddingLeft: 24, color: "var(--text-2)" }}>
-              {children}
-            </ol>
-          ),
-          table: ({ children, node }: any) => (
-            <table data-source-line={getLine(node)} style={{ width: "100%", margin: "16px 0", borderCollapse: "collapse" }}>
-              {children}
-            </table>
-          ),
-          pre: ({ children, node }: any) => (
-            <pre data-source-line={getLine(node)} style={{ background: "rgba(0,0,0,0.3)", padding: "12px 16px", borderRadius: 8, overflowX: "auto", margin: "14px 0" }}>
-              {children}
-            </pre>
-          ),
-          code: ({ children }: any) => (
-            <code
-              style={{
-                fontFamily: "var(--mono)",
-                fontSize: ".9em",
-                color: "var(--mint)",
-              }}
-            >
-              {children}
-            </code>
-          ),
-          strong: ({ children }: any) => <strong>{children}</strong>,
-        }}
+        components={components}
       >
         {markdown}
       </ReactMarkdown>

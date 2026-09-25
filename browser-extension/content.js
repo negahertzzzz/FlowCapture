@@ -90,8 +90,11 @@
           selector,
           element_id: elementId,
           name,
-          x: Math.round(event.screenX || (event.clientX + window.screenX)),
-          y: Math.round(event.screenY || (event.clientY + window.screenY)),
+          // CSS pixels; FlowCapture converts them to physical pixels with device_pixel_ratio
+          // (Windows scaling at 125–150 % would otherwise shift every match).
+          x: Math.round(typeof event.screenX === 'number' ? event.screenX : (event.clientX + window.screenX)),
+          y: Math.round(typeof event.screenY === 'number' ? event.screenY : (event.clientY + window.screenY)),
+          device_pixel_ratio: window.devicePixelRatio || 1,
           width: Math.round(rect.width),
           height: Math.round(rect.height),
           timestamp_ms: Date.now()

@@ -383,6 +383,109 @@ pub fn get_compressed_timeline(
     Ok(crate::compression::compress_events(&events))
 }
 
+fn file_name_of(path: &str) -> &str {
+    path.rsplit(['/', '\\']).next().unwrap_or(path)
+}
+
+fn replace_step_image(md: &str, step_index: usize, old_path: &str, new_path: &str) -> String {
+    let old_name = file_name_of(old_path);
+    let new_name = file_name_of(new_path);
+    if old_name.is_empty() || old_name == new_name {
+        return md.to_string();
+    }
+    let step_re = regex::Regex::new(r"(?i)^#{2,4}\s+(?:Step|Passo)?\s*(\d+)[:.]").unwrap();
+    let boundary_re = regex::Regex::new(r"^#{1,4}\s").unwrap();
+
+    let lines: Vec<&str> = md.split('\n').collect();
+    let start = lines.iter().position(|line| {
+        step_re
+            .captures(line.trim())
+            .and_then(|caps| caps.get(1)?.as_str().parse::<usize>().ok())
+            == Some(step_index)
+    });
+    let Some(start) = start else {
+        return md.replace(old_name, new_name);
+    };
+    let end = lines
+        .iter()
+        .enumerate()
+        .skip(start + 1)
+        .find(|(_, line)| boundary_re.is_match(line.trim_start()))
+        .map(|(idx, _)| idx)
+        .unwrap_or(lines.len());
+
+    lines
+        .iter()
+        .enumerate()
+        .map(|(idx, line)| {
+            if idx > start && idx < end && line.contains("![") {
+                line.replace(old_name, new_name)
+            } else {
+                (*line).to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Re-parsing the Markdown only yields titles, descriptions and images, so metadata that
+/// lives exclusively in `steps_json` (step-scoped annotations, the "why", timestamps) would be
+/// wiped on every save. Steps are matched by title first so that inserting a step and
+/// renumbering the following ones keeps each step's metadata attached to the right step.
+fn carry_over_step_metadata(
+    parsed: &mut [crate::storage::models::WorkflowStep],
+    previous: &[crate::storage::models::WorkflowStep],
+) {
+    let mut used = vec![false; previous.len()];
+    let normalize = |value: &str| value.trim().to_lowercase();
+
+    let mut matches: Vec<Option<usize>> = vec![None; parsed.len()];
+    for (i, step) in parsed.iter().enumerate() {
+        let title = normalize(&step.title);
+        if title.is_empty() {
+            continue;
+        }
+        if let Some(j) = (0..previous.len()).find(|&j| !used[j] && normalize(&previous[j].title) == title) {
+            used[j] = true;
+            matches[i] = Some(j);
+        }
+    }
+    for (i, step) in parsed.iter().enumerate() {
+        if matches[i].is_some() {
+            continue;
+        }
+        let Some(first_shot) = step.screenshot_ids.first() else {
+            continue;
+        };
+        if let Some(j) = (0..previous.len())
+            .find(|&j| !used[j] && previous[j].screenshot_ids.first() == Some(first_shot))
+        {
+            used[j] = true;
+            matches[i] = Some(j);
+        }
+    }
+
+    for (step, matched) in parsed.iter_mut().zip(matches) {
+        let Some(j) = matched else { continue };
+        let old = &previous[j];
+        let same_image = step.screenshot_ids.is_empty()
+            || step.screenshot_ids.first() == old.screenshot_ids.first();
+        // Annotations are drawn in the pixel space of one specific screenshot.
+        if step.annotations_json.is_none() && same_image {
+            step.annotations_json = old.annotations_json.clone();
+        }
+        if step.reason.is_none() {
+            step.reason = old.reason.clone();
+        }
+        if step.timestamp_ms == 0 {
+            step.timestamp_ms = old.timestamp_ms;
+        }
+        if step.screenshot_ids.is_empty() {
+            step.screenshot_ids = old.screenshot_ids.clone();
+        }
+    }
+}
+
 fn parse_steps_from_markdown(md: &str, screenshots: &[crate::storage::models::Screenshot]) -> Vec<crate::storage::models::WorkflowStep> {
     let mut steps = Vec::new();
     let mut current_step: Option<crate::storage::models::WorkflowStep> = None;
@@ -412,7 +515,7 @@ fn parse_steps_from_markdown(md: &str, screenshots: &[crate::storage::models::Sc
         if let Some(step) = &mut current_step {
             if let Some(caps) = img_re.captures(trimmed) {
                 let img_path = caps.get(1).map(|m| m.as_str().trim()).unwrap_or("");
-                let found_id = screenshots.iter().find(|s| {
+                let found_id = screenshots.iter().filter(|_| !img_path.is_empty()).find(|s| {
                     s.path == img_path
                         || s.path.ends_with(img_path)
                         || (!img_path.is_empty()
@@ -996,10 +1099,12 @@ pub fn update_step_screenshot(
 
     let new_steps_json = serde_json::to_string(&steps).map_err(|e| e.to_string())?;
 
-    // Also update documentation_md if it had the old screenshot path
+    // Also update documentation_md. The Markdown references images as `screenshots/<file>`
+    // (or a bare/absolute path), so match on the unique file name, and only inside this step's
+    // section so a screenshot shared with other steps is left alone there.
     let mut doc_md = session.documentation_md.clone().unwrap_or_default();
     if let Some(old_path) = old_screenshot_path {
-        doc_md = doc_md.replace(&old_path, &target_screenshot.path);
+        doc_md = replace_step_image(&doc_md, step_index, &old_path, &target_screenshot.path);
     }
 
     state.db.save_documentation(
@@ -1071,7 +1176,13 @@ pub fn update_documentation(
         .ok_or_else(|| "Session not found".to_string())?;
 
     let screenshots = state.db.list_screenshots(&session_id).unwrap_or_default();
-    let parsed_steps = parse_steps_from_markdown(&documentation_md, &screenshots);
+    let previous_steps: Vec<crate::storage::models::WorkflowStep> = session
+        .steps_json
+        .as_deref()
+        .and_then(|json_str| serde_json::from_str(json_str).ok())
+        .unwrap_or_default();
+    let mut parsed_steps = parse_steps_from_markdown(&documentation_md, &screenshots);
+    carry_over_step_metadata(&mut parsed_steps, &previous_steps);
     let steps_json = if !parsed_steps.is_empty() {
         serde_json::to_string(&parsed_steps).unwrap_or_else(|_| session.steps_json.unwrap_or_else(|| "[]".to_string()))
     } else {
@@ -1382,3 +1493,52 @@ pub fn get_browser_bridge_status(state: State<'_, Arc<AppState>>) -> Result<serd
 
 
 
+
+#[cfg(test)]
+mod doc_step_tests {
+    use super::{carry_over_step_metadata, replace_step_image};
+    use crate::storage::models::WorkflowStep;
+
+    fn step(n: usize, title: &str, shot: Option<&str>) -> WorkflowStep {
+        WorkflowStep {
+            step: n,
+            title: title.into(),
+            description: String::new(),
+            reason: None,
+            timestamp_ms: 0,
+            screenshot_ids: shot.map(|s| vec![s.to_string()]).unwrap_or_default(),
+            annotations_json: None,
+        }
+    }
+
+    #[test]
+    fn replaces_image_only_inside_the_target_step() {
+        let md = "### Step 1: A\n![a](screenshots/old.png)\n\n### Step 2: B\n![b](screenshots/old.png)\n";
+        let out = replace_step_image(md, 2, "/data/s/screenshots/old.png", r"C:\data\screenshots\new.png");
+        assert_eq!(out, "### Step 1: A\n![a](screenshots/old.png)\n\n### Step 2: B\n![b](screenshots/new.png)\n");
+    }
+
+    #[test]
+    fn keeps_metadata_when_a_step_is_inserted_and_renumbered() {
+        let mut previous = vec![step(1, "Apri", Some("s1")), step(2, "Clicca", Some("s2"))];
+        previous[1].annotations_json = Some("[{\"type\":\"badge\"}]".into());
+        previous[1].reason = Some("perché".into());
+        previous[1].timestamp_ms = 42;
+
+        let mut parsed = vec![step(1, "Apri", Some("s1")), step(2, "Nuovo", None), step(3, "Clicca", Some("s2"))];
+        carry_over_step_metadata(&mut parsed, &previous);
+        assert_eq!(parsed[2].annotations_json.as_deref(), Some("[{\"type\":\"badge\"}]"));
+        assert_eq!(parsed[2].reason.as_deref(), Some("perché"));
+        assert_eq!(parsed[2].timestamp_ms, 42);
+        assert!(parsed[1].annotations_json.is_none());
+    }
+
+    #[test]
+    fn drops_annotations_when_the_image_changed() {
+        let mut previous = vec![step(1, "Apri", Some("s1"))];
+        previous[0].annotations_json = Some("[]".into());
+        let mut parsed = vec![step(1, "Apri", Some("s9"))];
+        carry_over_step_metadata(&mut parsed, &previous);
+        assert!(parsed[0].annotations_json.is_none());
+    }
+}

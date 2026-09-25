@@ -12,12 +12,18 @@ use uuid::Uuid;
 use crate::events::{should_trigger_screenshot, EventCollector};
 use crate::platform::{preflight_recording_start, PlatformServices, SharedScreenshotCapturer};
 use crate::recorder::RecorderEngine;
-use crate::screenshots::{run_capture, PendingCapture, ScreenshotEngine};
+use crate::screenshots::{
+    capture_frame, run_capture, supports_fast_sampling, CaptureJob, PostClickSampler, ScreenshotEngine,
+    ScreenshotWriter,
+};
 use crate::storage::Database;
 use crate::storage::models::{Session, SessionStatus, StoredEvent};
 use crate::thread_util::join_thread_with_timeout;
 
-const COLLECTOR_JOIN_TIMEOUT: Duration = Duration::from_secs(5);
+// Covers flushing the background screenshot writer (PNG encoding of queued frames).
+const COLLECTOR_JOIN_TIMEOUT: Duration = Duration::from_secs(20);
+const WRITER_FLUSH_TIMEOUT: Duration = Duration::from_secs(18);
+const COLLECTOR_TICK: Duration = Duration::from_millis(60);
 const PLATFORM_STOP_TIMEOUT: Duration = Duration::from_secs(3);
 
 use std::collections::HashMap;
@@ -366,8 +372,22 @@ fn spawn_recording_collector(
     session_id: String,
     session_dir: PathBuf,
 ) -> JoinHandle<()> {
-    let capturer = SharedScreenshotCapturer;
     thread::spawn(move || {
+        let setting_enabled = |key: &str, default: bool| {
+            db.get_setting(key)
+                .ok()
+                .flatten()
+                .map(|val| val == "true")
+                .unwrap_or(default)
+        };
+        let capture_all = setting_enabled("capture_all_events", false);
+        let dedupe = setting_enabled("dedupe_screenshots", true);
+        let fast_sampling = supports_fast_sampling();
+
+        let writer = ScreenshotWriter::spawn(screenshot_engine.clone(), db.clone(), dedupe);
+        let mut post_click: Option<PostClickSampler> = None;
+        let mut last_mouse: Option<(i64, i64)> = None;
+
         while !stop_flag.load(Ordering::SeqCst) {
             if is_paused.load(Ordering::SeqCst) {
                 // Drain and discard any events while paused to avoid backlog
@@ -375,6 +395,7 @@ fn spawn_recording_collector(
                     let _ = plat.input.drain_events();
                     let _ = plat.windows.drain_events();
                 }
+                post_click = None;
                 thread::sleep(Duration::from_millis(150));
                 continue;
             }
@@ -394,23 +415,24 @@ fn spawn_recording_collector(
                 break;
             }
 
-            let capture_all = db
-                .get_setting("capture_all_events")
-                .ok()
-                .flatten()
-                .map(|val| val == "true")
-                .unwrap_or(false);
+            for input in &input_events {
+                let x = input.payload.get("x").and_then(|v| v.as_i64());
+                let y = input.payload.get("y").and_then(|v| v.as_i64());
+                if let (Some(x), Some(y)) = (x, y) {
+                    last_mouse = Some((x, y));
+                    if let Some(sampler) = post_click.as_mut() {
+                        sampler.track_mouse(x, y);
+                    }
+                }
+            }
 
+            let monitor_id;
             let mut pending_captures = Vec::new();
+            let mut new_click: Option<(String, Option<(i64, i64)>)> = None;
             {
                 let mut engine = screenshot_engine.lock();
+                monitor_id = engine.monitor_id();
                 if engine.is_active() {
-                    if let Ok(Some(pending)) =
-                        engine.prepare_pending_post(&session_id, session_dir.clone())
-                    {
-                        pending_captures.push(pending);
-                    }
-
                     for input in &input_events {
                         if stop_flag.load(Ordering::SeqCst) || is_paused.load(Ordering::SeqCst) {
                             break;
@@ -421,6 +443,12 @@ fn spawn_recording_collector(
                                 session_dir.clone(),
                                 input,
                             ) {
+                                if matches!(input.event_type.as_str(), "mouse_click" | "mouse_double_click") {
+                                    new_click = Some((
+                                        crate::events::screenshot_trigger_label(input),
+                                        pending.click_x.zip(pending.click_y),
+                                    ));
+                                }
                                 pending_captures.push(pending);
                             }
                         }
@@ -443,11 +471,48 @@ fn spawn_recording_collector(
                 }
             }
 
-            for pending in pending_captures {
-                if stop_flag.load(Ordering::SeqCst) {
-                    break;
+            // Grab the screen once for everything that happened in this tick; encoding and
+            // saving happen on the writer thread.
+            if !pending_captures.is_empty() && !stop_flag.load(Ordering::SeqCst) {
+                match capture_frame(monitor_id.as_deref()) {
+                    Ok(frame) => {
+                        if let Some((trigger, click)) = new_click {
+                            // A new click supersedes the previous click's pending "after" shot:
+                            // this "before" shot already shows that result.
+                            post_click = Some(PostClickSampler::new(trigger, click, frame.clone(), fast_sampling));
+                        }
+                        for pending in pending_captures {
+                            writer.submit(CaptureJob { pending, frame: frame.clone(), cursor: last_mouse });
+                        }
+                    }
+                    Err(err) => eprintln!("FlowCapture: screen capture failed: {err:#}"),
                 }
-                execute_pending_capture(&screenshot_engine, &capturer, pending);
+            }
+
+            let now = Instant::now();
+            if post_click.as_ref().is_some_and(|sampler| sampler.is_due(now)) {
+                match capture_frame(monitor_id.as_deref()) {
+                    Ok(frame) => {
+                        let sampler = post_click.as_mut().expect("checked above");
+                        if let Some(settled) = sampler.offer(frame, last_mouse, now) {
+                            let sampler = post_click.take().expect("checked above");
+                            let planned = screenshot_engine.lock().prepare_post_click(
+                                &session_id,
+                                session_dir.clone(),
+                                &sampler.trigger,
+                                sampler.click.map(|c| c.0),
+                                sampler.click.map(|c| c.1),
+                            );
+                            if let Ok(Some(pending)) = planned {
+                                writer.submit(CaptureJob { pending, frame: settled, cursor: last_mouse });
+                            }
+                        }
+                    }
+                    Err(err) => {
+                        eprintln!("FlowCapture: post-click capture failed: {err:#}");
+                        post_click = None;
+                    }
+                }
             }
 
             let mut batch = Vec::new();
@@ -468,22 +533,13 @@ fn spawn_recording_collector(
                 break;
             }
 
-            thread::sleep(Duration::from_millis(150));
+            thread::sleep(COLLECTOR_TICK);
+        }
+
+        if !writer.finish(WRITER_FLUSH_TIMEOUT) {
+            eprintln!("FlowCapture: screenshot writer did not flush within timeout");
         }
     })
-}
-
-fn execute_pending_capture(
-    screenshot_engine: &Arc<Mutex<ScreenshotEngine>>,
-    capturer: &SharedScreenshotCapturer,
-    pending: PendingCapture,
-) {
-    if run_capture(capturer, &pending).is_err() {
-        return;
-    }
-    if let Some(engine) = screenshot_engine.try_lock_for(Duration::from_millis(500)) {
-        let _ = engine.finish_capture(pending);
-    }
 }
 
 fn should_persist_event(event_type: &str) -> bool {

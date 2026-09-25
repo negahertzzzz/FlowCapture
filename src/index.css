@@ -1,6 +1,7 @@
 @import "./styles/system.css";
 @import "./styles/app.css";
 @import "./styles/export.css";
+@import "./styles/components.css";
 
 a {
   color: inherit;

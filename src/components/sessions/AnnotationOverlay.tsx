@@ -5,43 +5,35 @@ interface AnnotationOverlayProps {
   items: AnnotationItem[];
   naturalWidth: number;
   naturalHeight: number;
-  onAnnotationClick: (item: AnnotationItem) => void;
-  onOpenEditor: () => void;
-  onChangeScreenshot: () => void;
+  /** Draw-only mode (e.g. inside the full-screen viewer): no hover, clicks or action buttons. */
+  readOnly?: boolean;
+  onAnnotationClick?: (item: AnnotationItem) => void;
+  onOpenEditor?: () => void;
+  onChangeScreenshot?: () => void;
+  onFullscreen?: () => void;
 }
 
 export function AnnotationOverlay({
   items,
   naturalWidth,
   naturalHeight,
+  readOnly = false,
   onAnnotationClick,
   onOpenEditor,
   onChangeScreenshot,
+  onFullscreen,
 }: AnnotationOverlayProps) {
   const [hoveredId, setHoveredId] = useState<string | null>(null);
+  const interactive = !readOnly && Boolean(onAnnotationClick);
+  const groupStyle = interactive ? { pointerEvents: "all" as const, cursor: "pointer" } : { pointerEvents: "none" as const };
 
   const viewBoxW = naturalWidth || 1920;
   const viewBoxH = naturalHeight || 1080;
 
   return (
-    <div
-      style={{
-        position: "absolute",
-        inset: 0,
-        pointerEvents: "none",
-        zIndex: 10,
-      }}
-    >
+    <div className="annotation-overlay">
       {/* Interactive SVG layer mapped directly over the image */}
-      <svg
-        viewBox={`0 0 ${viewBoxW} ${viewBoxH}`}
-        style={{
-          width: "100%",
-          height: "100%",
-          display: "block",
-          pointerEvents: "none",
-        }}
-      >
+      <svg className="annotation-overlay-svg" viewBox={`0 0 ${viewBoxW} ${viewBoxH}`}>
         <defs>
           <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
             <feDropShadow dx="0" dy="0" stdDeviation="6" floodColor="#38bdf8" floodOpacity="0.8" />
@@ -60,12 +52,12 @@ export function AnnotationOverlay({
             return (
               <g
                 key={item.id}
-                style={{ pointerEvents: "all", cursor: "pointer" }}
+                style={groupStyle}
                 onMouseEnter={() => setHoveredId(item.id)}
                 onMouseLeave={() => setHoveredId(null)}
                 onClick={(e) => {
                   e.stopPropagation();
-                  onAnnotationClick(item);
+                  onAnnotationClick?.(item);
                 }}
               >
                 <circle
@@ -158,12 +150,12 @@ export function AnnotationOverlay({
             return (
               <g
                 key={item.id}
-                style={{ pointerEvents: "all", cursor: "pointer" }}
+                style={groupStyle}
                 onMouseEnter={() => setHoveredId(item.id)}
                 onMouseLeave={() => setHoveredId(null)}
                 onClick={(e) => {
                   e.stopPropagation();
-                  onAnnotationClick(item);
+                  onAnnotationClick?.(item);
                 }}
               >
                 <circle
@@ -224,12 +216,12 @@ export function AnnotationOverlay({
             return (
               <g
                 key={item.id}
-                style={{ pointerEvents: "all", cursor: "pointer" }}
+                style={groupStyle}
                 onMouseEnter={() => setHoveredId(item.id)}
                 onMouseLeave={() => setHoveredId(null)}
                 onClick={(e) => {
                   e.stopPropagation();
-                  onAnnotationClick(item);
+                  onAnnotationClick?.(item);
                 }}
               >
                 <rect
@@ -256,12 +248,12 @@ export function AnnotationOverlay({
             return (
               <g
                 key={item.id}
-                style={{ pointerEvents: "all", cursor: "pointer" }}
+                style={groupStyle}
                 onMouseEnter={() => setHoveredId(item.id)}
                 onMouseLeave={() => setHoveredId(null)}
                 onClick={(e) => {
                   e.stopPropagation();
-                  onAnnotationClick(item);
+                  onAnnotationClick?.(item);
                 }}
               >
                 <ellipse
@@ -287,12 +279,12 @@ export function AnnotationOverlay({
             return (
               <g
                 key={item.id}
-                style={{ pointerEvents: "all", cursor: "pointer" }}
+                style={groupStyle}
                 onMouseEnter={() => setHoveredId(item.id)}
                 onMouseLeave={() => setHoveredId(null)}
                 onClick={(e) => {
                   e.stopPropagation();
-                  onAnnotationClick(item);
+                  onAnnotationClick?.(item);
                 }}
               >
                 <rect
@@ -315,12 +307,12 @@ export function AnnotationOverlay({
             return (
               <g
                 key={item.id}
-                style={{ pointerEvents: "all", cursor: "pointer" }}
+                style={groupStyle}
                 onMouseEnter={() => setHoveredId(item.id)}
                 onMouseLeave={() => setHoveredId(null)}
                 onClick={(e) => {
                   e.stopPropagation();
-                  onAnnotationClick(item);
+                  onAnnotationClick?.(item);
                 }}
               >
                 <rect
@@ -352,66 +344,43 @@ export function AnnotationOverlay({
         })}
       </svg>
 
-      {/* Floating Action Controls */}
-      <div
-        style={{
-          position: "absolute",
-          top: "12px",
-          right: "12px",
-          display: "flex",
-          gap: "8px",
-          pointerEvents: "all",
-          zIndex: 20,
-        }}
-      >
-        <button
-          type="button"
-          onClick={onChangeScreenshot}
-          style={{
-            background: "rgba(15, 23, 42, 0.82)",
-            border: "1px solid rgba(255, 255, 255, 0.15)",
-            backdropFilter: "blur(6px)",
-            color: "#e2e8f0",
-            padding: "5px 10px",
-            borderRadius: "6px",
-            fontSize: "11.5px",
-            fontWeight: 500,
-            cursor: "pointer",
-            display: "flex",
-            alignItems: "center",
-            gap: "5px",
-            boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
-          }}
-          title="Cambia l'immagine associata a questo step (oppure fai tasto destro sullo screenshot)"
-        >
-          <span>🖼️</span>
-          <span>Cambia Immagine</span>
-        </button>
-
-        <button
-          type="button"
-          onClick={onOpenEditor}
-          style={{
-            background: "rgba(14, 165, 233, 0.85)",
-            border: "1px solid rgba(56, 189, 248, 0.5)",
-            backdropFilter: "blur(6px)",
-            color: "#ffffff",
-            padding: "5px 12px",
-            borderRadius: "6px",
-            fontSize: "11.5px",
-            fontWeight: 600,
-            cursor: "pointer",
-            display: "flex",
-            alignItems: "center",
-            gap: "5px",
-            boxShadow: "0 4px 12px rgba(0,0,0,0.3)",
-          }}
-          title="Apri l'editor per aggiungere o modificare badge, rettangoli, evidenziazioni o click"
-        >
-          <span>🎨</span>
-          <span>Annotazioni {items.length > 0 ? `(${items.length})` : ""}</span>
-        </button>
-      </div>
+      {!readOnly && (onChangeScreenshot || onOpenEditor || onFullscreen) ? (
+        <div className="annotation-overlay-actions">
+          {onFullscreen ? (
+            <button
+              type="button"
+              className="ao-btn"
+              onClick={onFullscreen}
+              title="Ingrandisci a schermo intero (anche con doppio clic o tasto destro)"
+            >
+              <span>⛶</span>
+              <span>Schermo intero</span>
+            </button>
+          ) : null}
+          {onChangeScreenshot ? (
+            <button
+              type="button"
+              className="ao-btn"
+              onClick={onChangeScreenshot}
+              title="Cambia l'immagine associata a questo step (oppure tasto destro sullo screenshot)"
+            >
+              <span>🖼️</span>
+              <span>Cambia Immagine</span>
+            </button>
+          ) : null}
+          {onOpenEditor ? (
+            <button
+              type="button"
+              className="ao-btn primary"
+              onClick={onOpenEditor}
+              title="Apri l'editor per aggiungere o modificare badge, rettangoli, evidenziazioni o click"
+            >
+              <span>🎨</span>
+              <span>Annotazioni {items.length > 0 ? `(${items.length})` : ""}</span>
+            </button>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }

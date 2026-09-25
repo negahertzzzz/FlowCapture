@@ -1,24 +1,20 @@
+pub mod frame;
+mod writer;
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 use uuid::Uuid;
+
+pub use frame::{capture_frame, supports_fast_sampling};
+pub use writer::{CaptureJob, PostClickSampler, ScreenshotWriter};
 
 use crate::events::{screenshot_trigger_label, should_trigger_screenshot};
 use crate::platform::{CapturedInputEvent, ScreenshotCapturer};
 use crate::storage::Database;
 use crate::storage::models::Screenshot;
-
-const POST_CLICK_DELAY: Duration = Duration::from_millis(300);
-
-struct PendingPostCapture {
-    due_at: Instant,
-    trigger: String,
-    timestamp_ms: i64,
-    click_x: Option<i64>,
-    click_y: Option<i64>,
-}
 
 pub struct PendingCapture {
     pub id: String,
@@ -36,7 +32,6 @@ pub struct ScreenshotEngine {
     session_id: Option<String>,
     monitor_id: Option<String>,
     last_window_key: Option<String>,
-    pending_post_capture: Option<PendingPostCapture>,
 }
 
 impl ScreenshotEngine {
@@ -46,7 +41,6 @@ impl ScreenshotEngine {
             session_id: None,
             monitor_id: None,
             last_window_key: None,
-            pending_post_capture: None,
         }
     }
 
@@ -54,7 +48,6 @@ impl ScreenshotEngine {
         self.session_id = Some(session_id.to_string());
         self.monitor_id = monitor_id;
         self.last_window_key = None;
-        self.pending_post_capture = None;
         Ok(())
     }
 
@@ -63,12 +56,15 @@ impl ScreenshotEngine {
         self.session_id = None;
         self.monitor_id = None;
         self.last_window_key = None;
-        self.pending_post_capture = None;
         Ok(())
     }
 
     pub fn set_monitor_id(&mut self, monitor_id: Option<String>) {
         self.monitor_id = monitor_id;
+    }
+
+    pub fn monitor_id(&self) -> Option<String> {
+        self.monitor_id.clone()
     }
 
     pub fn is_active(&self) -> bool {
@@ -83,36 +79,26 @@ impl ScreenshotEngine {
         self.plan_capture(session_id, session_dir, "manual_marker", now_ms(), None, None)
     }
 
-    pub fn prepare_pending_post(
-        &mut self,
+    /// Plans the "after the click" screenshot once the post-click sampler decided the screen
+    /// has settled; the timestamp is the moment the frame was actually taken.
+    pub fn prepare_post_click(
+        &self,
         session_id: &str,
         session_dir: PathBuf,
+        trigger: &str,
+        click_x: Option<i64>,
+        click_y: Option<i64>,
     ) -> Result<Option<PendingCapture>> {
         if !self.is_active() {
             return Ok(None);
         }
-        let due = self
-            .pending_post_capture
-            .as_ref()
-            .map(|pending| pending.due_at)
-            .filter(|due_at| Instant::now() >= *due_at);
-
-        if due.is_none() {
-            return Ok(None);
-        }
-
-        let pending = self
-            .pending_post_capture
-            .take()
-            .expect("pending capture checked above");
-
         Ok(Some(self.plan_capture(
             session_id,
             session_dir,
-            &pending.trigger,
-            pending.timestamp_ms,
-            pending.click_x,
-            pending.click_y,
+            &format!("post_{trigger}"),
+            now_ms(),
+            click_x,
+            click_y,
         )?))
     }
 
@@ -143,16 +129,6 @@ impl ScreenshotEngine {
             click_x,
             click_y,
         )?;
-
-        if event.event_type == "mouse_click" || event.event_type == "mouse_double_click" {
-            self.pending_post_capture = Some(PendingPostCapture {
-                due_at: Instant::now() + POST_CLICK_DELAY,
-                trigger: format!("post_{trigger}"),
-                timestamp_ms: event.timestamp_ms + POST_CLICK_DELAY.as_millis() as i64,
-                click_x,
-                click_y,
-            });
-        }
 
         Ok(Some(capture))
     }

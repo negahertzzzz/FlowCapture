@@ -1,12 +1,16 @@
-import { useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { AppButton } from "@/components/ui/AppButton";
+import { ImageLightbox } from "@/components/ui/ImageLightbox";
 import type { Screenshot } from "@/lib/api";
 
 interface ScreenshotPickerModalProps {
   currentScreenshotId?: string;
   screenshots: Screenshot[];
-  stepIndex: number;
+  /** Step number shown in the title; omit when picking an image for free-form Markdown. */
+  stepIndex?: number;
+  title?: string;
+  confirmLabel?: string;
   onSelect: (screenshotId: string) => Promise<void> | void;
   onClose: () => void;
 }
@@ -15,14 +19,21 @@ export function ScreenshotPickerModal({
   currentScreenshotId,
   screenshots,
   stepIndex,
+  title,
+  confirmLabel,
   onSelect,
   onClose,
 }: ScreenshotPickerModalProps) {
   const [selectedId, setSelectedId] = useState<string>(currentScreenshotId || (screenshots[0]?.id ?? ""));
   const [previewId, setPreviewId] = useState<string>(selectedId);
   const [saving, setSaving] = useState(false);
+  const [fullscreen, setFullscreen] = useState(false);
 
-  const previewScreenshot = screenshots.find((s) => s.id === previewId);
+  const previewIndex = useMemo(
+    () => screenshots.findIndex((s) => s.id === previewId),
+    [screenshots, previewId],
+  );
+  const previewScreenshot = previewIndex >= 0 ? screenshots[previewIndex] : undefined;
 
   const handleConfirm = async () => {
     if (!selectedId) return;
@@ -35,177 +46,88 @@ export function ScreenshotPickerModal({
     }
   };
 
+  const move = useCallback(
+    (delta: number) => {
+      if (screenshots.length === 0) return;
+      const base = previewIndex >= 0 ? previewIndex : 0;
+      const next = screenshots[Math.max(0, Math.min(screenshots.length - 1, base + delta))];
+      setPreviewId(next.id);
+      setSelectedId(next.id);
+    },
+    [screenshots, previewIndex],
+  );
+
+  useEffect(() => {
+    if (fullscreen) return;
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") onClose();
+      else if (event.key === "ArrowLeft" || event.key === "ArrowUp") move(-1);
+      else if (event.key === "ArrowRight" || event.key === "ArrowDown") move(1);
+      else if (event.key === "Enter" && selectedId && !saving) void handleConfirm();
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  });
+
+  const heading =
+    title ?? (stepIndex != null ? `Scegli Screenshot per il Passo ${stepIndex}` : "Scegli Screenshot");
+
   return (
     <div
-      style={{
-        position: "fixed",
-        top: 0,
-        left: 0,
-        width: "100vw",
-        height: "100vh",
-        backgroundColor: "rgba(0, 0, 0, 0.85)",
-        zIndex: 9999,
-        display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        justifyContent: "center",
-        backdropFilter: "blur(6px)",
-        padding: "24px",
-      }}
+      className="fc-modal-backdrop"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
-      <div
-        style={{
-          width: "90vw",
-          maxWidth: "1100px",
-          height: "85vh",
-          background: "var(--surface)",
-          border: "1px solid var(--hair-2)",
-          borderRadius: "14px",
-          display: "flex",
-          flexDirection: "column",
-          overflow: "hidden",
-          boxShadow: "0 20px 50px rgba(0,0,0,0.6)",
-        }}
-      >
-        {/* Header */}
-        <div
-          style={{
-            padding: "16px 22px",
-            borderBottom: "1px solid var(--hair)",
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            background: "var(--bg-2, #131b26)",
-          }}
-        >
+      <div className="fc-modal picker-modal">
+        <div className="fc-modal-head">
           <div>
-            <h3 style={{ margin: 0, fontSize: "16px", fontWeight: 600 }}>
-              Scegli Screenshot per il Passo {stepIndex}
-            </h3>
-            <div style={{ fontSize: "12px", color: "var(--dim)", marginTop: "4px" }}>
-              Seleziona un'immagine tra gli screenshot acquisiti durante la sessione.
+            <h3>{heading}</h3>
+            <div className="fc-modal-sub">
+              Seleziona un'immagine tra gli screenshot acquisiti. Doppio clic o tasto destro per vederla a
+              schermo intero · frecce per scorrere · Invio per applicare.
             </div>
           </div>
-          <div style={{ display: "flex", gap: "10px" }}>
+          <div className="fc-modal-actions">
             <AppButton size="sm" kind="ghost" onClick={onClose}>
               Annulla
             </AppButton>
-            <AppButton
-              size="sm"
-              kind="primary"
-              disabled={!selectedId || saving}
-              onClick={handleConfirm}
-            >
-              {saving ? "Aggiornamento..." : "Applica al Passo"}
+            <AppButton size="sm" kind="primary" disabled={!selectedId || saving} onClick={handleConfirm}>
+              {saving ? "Aggiornamento..." : confirmLabel ?? (stepIndex != null ? "Applica al Passo" : "Usa questa immagine")}
             </AppButton>
           </div>
         </div>
 
-        {/* Content Area */}
-        <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
-          {/* Left: Grid of screenshots */}
-          <div
-            style={{
-              flex: "0 0 50%",
-              borderRight: "1px solid var(--hair)",
-              padding: "16px",
-              overflowY: "auto",
-              display: "grid",
-              gridTemplateColumns: "repeat(auto-fill, minmax(170px, 1fr))",
-              gap: "12px",
-              alignContent: "start",
-            }}
-          >
+        <div className="picker-body">
+          <div className="picker-grid">
             {screenshots.map((s, idx) => {
               const isCurrent = s.id === currentScreenshotId;
               const isSelected = s.id === selectedId;
-
               return (
                 <div
                   key={s.id}
+                  className={`picker-thumb${isSelected ? " selected" : ""}${isCurrent ? " current" : ""}`}
                   onClick={() => {
                     setSelectedId(s.id);
                     setPreviewId(s.id);
                   }}
-                  onMouseEnter={() => setPreviewId(s.id)}
-                  style={{
-                    position: "relative",
-                    borderRadius: "8px",
-                    overflow: "hidden",
-                    border: isSelected
-                      ? "2px solid var(--mint, #38bdf8)"
-                      : isCurrent
-                      ? "2px solid rgba(56, 189, 248, 0.4)"
-                      : "1px solid var(--hair)",
-                    cursor: "pointer",
-                    background: "rgba(0,0,0,0.25)",
-                    transition: "transform 0.15s, border-color 0.15s",
-                    display: "flex",
-                    flexDirection: "column",
+                  onDoubleClick={() => {
+                    setPreviewId(s.id);
+                    setFullscreen(true);
                   }}
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    setPreviewId(s.id);
+                    setFullscreen(true);
+                  }}
+                  onMouseEnter={() => setPreviewId(s.id)}
                 >
-                  <div style={{ position: "relative", paddingTop: "60%", background: "#000" }}>
-                    <img
-                      src={convertFileSrc(s.path)}
-                      alt={`Screenshot ${idx + 1}`}
-                      style={{
-                        position: "absolute",
-                        top: 0,
-                        left: 0,
-                        width: "100%",
-                        height: "100%",
-                        objectFit: "cover",
-                      }}
-                      loading="lazy"
-                    />
-                    {isCurrent && (
-                      <div
-                        style={{
-                          position: "absolute",
-                          top: "4px",
-                          left: "4px",
-                          background: "rgba(14, 165, 233, 0.85)",
-                          color: "#fff",
-                          fontSize: "10px",
-                          padding: "2px 6px",
-                          borderRadius: "4px",
-                          fontWeight: 600,
-                        }}
-                      >
-                        Attuale
-                      </div>
-                    )}
-                    {isSelected && (
-                      <div
-                        style={{
-                          position: "absolute",
-                          top: "4px",
-                          right: "4px",
-                          background: "#38bdf8",
-                          color: "#000",
-                          fontSize: "10px",
-                          padding: "2px 6px",
-                          borderRadius: "4px",
-                          fontWeight: 700,
-                        }}
-                      >
-                        ✓ Selezionato
-                      </div>
-                    )}
+                  <div className="picker-thumb-img">
+                    <img src={convertFileSrc(s.path)} alt={`Screenshot ${idx + 1}`} loading="lazy" />
+                    {isCurrent ? <div className="picker-tag current">Attuale</div> : null}
+                    {isSelected ? <div className="picker-tag selected">✓ Selezionato</div> : null}
                   </div>
-                  <div
-                    style={{
-                      padding: "6px 8px",
-                      fontSize: "11px",
-                      color: "var(--dim)",
-                      display: "flex",
-                      justifyContent: "space-between",
-                      background: isSelected ? "rgba(56, 189, 248, 0.1)" : "transparent",
-                    }}
-                  >
+                  <div className="picker-thumb-cap">
                     <span>#{idx + 1}</span>
                     <span>{s.trigger || "click"}</span>
                   </div>
@@ -214,60 +136,46 @@ export function ScreenshotPickerModal({
             })}
           </div>
 
-          {/* Right: Large Preview */}
-          <div
-            style={{
-              flex: "1",
-              display: "flex",
-              flexDirection: "column",
-              background: "#080c14",
-              padding: "16px",
-              overflow: "hidden",
-            }}
-          >
-            <div style={{ fontSize: "12px", color: "var(--dim)", marginBottom: "8px" }}>
-              Anteprima Dettagliata
+          <div className="picker-preview">
+            <div className="picker-preview-head">
+              <span>
+                Anteprima {previewScreenshot ? `· #${previewIndex + 1} ${previewScreenshot.trigger ?? ""}` : ""}
+              </span>
+              {previewScreenshot ? (
+                <button type="button" className="fc-chip-btn" onClick={() => setFullscreen(true)}>
+                  ⛶ Schermo intero
+                </button>
+              ) : null}
             </div>
             {previewScreenshot ? (
               <div
-                style={{
-                  flex: 1,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  position: "relative",
-                  borderRadius: "8px",
-                  overflow: "hidden",
-                  border: "1px solid var(--hair)",
-                  background: "rgba(0,0,0,0.5)",
+                className="picker-preview-stage"
+                onDoubleClick={() => setFullscreen(true)}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  setFullscreen(true);
                 }}
+                title="Doppio clic o tasto destro per ingrandire a schermo intero"
               >
-                <img
-                  src={convertFileSrc(previewScreenshot.path)}
-                  alt="Preview"
-                  style={{
-                    maxWidth: "100%",
-                    maxHeight: "100%",
-                    objectFit: "contain",
-                  }}
-                />
+                <img src={convertFileSrc(previewScreenshot.path)} alt="Preview" />
               </div>
             ) : (
-              <div
-                style={{
-                  flex: 1,
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  color: "var(--dim)",
-                }}
-              >
-                Nessuna immagine selezionata
-              </div>
+              <div className="picker-preview-empty">Nessuna immagine selezionata</div>
             )}
           </div>
         </div>
       </div>
+
+      {fullscreen && previewScreenshot ? (
+        <ImageLightbox
+          src={convertFileSrc(previewScreenshot.path)}
+          alt={`Screenshot #${previewIndex + 1}`}
+          caption={`Screenshot #${previewIndex + 1} · ${previewScreenshot.trigger ?? "capture"}`}
+          onClose={() => setFullscreen(false)}
+          onPrev={previewIndex > 0 ? () => move(-1) : undefined}
+          onNext={previewIndex < screenshots.length - 1 ? () => move(1) : undefined}
+        />
+      ) : null}
     </div>
   );
 }

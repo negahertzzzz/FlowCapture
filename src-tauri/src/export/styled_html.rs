@@ -173,7 +173,7 @@ pub fn parse_documentation_markdown(
                         step.reason = Some(why_text);
                     } else if let Some(img_caps) = img_re.captures(trimmed) {
                         let img_path = img_caps.get(1).map(|m| m.as_str().trim()).unwrap_or("");
-                        let found_id = screenshots.iter().find(|s| {
+                        let found_id = screenshots.iter().filter(|_| !img_path.is_empty()).find(|s| {
                             s.path == img_path
                                 || s.path.ends_with(img_path)
                                 || (!img_path.is_empty()
@@ -219,6 +219,14 @@ pub fn parse_documentation_markdown(
     }
 
     for step in &mut steps {
+        if let Some(stored) = fallback_steps.iter().find(|fs| fs.step == step.step) {
+            if step.screenshot_id.is_none() {
+                step.screenshot_id = stored.screenshot_ids.first().cloned();
+            }
+            if step.timestamp_ms == 0 {
+                step.timestamp_ms = stored.timestamp_ms;
+            }
+        }
         if step.timestamp_ms == 0 {
             if let Some(ref sid) = step.screenshot_id {
                 if let Some(shot) = screenshots.iter().find(|s| &s.id == sid) {
@@ -334,7 +342,6 @@ pub fn render_styled_export_html(
             step.screenshot_id
                 .as_deref()
                 .and_then(|id| screenshot_map.get(id).copied())
-                .or_else(|| screenshots.get(index))
                 .map(|shot| render_shot(shot, &options))
                 .unwrap_or_default()
         } else {
@@ -442,7 +449,7 @@ pub fn render_styled_export_html(
   <title>{doc_title}</title>
   <style>{styles}</style>
 </head>
-<body>
+<body class="page-{theme}">
   <div class="doc theme-{theme} mode-{mode} {size_class}{brand_class}" style="--p-accent:{accent};--p-accent-ink:{accent_ink};">
     <section class="sheet">
       {cover_html}
@@ -453,13 +460,14 @@ pub fn render_styled_export_html(
         {steps_html}
         {expected_html}
       </div>
-      <div class="run-foot"><span><span data-brand>FlowCapture · </span>Generated documentation</span><span>1 / 1</span></div>
+      <div class="run-foot"><span><span data-brand>FlowCapture · </span>Generated documentation</span><span>{session_date}</span></div>
     </section>
   </div>
 </body>
 </html>"#,
         doc_title = html_escape(title),
-        styles = export_doc_styles(mode),
+        styles = export_doc_styles(&options.page_size),
+        session_date = session_date,
         theme = options.theme,
         mode = mode,
         size_class = size_class,
@@ -476,36 +484,45 @@ pub fn render_styled_export_html(
 
 fn render_shot(shot: &Screenshot, options: &ExportOptions) -> String {
     let caption = shot.trigger.clone().unwrap_or_else(|| "capture".to_string());
-    let image = image_data_uri(&shot.path).unwrap_or_default();
-    let accent_ink = if options.theme == "light" {
-        "#ffffff"
-    } else {
-        "#06231b"
-    };
+    let image = image_data_uri(&export_image_path(&shot.path, options.annotations)).unwrap_or_default();
     let image_html = if image.is_empty() {
-        r#"<div class="shot-win"><div class="tb"><i></i><i></i><i></i></div><div class="ln a"></div><div class="ln b"></div></div>"#.to_string()
+        r#"<div class="shot-img"><div class="shot-win"><div class="tb"><i></i><i></i><i></i></div><div class="ln a"></div><div class="ln b"></div></div></div>"#.to_string()
     } else {
         format!(
-            r#"<img src="{image}" alt="{caption}" style="width:100%;height:100%;object-fit:cover;object-position:left top;" />"#
+            r#"<div class="shot-img has-img"><img src="{image}" alt="{alt}" /></div>"#,
+            alt = html_escape(&caption),
         )
-    };
-    let anno = if options.annotations {
-        format!(
-            r##"<div class="ring" data-anno style="left:62%;top:40%"></div>
-           <svg class="cur" data-anno style="left:60%;top:38%" viewBox="0 0 24 24" fill="#fff" stroke="{accent_ink}" stroke-width="1.2"><path d="m4 2 16 10-6.5 1.5L11 21 4 2Z"/></svg>"##
-        )
-    } else {
-        String::new()
     };
 
     format!(
         r#"<div class="shot" data-shot>
-  <div class="shot-img">{image_html}{anno}</div>
+  {image_html}
   <div class="shot-cap">{window_icon}{caption}</div>
 </div>"#,
         window_icon = ICON_WINDOW,
         caption = html_escape(&caption),
     )
+}
+
+/// Picks the on-disk variant of a screenshot that matches the "annotations" toggle:
+/// `{stem}_annotated.{ext}` is the editor render with every badge/highlight, while
+/// `{stem}_clean.{ext}` is the pristine capture saved before any click marker was baked in.
+pub fn export_image_path(path: &str, annotations: bool) -> String {
+    let original = Path::new(path);
+    let (Some(parent), Some(stem), Some(ext)) = (
+        original.parent(),
+        original.file_stem().and_then(|v| v.to_str()),
+        original.extension().and_then(|v| v.to_str()),
+    ) else {
+        return path.to_string();
+    };
+    let suffix = if annotations { "annotated" } else { "clean" };
+    let variant = parent.join(format!("{stem}_{suffix}.{ext}"));
+    if variant.is_file() {
+        variant.to_string_lossy().to_string()
+    } else {
+        path.to_string()
+    }
 }
 
 fn accent_for(accent: &str, theme: &str) -> &'static str {
@@ -590,6 +607,7 @@ fn html_escape(input: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 fn flowcapture_logo_html(size: u32) -> String {
@@ -612,7 +630,7 @@ const ICON_CLIPBOARD: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="cur
 const ICON_CHECK: &str = r#"<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="m9 12 2 2 4-4"/></svg>"#;
 
 const EXPORT_DOC_STYLES_BASE: &str = r#"
-:root { --sans:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; --mono:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; }
+:root { --sans:'Geist',ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; --mono:'Geist Mono',ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace; }
 body { margin:0; font-family:var(--sans); background:#07090a; }
 .doc {
   --p-accent-soft: color-mix(in srgb, var(--p-accent) 13%, transparent);
@@ -657,10 +675,10 @@ body { margin:0; font-family:var(--sans); background:#07090a; }
 .step code { font-family:var(--mono); font-size:.88em; background:var(--p-accent-soft); color:var(--p-accent); padding:1px 6px; border-radius:5px; }
 .shot { margin-top:18px; border-radius:12px; border:1px solid var(--p-line); overflow:hidden; background:#0a0d18; }
 .shot-img { aspect-ratio:16/9; background:linear-gradient(135deg,#22245e,#3a3f8f 55%,#1a1b34); position:relative; overflow:hidden; }
+.shot-img.has-img { aspect-ratio:auto; background:#0a0d18; }
+.shot-img.has-img img { display:block; width:100%; height:auto; }
 .shot-win { position:absolute; inset:13% 16%; border-radius:9px; background:rgba(12,15,24,.86); border:1px solid rgba(255,255,255,.13); }
 .shot-win .ln.a { width:60%; background:color-mix(in srgb,var(--p-accent) 50%, transparent); }
-.shot .ring { position:absolute; width:34px; height:34px; border-radius:50%; border:2.5px solid var(--p-accent); transform:translate(-50%,-50%); box-shadow:0 0 0 5px color-mix(in srgb,var(--p-accent) 22%, transparent); }
-.shot .cur { position:absolute; width:18px; height:18px; filter:drop-shadow(0 2px 3px rgba(0,0,0,.5)); }
 .shot-cap { display:flex; align-items:center; gap:8px; padding:11px 14px; background:var(--p-card); border-top:1px solid var(--p-line); font-size:12px; color:var(--p-muted); }
 .shot-cap svg { width:14px; height:14px; color:var(--p-accent); }
 .prereq-card { margin-top:24px; margin-bottom:28px; border-radius:12px; background:var(--p-card); border:1px solid var(--p-line); overflow:hidden; }
@@ -689,23 +707,50 @@ body { margin:0; font-family:var(--sans); background:#07090a; }
 .expected-body b { color:var(--p-ink); font-weight:600; }
 .doc.no-brand [data-brand] { display:none !important; }
 @media print {
-  @page { size: Letter; margin: 0; }
-  body { background:#fff; }
+  body.page-light { background:#ffffff; }
+  body.page-dark { background:#0c1113; }
   .doc, .doc.mode-pdf, .doc.mode-html { width:100% !important; }
-  .sheet { box-shadow:none !important; border:none !important; border-radius:0 !important; }
+  .sheet, .doc.mode-html { box-shadow:none !important; border:none !important; border-radius:0 !important; overflow:visible !important; }
+  /* Repeat the sheet padding on every printed page instead of only the first/last one. */
+  .sheet-pad { -webkit-box-decoration-break:clone; box-decoration-break:clone; }
+  .step h3, .step-head, .steps-title, .prereq-header, .expected-header { break-after:avoid; }
+  .shot, .step-why, .callout, .prereq-card, .expected-card, .step-n { break-inside:avoid; }
+  .step-desc p, .step-desc li { orphans:3; widows:3; }
   * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
 }
 "#;
 
-const EXPORT_DOC_STYLES_WEB_FONTS: &str = r#"
-@import url('https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap');
-:root { --sans:'Geist',ui-sans-serif,system-ui,sans-serif; --mono:'Geist Mono',ui-monospace,Menlo,monospace; }
-"#;
+const GEIST_LATIN: &[u8] = include_bytes!("../../assets/fonts/geist-latin-wght-normal.woff2");
+const GEIST_LATIN_EXT: &[u8] = include_bytes!("../../assets/fonts/geist-latin-ext-wght-normal.woff2");
+const GEIST_MONO_LATIN: &[u8] = include_bytes!("../../assets/fonts/geist-mono-latin-wght-normal.woff2");
+const GEIST_MONO_LATIN_EXT: &[u8] =
+    include_bytes!("../../assets/fonts/geist-mono-latin-ext-wght-normal.woff2");
 
-fn export_doc_styles(mode: &str) -> String {
-    if mode == "html" {
-        format!("{EXPORT_DOC_STYLES_WEB_FONTS}{EXPORT_DOC_STYLES_BASE}")
-    } else {
-        EXPORT_DOC_STYLES_BASE.to_string()
-    }
+const LATIN_RANGE: &str = "U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+02C6,U+02DA,U+02DC,U+0304,U+0308,U+0329,U+2000-206F,U+20AC,U+2122,U+2191,U+2193,U+2212,U+2215,U+FEFF,U+FFFD";
+const LATIN_EXT_RANGE: &str = "U+0100-02BA,U+02BD-02C5,U+02C7-02CC,U+02CE-02D7,U+02DD-02FF,U+0304,U+0308,U+0329,U+1D00-1DBF,U+1E00-1E9F,U+1EF2-1EFF,U+2020,U+20A0-20AB,U+20AD-20C0,U+2113,U+2C60-2C7F,U+A720-A7FF";
+
+/// Geist is embedded as base64 so both HTML and PDF exports render with the app font
+/// even on machines that are offline (it used to be pulled from Google Fonts).
+fn embedded_font_faces() -> String {
+    let face = |family: &str, bytes: &[u8], range: &str| {
+        format!(
+            "@font-face {{ font-family:'{family}'; font-style:normal; font-weight:100 900; font-display:block; src:url(data:font/woff2;base64,{data}) format('woff2'); unicode-range:{range}; }}\n",
+            data = base64::engine::general_purpose::STANDARD.encode(bytes),
+        )
+    };
+    let mut css = String::new();
+    css.push_str(&face("Geist", GEIST_LATIN, LATIN_RANGE));
+    css.push_str(&face("Geist", GEIST_LATIN_EXT, LATIN_EXT_RANGE));
+    css.push_str(&face("Geist Mono", GEIST_MONO_LATIN, LATIN_RANGE));
+    css.push_str(&face("Geist Mono", GEIST_MONO_LATIN_EXT, LATIN_EXT_RANGE));
+    css
+}
+
+fn export_doc_styles(page_size: &str) -> String {
+    let page = if page_size == "a4" { "A4" } else { "Letter" };
+    format!(
+        "{fonts}{base}\n@page {{ size: {page}; margin: 0; }}\n",
+        fonts = embedded_font_faces(),
+        base = EXPORT_DOC_STYLES_BASE,
+    )
 }

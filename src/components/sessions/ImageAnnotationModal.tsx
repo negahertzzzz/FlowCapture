@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { AppButton } from "@/components/ui/AppButton";
 import { useLanguage } from "@/i18n";
@@ -684,56 +684,39 @@ export function ImageAnnotationModal({
 
   const selectedItem = items.find((it) => it.id === selectedId);
 
+  const tools: { id: ToolType; label: string; title: string }[] = [
+    { id: "select", label: "↖ Seleziona & Sposta", title: "Seleziona e sposta gli elementi con il mouse" },
+    { id: "click", label: "🎯 Marker Click", title: "Posiziona o modifica il punto di click target" },
+    { id: "badge", label: `➊ Badge Step (#${badgeCounter})`, title: "Inserisci un badge numerato con testo opzionale" },
+    { id: "rect", label: "▭ Rettangolo", title: "Disegna un rettangolo" },
+    { id: "circle", label: "◯ Cerchio", title: "Disegna un cerchio" },
+    { id: "highlight", label: "░ Evidenziatore", title: "Disegna un'area evidenziatore fluorescente" },
+    { id: "text", label: "🔤 Testo Libero", title: "Inserisci didascalia di testo" },
+  ];
+
+  const badgePositions = [
+    { label: "➡ Destra", x: 28, y: -12 },
+    { label: "⬅ Sinistra", x: -140, y: -12 },
+    { label: "⬇ Sotto", x: -40, y: 28 },
+    { label: "⬆ Sopra", x: -40, y: -48 },
+  ];
+
+  const canvasCursor =
+    activeTool === "select" ? "tool-select" : activeTool === "badge" || activeTool === "text" ? "tool-place" : "tool-draw";
+
   return (
-    <div
-      style={{
-        position: "fixed",
-        top: 0,
-        left: 0,
-        width: "100vw",
-        height: "100vh",
-        backgroundColor: "rgba(0, 0, 0, 0.88)",
-        zIndex: 9999,
-        display: "flex",
-        flexDirection: "column",
-        backdropFilter: "blur(6px)",
-      }}
-    >
-      <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          padding: "10px 20px",
-          background: "var(--bg-2, #161e2b)",
-          borderBottom: "1px solid var(--hair)",
-        }}
-      >
-        <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-          <span style={{ fontSize: "18px" }}>🎨</span>
-          <h3 style={{ margin: 0, fontSize: "16px", fontWeight: 600 }}>
-            Editor Screenshot & Annotazioni Interattivo
-          </h3>
-          {stepIndex != null && (
-            <span
-              style={{
-                fontSize: "12px",
-                background: "rgba(56, 189, 248, 0.2)",
-                color: "#38bdf8",
-                padding: "2px 8px",
-                borderRadius: "10px",
-                fontWeight: 600,
-              }}
-            >
-              Passo {stepIndex}
-            </span>
-          )}
-          <span style={{ fontSize: "12px", color: "var(--dim)" }}>
+    <div className="anno-modal">
+      <div className="anno-header">
+        <div className="anno-header-info">
+          <span className="anno-header-icon">🎨</span>
+          <h3>Editor Screenshot & Annotazioni Interattivo</h3>
+          {stepIndex != null && <span className="anno-step-pill">Passo {stepIndex}</span>}
+          <span className="anno-count">
             {items.length} elementi · {selectedItem ? `Selezionato: ${selectedItem.type}` : "Nessuna selezione"}
           </span>
         </div>
 
-        <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+        <div className="anno-header-actions">
           <AppButton
             size="sm"
             kind="ghost"
@@ -756,164 +739,55 @@ export function ImageAnnotationModal({
       </div>
 
       {error ? (
-        <div style={{ background: "rgba(239, 68, 68, 0.2)", color: "#f87171", padding: "8px 20px", fontSize: "13px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div className="anno-error">
           <span>{error}</span>
-          <button
-            type="button"
-            onClick={() => setError(null)}
-            style={{
-              background: "none",
-              border: "none",
-              color: "#f87171",
-              cursor: "pointer",
-              fontSize: "14px",
-              padding: "2px 6px",
-              lineHeight: 1,
-            }}
-            title="Chiudi"
-          >
+          <button type="button" onClick={() => setError(null)} title="Chiudi">
             ✕
           </button>
         </div>
       ) : null}
 
-      <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
-        <div
-          style={{
-            width: "210px",
-            background: "var(--surface)",
-            borderRight: "1px solid var(--hair)",
-            padding: "14px",
-            display: "flex",
-            flexDirection: "column",
-            gap: "14px",
-            overflowY: "auto",
-          }}
-        >
+      <div className="anno-body">
+        <div className="anno-sidebar">
           {stepIndex != null && (
-            <div
-              style={{
-                padding: "10px",
-                background: "rgba(56, 189, 248, 0.08)",
-                borderRadius: "8px",
-                border: "1px solid rgba(56, 189, 248, 0.25)",
-              }}
-            >
-              <label
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "8px",
-                  fontSize: "12px",
-                  cursor: "pointer",
-                  color: "var(--text)",
-                  fontWeight: 600,
-                }}
-              >
-                <input
-                  type="checkbox"
-                  checked={scopeToStep}
-                  onChange={(e) => setScopeToStep(e.target.checked)}
-                />
+            <div className="anno-scope">
+              <label className="anno-scope-label">
+                <input type="checkbox" checked={scopeToStep} onChange={(e) => setScopeToStep(e.target.checked)} />
                 <span>Associa a Passo {stepIndex}</span>
               </label>
-              <div style={{ fontSize: "10.5px", color: "var(--dim)", marginTop: "4px", lineHeight: "1.3" }}>
-                Salva queste annotazioni specificamente per questo step.
-              </div>
+              <div className="anno-scope-note">Salva queste annotazioni specificamente per questo step.</div>
             </div>
           )}
 
           <div>
-            <div style={{ fontSize: "11px", textTransform: "uppercase", color: "var(--dim)", marginBottom: "6px", fontWeight: 700 }}>
-              Strumenti
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-              <button
-                type="button"
-                className={`btn btn-sm ${activeTool === "select" ? "btn-primary" : "btn-ghost"}`}
-                style={{ justifyContent: "flex-start", textAlign: "left" }}
-                onClick={() => setActiveTool("select")}
-                title="Seleziona e sposta gli elementi con il mouse"
-              >
-                ↖ Seleziona & Sposta
-              </button>
-              <button
-                type="button"
-                className={`btn btn-sm ${activeTool === "click" ? "btn-primary" : "btn-ghost"}`}
-                style={{ justifyContent: "flex-start", textAlign: "left" }}
-                onClick={() => setActiveTool("click")}
-                title="Posiziona o modifica il punto di click target"
-              >
-                🎯 Marker Click
-              </button>
-              <button
-                type="button"
-                className={`btn btn-sm ${activeTool === "badge" ? "btn-primary" : "btn-ghost"}`}
-                style={{ justifyContent: "flex-start", textAlign: "left" }}
-                onClick={() => setActiveTool("badge")}
-                title="Inserisci un badge numerato con testo opzionale"
-              >
-                ➊ Badge Step (#{badgeCounter})
-              </button>
-              <button
-                type="button"
-                className={`btn btn-sm ${activeTool === "rect" ? "btn-primary" : "btn-ghost"}`}
-                style={{ justifyContent: "flex-start", textAlign: "left" }}
-                onClick={() => setActiveTool("rect")}
-                title="Disegna un rettangolo"
-              >
-                ▭ Rettangolo
-              </button>
-              <button
-                type="button"
-                className={`btn btn-sm ${activeTool === "circle" ? "btn-primary" : "btn-ghost"}`}
-                style={{ justifyContent: "flex-start", textAlign: "left" }}
-                onClick={() => setActiveTool("circle")}
-                title="Disegna un cerchio"
-              >
-                ◯ Cerchio
-              </button>
-              <button
-                type="button"
-                className={`btn btn-sm ${activeTool === "highlight" ? "btn-primary" : "btn-ghost"}`}
-                style={{ justifyContent: "flex-start", textAlign: "left" }}
-                onClick={() => setActiveTool("highlight")}
-                title="Disegna un'area evidenziatore fluorescente"
-              >
-                ░ Evidenziatore
-              </button>
-              <button
-                type="button"
-                className={`btn btn-sm ${activeTool === "text" ? "btn-primary" : "btn-ghost"}`}
-                style={{ justifyContent: "flex-start", textAlign: "left" }}
-                onClick={() => setActiveTool("text")}
-                title="Inserisci didascalia di testo"
-              >
-                🔤 Testo Libero
-              </button>
+            <div className="anno-section-title">Strumenti</div>
+            <div className="anno-tools">
+              {tools.map((tool) => (
+                <button
+                  key={tool.id}
+                  type="button"
+                  className={`btn btn-sm anno-tool ${activeTool === tool.id ? "btn-primary" : "btn-ghost"}`}
+                  onClick={() => setActiveTool(tool.id)}
+                  title={tool.title}
+                >
+                  {tool.label}
+                </button>
+              ))}
             </div>
           </div>
 
           <div>
-            <div style={{ fontSize: "11px", textTransform: "uppercase", color: "var(--dim)", marginBottom: "6px", fontWeight: 700 }}>
-              Colore {selectedItem ? "(Element)" : "(New)"}
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "6px" }}>
+            <div className="anno-section-title">Colore {selectedItem ? "(Element)" : "(New)"}</div>
+            <div className="anno-palette">
               {PALETTE.map((c) => {
                 const isCur = selectedItem ? selectedItem.color === c.val : activeColor === c.val;
                 return (
                   <button
                     key={c.val}
                     type="button"
+                    className={`anno-swatch${isCur ? " current" : ""}`}
                     onClick={() => handleColorChange(c.val)}
-                    style={{
-                      height: "26px",
-                      backgroundColor: c.val,
-                      border: isCur ? "2px solid #fff" : "1px solid rgba(255,255,255,0.2)",
-                      borderRadius: "4px",
-                      cursor: "pointer",
-                      boxShadow: isCur ? "0 0 6px " + c.val : "none",
-                    }}
+                    style={{ "--swatch": c.val } as CSSProperties}
                     title={c.label}
                   />
                 );
@@ -922,186 +796,106 @@ export function ImageAnnotationModal({
           </div>
 
           <div>
-            <div style={{ fontSize: "11px", textTransform: "uppercase", color: "var(--dim)", marginBottom: "4px", fontWeight: 700 }}>
+            <div className="anno-section-title">
               {t("annotation.stroke", "Thickness")}: {strokeWidth}px
             </div>
             <input
               type="range"
+              className="anno-range"
               min="2"
               max="10"
               step="1"
               value={strokeWidth}
               onChange={(e) => setStrokeWidth(Number(e.target.value))}
-              style={{ width: "100%" }}
             />
           </div>
 
-          <div style={{ fontSize: "11px", color: "var(--dim)", marginTop: "auto", borderTop: "1px solid var(--hair)", paddingTop: "8px" }}>
+          <div className="anno-footnote">
             💡 Clicca su un elemento per selezionarlo e spostarlo. Trascina la casella di testo del badge per posizionarla dove preferisci!
           </div>
         </div>
 
-        <div
-          style={{
-            flex: 1,
-            overflow: "auto",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            background: "#080c12",
-            padding: "20px",
-            userSelect: "none",
-          }}
-        >
+        <div className="anno-stage">
           <canvas
             ref={canvasRef}
+            className={`anno-canvas ${canvasCursor}`}
             onMouseDown={handleMouseDown}
             onMouseMove={handleMouseMove}
             onMouseUp={handleMouseUp}
-            style={{
-              maxWidth: "100%",
-              maxHeight: "100%",
-              boxShadow: "0 10px 30px rgba(0,0,0,0.8)",
-              borderRadius: "4px",
-              cursor:
-                activeTool === "select"
-                  ? "default"
-                  : activeTool === "badge" || activeTool === "text"
-                  ? "pointer"
-                  : "crosshair",
-            }}
           />
         </div>
 
-        <div
-          style={{
-            width: "290px",
-            background: "var(--surface)",
-            borderLeft: "1px solid var(--hair)",
-            padding: "16px",
-            display: "flex",
-            flexDirection: "column",
-            gap: "14px",
-            overflowY: "auto",
-          }}
-        >
-          <div style={{ borderBottom: "1px solid var(--hair)", paddingBottom: "14px" }}>
-            <div style={{ fontSize: "11px", textTransform: "uppercase", color: "var(--dim)", fontWeight: 700, marginBottom: "8px" }}>
-              Elemento Selezionato
-            </div>
+        <div className="anno-inspector">
+          <div className="anno-inspector-block">
+            <div className="anno-section-title">Elemento Selezionato</div>
 
             {selectedItem ? (
-              <div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                  <span style={{ fontSize: "13px", fontWeight: 600 }}>
-                    Tipo: <span style={{ color: "var(--mint)" }}>{selectedItem.type.toUpperCase()}</span>
+              <div className="anno-stack">
+                <div className="anno-selected-head">
+                  <span>
+                    Tipo: <span className="anno-type">{selectedItem.type.toUpperCase()}</span>
                   </span>
-                  <button
-                    type="button"
-                    className="btn btn-ghost btn-sm"
-                    style={{ padding: "3px 8px", color: "#f87171", fontSize: "11.5px" }}
-                    onClick={deleteSelectedItem}
-                  >
+                  <button type="button" className="btn btn-ghost btn-sm anno-delete" onClick={deleteSelectedItem}>
                     🗑️ Elimina
                   </button>
                 </div>
 
                 {selectedItem.type === "badge" && (
-                  <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                  <div className="anno-stack tight">
                     <div>
-                      <label style={{ fontSize: "12px", color: "var(--dim)" }}>Numero Step:</label>
+                      <label className="anno-label">Numero Step:</label>
                       <input
                         type="number"
+                        className="anno-input"
                         min="1"
                         value={selectedItem.badgeNumber ?? 1}
                         onChange={(e) => updateSelectedBadgeProps({ badgeNumber: Number(e.target.value) })}
-                        style={{
-                          width: "100%",
-                          background: "var(--surface)",
-                          color: "var(--text)",
-                          border: "1px solid var(--hair)",
-                          borderRadius: "4px",
-                          padding: "4px 8px",
-                          fontSize: "12px",
-                        }}
                       />
                     </div>
 
                     <div>
-                      <label style={{ fontSize: "12px", color: "var(--dim)" }}>Testo del Badge Step:</label>
+                      <label className="anno-label">Testo del Badge Step:</label>
                       <input
                         type="text"
+                        className="anno-input"
                         placeholder="es. Clicca sul pulsante Salva"
                         value={selectedItem.badgeText ?? ""}
                         onChange={(e) => updateSelectedBadgeProps({ badgeText: e.target.value })}
-                        style={{
-                          width: "100%",
-                          background: "var(--surface)",
-                          color: "var(--text)",
-                          border: "1px solid var(--hair)",
-                          borderRadius: "4px",
-                          padding: "5px 8px",
-                          fontSize: "12px",
-                        }}
                       />
                     </div>
 
                     <div>
-                      <div style={{ fontSize: "11.5px", color: "var(--dim)", marginBottom: "4px" }}>
-                        Posizione Rapida Testo:
+                      <div className="anno-label">Posizione Rapida Testo:</div>
+                      <div className="anno-positions">
+                        {badgePositions.map((pos) => (
+                          <button
+                            key={pos.label}
+                            type="button"
+                            className="btn btn-ghost btn-sm anno-position"
+                            onClick={() => updateSelectedBadgeProps({ textOffsetX: pos.x, textOffsetY: pos.y })}
+                          >
+                            {pos.label}
+                          </button>
+                        ))}
                       </div>
-                      <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: "4px" }}>
-                        <button
-                          type="button"
-                          className="btn btn-ghost btn-sm"
-                          style={{ fontSize: "11px", padding: "3px 6px" }}
-                          onClick={() => updateSelectedBadgeProps({ textOffsetX: 28, textOffsetY: -12 })}
-                        >
-                          ➡ Destra
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn-ghost btn-sm"
-                          style={{ fontSize: "11px", padding: "3px 6px" }}
-                          onClick={() => updateSelectedBadgeProps({ textOffsetX: -140, textOffsetY: -12 })}
-                        >
-                          ⬅ Sinistra
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn-ghost btn-sm"
-                          style={{ fontSize: "11px", padding: "3px 6px" }}
-                          onClick={() => updateSelectedBadgeProps({ textOffsetX: -40, textOffsetY: 28 })}
-                        >
-                          ⬇ Sotto
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn-ghost btn-sm"
-                          style={{ fontSize: "11px", padding: "3px 6px" }}
-                          onClick={() => updateSelectedBadgeProps({ textOffsetX: -40, textOffsetY: -48 })}
-                        >
-                          ⬆ Sopra
-                        </button>
-                      </div>
-                      <div style={{ fontSize: "10.5px", color: "var(--dim)", marginTop: "4px" }}>
-                        💡 Puoi anche trascinare il testo direttamente con il mouse sulla canvas!
-                      </div>
+                      <div className="anno-hint">💡 Puoi anche trascinare il testo direttamente con il mouse sulla canvas!</div>
                     </div>
                   </div>
                 )}
 
                 {selectedItem.type === "click" && (
-                  <div style={{ fontSize: "12px", color: "var(--dim)" }}>
-                    Posizione click: <code>X: {Math.round(selectedItem.x)}, Y: {Math.round(selectedItem.y)}</code>. Trascinalo per riposizionarlo o eliminalo per togliere il click da questo screenshot.
+                  <div className="anno-muted">
+                    Posizione click: <code>X: {Math.round(selectedItem.x)}, Y: {Math.round(selectedItem.y)}</code>. Trascinalo per
+                    riposizionarlo o eliminalo per togliere il click da questo screenshot.
                   </div>
                 )}
 
                 {selectedItem.type === "text" && (
                   <div>
-                    <label style={{ fontSize: "12px", color: "var(--dim)" }}>Testo:</label>
+                    <label className="anno-label">Testo:</label>
                     <input
                       type="text"
+                      className="anno-input"
                       value={selectedItem.text ?? ""}
                       onChange={(e) => {
                         const val = e.target.value;
@@ -1109,90 +903,52 @@ export function ImageAnnotationModal({
                         setItems(updated);
                         redraw(imageRef.current, updated, selectedId, null);
                       }}
-                      style={{
-                        width: "100%",
-                        background: "var(--surface)",
-                        color: "var(--text)",
-                        border: "1px solid var(--hair)",
-                        borderRadius: "4px",
-                        padding: "5px 8px",
-                        fontSize: "12px",
-                      }}
                     />
                   </div>
                 )}
               </div>
             ) : (
-              <div style={{ fontSize: "12px", color: "var(--dim)", fontStyle: "italic" }}>
+              <div className="anno-muted anno-empty">
                 Nessun elemento selezionato. Clicca su una forma, un badge o il click per modificarlo, spostarlo o cambiarne colore.
               </div>
             )}
           </div>
 
           <div>
-            <div style={{ fontSize: "11px", textTransform: "uppercase", color: "var(--dim)", fontWeight: 700, marginBottom: "8px" }}>
-              Integrazione Guida
-            </div>
+            <div className="anno-section-title">Integrazione Guida</div>
 
-            <label style={{ display: "flex", alignItems: "flex-start", gap: "8px", cursor: "pointer", fontSize: "12.5px" }}>
-              <input
-                type="checkbox"
-                checked={asNewStep}
-                onChange={(e) => setAsNewStep(e.target.checked)}
-                style={{ marginTop: "3px" }}
-              />
+            <label className="anno-newstep">
+              <input type="checkbox" checked={asNewStep} onChange={(e) => setAsNewStep(e.target.checked)} />
               <div>
-                <div style={{ fontWeight: 600 }}>Aggiungi come nuovo Step</div>
-                <div style={{ fontSize: "11px", color: "var(--dim)" }}>
+                <div className="anno-newstep-title">Aggiungi come nuovo Step</div>
+                <div className="anno-note">
                   Inserisce questa immagine modificata come nuovo passaggio esplicito nella sequenza e nel Markdown
                 </div>
               </div>
             </label>
 
             {asNewStep && (
-              <div style={{ display: "flex", flexDirection: "column", gap: "8px", marginTop: "10px" }}>
+              <div className="anno-stack tight anno-newstep-fields">
                 <div>
-                  <label style={{ fontSize: "11.5px", color: "var(--dim)" }}>Titolo del Passo:</label>
-                  <input
-                    type="text"
-                    value={stepTitle}
-                    onChange={(e) => setStepTitle(e.target.value)}
-                    style={{
-                      width: "100%",
-                      background: "var(--surface)",
-                      color: "var(--text)",
-                      border: "1px solid var(--hair)",
-                      borderRadius: "4px",
-                      padding: "5px 8px",
-                      fontSize: "12px",
-                    }}
-                  />
+                  <label className="anno-label">Titolo del Passo:</label>
+                  <input type="text" className="anno-input" value={stepTitle} onChange={(e) => setStepTitle(e.target.value)} />
                 </div>
 
                 <div>
-                  <label style={{ fontSize: "11.5px", color: "var(--dim)" }}>Descrizione del Passo:</label>
+                  <label className="anno-label">Descrizione del Passo:</label>
                   <textarea
                     rows={3}
+                    className="anno-input anno-textarea"
                     value={stepDescription}
                     onChange={(e) => setStepDescription(e.target.value)}
                     placeholder="Descrivi dettagliatamente l'operazione..."
-                    style={{
-                      width: "100%",
-                      background: "var(--surface)",
-                      color: "var(--text)",
-                      border: "1px solid var(--hair)",
-                      borderRadius: "4px",
-                      padding: "5px 8px",
-                      fontSize: "12px",
-                      resize: "vertical",
-                    }}
                   />
                 </div>
               </div>
             )}
           </div>
 
-          <div style={{ marginTop: "auto", borderTop: "1px solid var(--hair)", paddingTop: "10px", fontSize: "11px", color: "var(--dim)" }}>
+          <div className="anno-footnote">
             💾 I dati vettoriali delle modifiche rimangono salvati e modificabili in ogni momento.
           </div>
         </div>

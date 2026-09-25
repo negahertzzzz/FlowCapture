@@ -549,9 +549,14 @@
 
 .export-doc .step {
   display: grid;
+  grid-template-columns: 44px 1fr;
   gap: 18px;
   padding: 26px 0;
   border-bottom: 1px solid var(--p-line);
+}
+
+.export-doc .step.no-num {
+  grid-template-columns: 1fr;
 }
 
 .export-doc .step:last-child {
@@ -628,28 +633,21 @@
   overflow: hidden;
 }
 
+/* Real screenshots keep their own aspect ratio, exactly like the exported PDF/HTML. */
+.export-doc .shot-img.has-img {
+  aspect-ratio: auto;
+  background: #0a0d18;
+}
+
 .export-doc .shot-img img {
+  display: block;
   width: 100%;
-  height: 100%;
-  object-fit: cover;
-  object-position: left top;
+  height: auto;
 }
 
-.export-doc .shot .ring {
-  position: absolute;
-  width: 34px;
-  height: 34px;
-  border-radius: 50%;
-  border: 2.5px solid var(--p-accent);
-  box-shadow: 0 0 0 5px color-mix(in srgb, var(--p-accent) 22%, transparent);
-  transform: translate(-50%, -50%);
-}
-
-.export-doc .shot .cur {
-  position: absolute;
-  width: 18px;
-  height: 18px;
-  filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.5));
+.export-studio .cfg-note {
+  font-size: 11px;
+  color: var(--dim);
 }
 
 .export-doc .shot-cap {

@@ -1,5 +1,5 @@
 import { convertFileSrc } from "@tauri-apps/api/core";
-import { useMemo, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { AppButton } from "@/components/ui/AppButton";
 import { Icon } from "@/components/ui/Icon";
 import { Logo } from "@/components/ui/Logo";
@@ -115,7 +115,7 @@ function parseDocumentationMarkdown(
         timestamp_ms: s.timestamp_ms,
         screenshot: s.screenshot_ids[0]
           ? screenshots.find((shot) => shot.id === s.screenshot_ids[0])
-          : screenshots[idx],
+          : undefined,
       })),
     };
   }
@@ -221,7 +221,7 @@ function parseDocumentationMarkdown(
             const imgMatch = imgRe.exec(trimmed);
             if (imgMatch) {
               const imgRef = imgMatch[1].trim();
-              const foundShot = screenshots.find(
+              const foundShot = imgRef && screenshots.find(
                 (s) =>
                   s.path === imgRef ||
                   s.path.endsWith(imgRef) ||
@@ -256,22 +256,23 @@ function parseDocumentationMarkdown(
         timestamp_ms: fs.timestamp_ms,
         screenshot: fs.screenshot_ids[0]
           ? screenshots.find((shot) => shot.id === fs.screenshot_ids[0])
-          : screenshots[i],
+          : undefined,
       });
     }
   }
 
-  for (let i = 0; i < parsedSteps.length; i++) {
-    const st = parsedSteps[i];
-    if (!st.timestamp_ms) {
-      if (st.screenshot) {
-        st.timestamp_ms = st.screenshot.timestamp_ms;
-      } else if (fallbackSteps[i]) {
-        st.timestamp_ms = fallbackSteps[i].timestamp_ms;
-      }
+  // Same rules as the Rust exporter: fill gaps from the stored step with the same number,
+  // never from an unrelated screenshot at the same position.
+  for (const st of parsedSteps) {
+    const stored = fallbackSteps.find((fs) => fs.step === st.step);
+    if (!st.screenshot && stored?.screenshot_ids[0]) {
+      st.screenshot = screenshots.find((shot) => shot.id === stored.screenshot_ids[0]);
     }
-    if (!st.screenshot && screenshots[i]) {
-      st.screenshot = screenshots[i];
+    if (!st.timestamp_ms && stored?.timestamp_ms) {
+      st.timestamp_ms = stored.timestamp_ms;
+    }
+    if (!st.timestamp_ms && st.screenshot) {
+      st.timestamp_ms = st.screenshot.timestamp_ms;
     }
   }
 
@@ -300,6 +301,31 @@ function sessionDate(startedAt: string) {
     day: "numeric",
     year: "numeric",
   });
+}
+
+/** Mirrors `export_image_path` in the Rust exporter: annotated or pristine variant when present. */
+function ExportShotImage({ shot, annotations, alt }: { shot: Screenshot; annotations: boolean; alt: string }) {
+  const variant = shot.path.replace(/(\.[a-zA-Z0-9]+)$/, annotations ? "_annotated$1" : "_clean$1");
+  const [src, setSrc] = useState(convertFileSrc(variant));
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    setSrc(convertFileSrc(variant));
+    setFailed(false);
+  }, [variant]);
+
+  if (failed) return null;
+  return (
+    <img
+      src={src}
+      alt={alt}
+      onError={() => {
+        const original = convertFileSrc(shot.path);
+        if (src !== original) setSrc(original);
+        else setFailed(true);
+      }}
+    />
+  );
 }
 
 function Toggle({ active, onClick }: { active: boolean; onClick: () => void }) {
@@ -363,7 +389,11 @@ export function ExportPanel({
   async function handleCopyPath() {
     const latest = exports[0];
     if (!latest) return;
-    await navigator.clipboard.writeText(latest.path);
+    try {
+      await navigator.clipboard.writeText(latest.path);
+    } catch {
+      return;
+    }
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1400);
   }
@@ -484,9 +514,7 @@ export function ExportPanel({
             <div className="row">
               <div>
                 <span className="cfg-label">Annotazioni grafiche</span>
-                <div style={{ fontSize: "11px", color: "var(--dim)" }}>
-                  Includi evidenziazioni, click e badge disegnati
-                </div>
+                <div className="cfg-note">Includi evidenziazioni, click e badge disegnati</div>
               </div>
               <Toggle
                 active={options.annotations}
@@ -617,7 +645,7 @@ export function ExportPanel({
                 <div className="steps-title">Steps</div>
 
                 {parsedDoc.steps.length === 0 ? (
-                  <div className="step" style={{ gridTemplateColumns: "1fr" }}>
+                  <div className="step no-num">
                     <div>
                       <p>Generate documentation first to populate export steps.</p>
                     </div>
@@ -628,10 +656,7 @@ export function ExportPanel({
                     return (
                       <div
                         key={`${step.step}-${index}`}
-                        className="step"
-                        style={{
-                          gridTemplateColumns: options.stepNumbers ? "44px 1fr" : "1fr",
-                        }}
+                        className={`step${options.stepNumbers ? "" : " no-num"}`}
                       >
                         {options.stepNumbers ? (
                           <div className="step-n">{index + 1}</div>
@@ -652,14 +677,8 @@ export function ExportPanel({
                           ) : null}
                           {options.screenshots && shot ? (
                             <div className="shot">
-                              <div className="shot-img">
-                                <img
-                                  src={convertFileSrc(shot.path)}
-                                  alt={step.title}
-                                  onError={(event) => {
-                                    (event.target as HTMLImageElement).style.display = "none";
-                                  }}
-                                />
+                              <div className="shot-img has-img">
+                                <ExportShotImage shot={shot} annotations={options.annotations} alt={step.title} />
                               </div>
                               <div className="shot-cap">
                                 <Icon name="window" size={14} />
@@ -691,7 +710,7 @@ export function ExportPanel({
                   {options.branding ? "FlowCapture · " : ""}
                   Generated documentation
                 </span>
-                <span>1 / 1</span>
+                <span>{sessionDate(session.started_at)}</span>
               </div>
             </section>
           </div>
@@ -703,7 +722,7 @@ export function ExportPanel({
       <div className="export-history">
         <h3>Export history</h3>
         <div className="pd" style={{ color: "var(--muted)", fontSize: 14, marginBottom: 14 }}>
-          Open exported files in Finder from here.
+          Open exported files in their folder from here.
         </div>
         <div className="exp-list">
           {exports.length === 0 ? (

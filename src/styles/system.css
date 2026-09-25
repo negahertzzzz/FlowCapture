@@ -3,7 +3,7 @@
    Evolved mint-on-dark. Dev-tool register (Linear/Vercel/Raycast).
    ============================================================ */
 
-@import url('https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700;800&family=Geist+Mono:wght@400;500;600&display=swap');
+/* Fonts are bundled locally via @fontsource-variable (see main.tsx) so the app works offline. */
 
 :root {
   /* --- Canvas & surfaces --- */
@@ -42,8 +42,8 @@
   --rose:        #ff8a8a;
 
   /* --- Type --- */
-  --sans: 'Geist', ui-sans-serif, system-ui, -apple-system, sans-serif;
-  --mono: 'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  --sans: 'Geist Variable', 'Geist', ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --mono: 'Geist Mono Variable', 'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace;
 
   /* --- Radii --- */
   --r-sm: 8px;

@@ -17,6 +17,7 @@ export function SettingsPage() {
   const [selectedMicId, setSelectedMicId] = useState("");
   const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([]);
   const [captureAllEvents, setCaptureAllEvents] = useState(false);
+  const [dedupeScreenshots, setDedupeScreenshots] = useState(true);
   const [transcriptionProviderId, setTranscriptionProviderId] = useState("");
   const [transcriptionModel, setTranscriptionModel] = useState("");
   const [transcriptionBaseUrl, setTranscriptionBaseUrl] = useState("");
@@ -70,6 +71,7 @@ export function SettingsPage() {
       nextRecordFullVideo,
       nextFullVideoFps,
       nextAiTimeout,
+      nextDedupe,
     ] = await Promise.all([
       api.listProviders(),
       api.getSetting("redaction_enabled"),
@@ -89,6 +91,7 @@ export function SettingsPage() {
       api.getSetting("record_full_video"),
       api.getSetting("full_video_fps"),
       api.getSetting("ai_generation_timeout_seconds"),
+      api.getSetting("dedupe_screenshots"),
     ]);
     setProviders(nextProviders);
     setRedactionEnabled((nextSetting ?? "true") === "true");
@@ -96,6 +99,7 @@ export function SettingsPage() {
     setTranscribeAudio((nextTranscribe ?? "true") === "true");
     setHighlightClicks((nextHighlight ?? "true") === "true");
     setCaptureAllEvents(nextCaptureAll === "true");
+    setDedupeScreenshots((nextDedupe ?? "true") === "true");
     setTranscriptionProviderId(nextTransProvId ?? "");
     setTranscriptionModel(nextTransModel ?? "");
     setTranscriptionBaseUrl(nextTransUrl ?? "");
@@ -166,96 +170,49 @@ export function SettingsPage() {
 
   const activeProvider = providers.find((provider) => provider.enabled);
 
+  async function saveSetting(key: string, value: string) {
+    try {
+      await api.setSetting(key, value);
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
   return (
-    <div className="page">
+    <div className="page settings-page">
       <div className="home-hero">
-        <h1 style={{ fontSize: 34 }}>Settings</h1>
+        <h1 className="settings-title">Settings</h1>
         <p className="lead">Configure BYOK AI providers and privacy controls.</p>
       </div>
 
       {message ? (
-        <div
-          className="banner"
-          style={{
-            marginTop: 18,
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-          }}
-        >
+        <div className="banner settings-banner">
           <span className="bt">{message}</span>
-          <button
-            type="button"
-            onClick={() => setMessage(null)}
-            style={{
-              background: "none",
-              border: "none",
-              color: "inherit",
-              cursor: "pointer",
-              padding: "2px 6px",
-              fontSize: "13px",
-              opacity: 0.7,
-            }}
-          >
+          <button type="button" className="settings-banner-close" onClick={() => setMessage(null)}>
             ✕
           </button>
         </div>
       ) : null}
       {error ? (
-        <div
-          className="card set-card"
-          style={{
-            marginTop: 18,
-            borderColor: "rgba(255,138,138,.45)",
-            background: "rgba(255,100,100,0.06)",
-            color: "var(--rose)",
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            gap: "12px",
-          }}
-        >
-          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+        <div className="card set-card error-card">
+          <div className="error-card-body">
             <Icon name="alert" size={18} />
-            <span style={{ fontSize: "13px", lineHeight: "1.4" }}>{error}</span>
+            <span>{error}</span>
           </div>
-          <button
-            type="button"
-            onClick={() => setError(null)}
-            style={{
-              background: "rgba(255, 255, 255, 0.08)",
-              border: "none",
-              borderRadius: "6px",
-              color: "var(--rose)",
-              cursor: "pointer",
-              padding: "4px 8px",
-              fontSize: "13px",
-              fontWeight: "bold",
-              flexShrink: 0,
-            }}
-            title="Chiudi messaggio di errore"
-          >
+          <button type="button" className="error-card-close" onClick={() => setError(null)} title="Chiudi messaggio di errore">
             ✕
           </button>
         </div>
       ) : null}
 
-            <div className="card set-card">
+      <div className="card set-card">
         <h3>{t("settings.language.title")}</h3>
         <div className="sub">{t("settings.language.sub")}</div>
-        <div className="field" style={{ maxWidth: 420 }}>
+        <div className="field settings-narrow">
           <select
+            className="settings-select"
             value={language}
             onChange={(e) => setLanguage(e.target.value as any)}
-            style={{
-              width: "100%",
-              background: "var(--bg-3, #151b23)",
-              color: "var(--text-1)",
-              border: "1px solid var(--border)",
-              padding: "8px 12px",
-              borderRadius: "6px",
-              fontSize: "13px",
-            }}
           >
             <option value="en">English (US)</option>
             <option value="it">Italiano (IT)</option>
@@ -263,44 +220,26 @@ export function SettingsPage() {
         </div>
       </div>
 
-<div className="card set-card">
+      <div className="card set-card">
         <h3>{t("settings.privacy.title")}</h3>
         <div className="sub">{t("settings.privacy.sub")}</div>
-        <div
-          className="field"
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            maxWidth: 420,
+        <SettingSwitch
+          narrow
+          label={t("settings.redaction.label")}
+          value={redactionEnabled}
+          onLabel={t("settings.enabled")}
+          offLabel={t("settings.disabled")}
+          onChange={(next) => {
+            setRedactionEnabled(next);
+            return saveSetting("redaction_enabled", String(next));
           }}
-        >
-          <label style={{ margin: 0 }}>{t("settings.redaction.label")}</label>
-          <div className="seg">
-            <button
-              type="button"
-              className={redactionEnabled ? "on" : ""}
-              onClick={async () => {
-                setRedactionEnabled(true);
-                await api.setSetting("redaction_enabled", "true");
-              }}
-            >{t("settings.enabled")}</button>
-            <button
-              type="button"
-              className={!redactionEnabled ? "on" : ""}
-              onClick={async () => {
-                setRedactionEnabled(false);
-                await api.setSetting("redaction_enabled", "false");
-              }}
-            >{t("settings.disabled")}</button>
-          </div>
-        </div>
+        />
       </div>
 
       <div className="card set-card">
         <h3>{t("settings.diagnostics.title")}</h3>
         <div className="sub">{t("settings.diagnostics.sub")}</div>
-        <div style={{ marginTop: 14 }}>
+        <div className="settings-actions">
           <AppButton
             kind="ghost"
             onClick={async () => {
@@ -318,30 +257,28 @@ export function SettingsPage() {
       </div>
 
       <div className="card set-card">
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "10px" }}>
+        <div className="settings-card-head">
           <div>
             <h3>{t("settings.extension.title")}</h3>
             <div className="sub">{t("settings.extension.sub")}</div>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px", background: "rgba(34, 197, 94, 0.1)", color: "#4ade80", border: "1px solid rgba(34, 197, 94, 0.25)", padding: "4px 10px", borderRadius: "16px" }}>
-            <span style={{ width: "8px", height: "8px", borderRadius: "50%", background: "#22c55e", display: "inline-block" }}></span>
+          <div className="bridge-pill">
+            <span className="bridge-dot" />
             {t("settings.bridge_active")} (127.0.0.1:{bridgeInfo?.port ?? 41789})
           </div>
         </div>
 
-        <div style={{ marginTop: 14, padding: "12px", background: "rgba(0,0,0,0.2)", borderRadius: "8px", border: "1px solid var(--hair)", fontSize: "12px", color: "var(--text)", lineHeight: "1.6" }}>
-          <div style={{ fontWeight: 600, color: "#38bdf8", marginBottom: 6 }}>{t("settings.extension.install_title")}</div>
-          <ol style={{ paddingLeft: 20, margin: 0 }}>
+        <div className="settings-infobox">
+          <div className="settings-infobox-title">{t("settings.extension.install_title")}</div>
+          <ol>
             <li>{t("settings.extension.step1")}</li>
             <li>{t("settings.extension.step2")}</li>
             <li>{t("settings.extension.step3")}</li>
           </ol>
-          <div style={{ marginTop: 8, color: "var(--dim)" }}>
-            {t("settings.extension.note")}
-          </div>
+          <div className="settings-infobox-note">{t("settings.extension.note")}</div>
         </div>
 
-        <div style={{ marginTop: 14 }}>
+        <div className="settings-actions">
           <AppButton
             kind="primary"
             onClick={async () => {
@@ -362,227 +299,106 @@ export function SettingsPage() {
         <h3>{t("settings.recording.title")}</h3>
         <div className="sub">{t("settings.recording.sub")}</div>
 
-        <div
-          className="field"
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            maxWidth: 520,
-            marginTop: 14,
+        <SettingSwitch
+          label={t("settings.highlight.label")}
+          description={t("settings.highlight.sub")}
+          value={highlightClicks}
+          onLabel={t("settings.active")}
+          offLabel={t("settings.inactive")}
+          onChange={(next) => {
+            setHighlightClicks(next);
+            return saveSetting("highlight_clicks", String(next));
           }}
-        >
-          <div>
-            <label style={{ margin: 0 }}>{t("settings.highlight.label")}</label>
-            <div style={{ fontSize: "12px", color: "var(--dim)" }}>{t("settings.highlight.sub")}</div>
-          </div>
-          <div className="seg">
-            <button
-              type="button"
-              className={highlightClicks ? "on" : ""}
-              onClick={async () => {
-                setHighlightClicks(true);
-                await api.setSetting("highlight_clicks", "true");
-              }}
-            >{t("settings.active")}</button>
-            <button
-              type="button"
-              className={!highlightClicks ? "on" : ""}
-              onClick={async () => {
-                setHighlightClicks(false);
-                await api.setSetting("highlight_clicks", "false");
-              }}
-            >{t("settings.inactive")}</button>
-          </div>
-        </div>
+        />
 
-        <div
-          className="field"
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            maxWidth: 520,
-            marginTop: 14,
+        <SettingSwitch
+          label={t("settings.dedupe.label", "Scarta screenshot duplicati")}
+          description={t(
+            "settings.dedupe.sub",
+            "Confronta ogni screenshot con il precedente pixel per pixel e non salva quelli identici (cursore e hover esclusi).",
+          )}
+          value={dedupeScreenshots}
+          onLabel={t("settings.active")}
+          offLabel={t("settings.inactive")}
+          onChange={(next) => {
+            setDedupeScreenshots(next);
+            return saveSetting("dedupe_screenshots", String(next));
           }}
-        >
-          <div>
-            <label style={{ margin: 0 }}>{t("settings.video.label")}</label>
-            <div style={{ fontSize: "12px", color: "var(--dim)" }}>{t("settings.video.sub")}</div>
-          </div>
-          <div className="seg">
-            <button
-              type="button"
-              className={recordFullVideo ? "on" : ""}
-              onClick={async () => {
-                setRecordFullVideo(true);
-                await api.setSetting("record_full_video", "true");
-              }}
-            >{t("settings.active")}</button>
-            <button
-              type="button"
-              className={!recordFullVideo ? "on" : ""}
-              onClick={async () => {
-                setRecordFullVideo(false);
-                await api.setSetting("record_full_video", "false");
-              }}
-            >{t("settings.inactive")}</button>
-          </div>
-        </div>
+        />
+
+        <SettingSwitch
+          label={t("settings.video.label")}
+          description={t("settings.video.sub")}
+          value={recordFullVideo}
+          onLabel={t("settings.active")}
+          offLabel={t("settings.inactive")}
+          onChange={(next) => {
+            setRecordFullVideo(next);
+            return saveSetting("record_full_video", String(next));
+          }}
+        />
 
         {recordFullVideo && (
-          <div
-            className="field"
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              maxWidth: 520,
-              marginTop: 14,
-            }}
-          >
+          <div className="field setting-row">
             <div>
-              <label style={{ margin: 0 }}>{t("settings.fps.label")}</label>
-              <div style={{ fontSize: "12px", color: "var(--dim)" }}>{t("settings.fps.sub")}</div>
+              <label>{t("settings.fps.label")}</label>
+              <div className="setting-desc">{t("settings.fps.sub")}</div>
             </div>
             <div className="seg">
-              <button
-                type="button"
-                className={fullVideoFps === "15" ? "on" : ""}
-                onClick={async () => {
-                  setFullVideoFps("15");
-                  await api.setSetting("full_video_fps", "15");
-                }}
-              >
-                15 FPS
-              </button>
-              <button
-                type="button"
-                className={fullVideoFps === "30" ? "on" : ""}
-                onClick={async () => {
-                  setFullVideoFps("30");
-                  await api.setSetting("full_video_fps", "30");
-                }}
-              >
-                30 FPS
-              </button>
-              <button
-                type="button"
-                className={fullVideoFps === "60" ? "on" : ""}
-                onClick={async () => {
-                  setFullVideoFps("60");
-                  await api.setSetting("full_video_fps", "60");
-                }}
-              >
-                60 FPS
-              </button>
+              {["15", "30", "60"].map((fps) => (
+                <button
+                  key={fps}
+                  type="button"
+                  className={fullVideoFps === fps ? "on" : ""}
+                  onClick={async () => {
+                    setFullVideoFps(fps);
+                    await saveSetting("full_video_fps", fps);
+                  }}
+                >
+                  {fps} FPS
+                </button>
+              ))}
             </div>
           </div>
         )}
 
-        <div
-          className="field"
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            maxWidth: 520,
-            marginTop: 14,
+        <SettingSwitch
+          label={t("settings.mic.label")}
+          description={t("settings.mic.sub")}
+          value={recordAudio}
+          onLabel={t("settings.active")}
+          offLabel={t("settings.inactive")}
+          onChange={(next) => {
+            setRecordAudio(next);
+            return saveSetting("record_audio", String(next));
           }}
-        >
-          <div>
-            <label style={{ margin: 0 }}>{t("settings.mic.label")}</label>
-            <div style={{ fontSize: "12px", color: "var(--dim)" }}>{t("settings.mic.sub")}</div>
-          </div>
-          <div className="seg">
-            <button
-              type="button"
-              className={recordAudio ? "on" : ""}
-              onClick={async () => {
-                setRecordAudio(true);
-                await api.setSetting("record_audio", "true");
-              }}
-            >{t("settings.active")}</button>
-            <button
-              type="button"
-              className={!recordAudio ? "on" : ""}
-              onClick={async () => {
-                setRecordAudio(false);
-                await api.setSetting("record_audio", "false");
-              }}
-            >{t("settings.inactive")}</button>
-          </div>
-        </div>
+        />
 
-        <div
-          className="field"
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            maxWidth: 520,
-            marginTop: 14,
+        <SettingSwitch
+          label={t("settings.transcription.label")}
+          description={t("settings.transcription.sub")}
+          value={transcribeAudio}
+          onLabel={t("settings.active")}
+          offLabel={t("settings.inactive")}
+          onChange={(next) => {
+            setTranscribeAudio(next);
+            return saveSetting("transcribe_audio", String(next));
           }}
-        >
-          <div>
-            <label style={{ margin: 0 }}>{t("settings.transcription.label")}</label>
-            <div style={{ fontSize: "12px", color: "var(--dim)" }}>{t("settings.transcription.sub")}</div>
-          </div>
-          <div className="seg">
-            <button
-              type="button"
-              className={transcribeAudio ? "on" : ""}
-              onClick={async () => {
-                setTranscribeAudio(true);
-                await api.setSetting("transcribe_audio", "true");
-              }}
-            >{t("settings.active")}</button>
-            <button
-              type="button"
-              className={!transcribeAudio ? "on" : ""}
-              onClick={async () => {
-                setTranscribeAudio(false);
-                await api.setSetting("transcribe_audio", "false");
-              }}
-            >{t("settings.inactive")}</button>
-          </div>
-        </div>
+        />
 
         {transcribeAudio && (
-          <div
-            style={{
-              marginTop: 10,
-              padding: "10px 14px",
-              background: "rgba(255, 255, 255, 0.03)",
-              border: "1px solid var(--hair)",
-              borderRadius: "6px",
-              maxWidth: 520,
-              display: "flex",
-              flexDirection: "column",
-              gap: "10px",
-            }}
-          >
-            <div style={{ fontSize: "12px", color: "var(--text)", fontWeight: 500 }}>
-              Configurazione Motore di Trascrizione
-            </div>
+          <div className="settings-subpanel">
+            <div className="settings-subpanel-title">Configurazione Motore di Trascrizione</div>
 
-            <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
-              <label style={{ fontSize: "12px", minWidth: "140px", color: "var(--dim)", margin: 0 }}>{t("settings.transcription_provider")}</label>
+            <div className="settings-inline-field">
+              <label>{t("settings.transcription_provider")}</label>
               <select
+                className="settings-input"
                 value={transcriptionProviderId}
                 onChange={async (e) => {
                   const val = e.target.value;
                   setTranscriptionProviderId(val);
-                  await api.setSetting("transcription_provider_id", val);
-                }}
-                style={{
-                  flex: 1,
-                  background: "var(--surface)",
-                  color: "var(--text)",
-                  border: "1px solid var(--hair)",
-                  padding: "5px 10px",
-                  borderRadius: "5px",
-                  fontSize: "12.5px",
+                  await saveSetting("transcription_provider_id", val);
                 }}
               >
                 <option value="">Usa Provider Attivo Globale</option>
@@ -594,67 +410,39 @@ export function SettingsPage() {
               </select>
             </div>
 
-            <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
-              <label style={{ fontSize: "12px", minWidth: "140px", color: "var(--dim)", margin: 0 }}>{t("settings.transcription_model")}</label>
+            <div className="settings-inline-field">
+              <label>{t("settings.transcription_model")}</label>
               <input
                 type="text"
+                className="settings-input"
                 placeholder="es. whisper-1, gemini-2.5-flash, whisper, faster-whisper"
                 value={transcriptionModel}
                 onChange={(e) => setTranscriptionModel(e.target.value)}
-                onBlur={async (e) => {
-                  await api.setSetting("transcription_model", e.target.value);
-                }}
-                style={{
-                  flex: 1,
-                  background: "var(--surface)",
-                  color: "var(--text)",
-                  border: "1px solid var(--hair)",
-                  padding: "5px 10px",
-                  borderRadius: "5px",
-                  fontSize: "12.5px",
-                }}
+                onBlur={(e) => saveSetting("transcription_model", e.target.value)}
               />
             </div>
 
-            <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
-              <label style={{ fontSize: "12px", minWidth: "140px", color: "var(--dim)", margin: 0 }}>{t("settings.transcription_url")}</label>
+            <div className="settings-inline-field">
+              <label>{t("settings.transcription_url")}</label>
               <input
                 type="text"
+                className="settings-input"
                 placeholder="es. http://localhost:11434 o http://localhost:8000"
                 value={transcriptionBaseUrl}
                 onChange={(e) => setTranscriptionBaseUrl(e.target.value)}
-                onBlur={async (e) => {
-                  await api.setSetting("transcription_base_url", e.target.value);
-                }}
-                style={{
-                  flex: 1,
-                  background: "var(--surface)",
-                  color: "var(--text)",
-                  border: "1px solid var(--hair)",
-                  padding: "5px 10px",
-                  borderRadius: "5px",
-                  fontSize: "12.5px",
-                }}
+                onBlur={(e) => saveSetting("transcription_base_url", e.target.value)}
               />
             </div>
 
-            <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
-              <label style={{ fontSize: "12px", minWidth: "140px", color: "var(--dim)", margin: 0 }}>{t("settings.transcription_lang")}</label>
+            <div className="settings-inline-field">
+              <label>{t("settings.transcription_lang")}</label>
               <select
+                className="settings-input"
                 value={transcriptionLanguage}
                 onChange={async (e) => {
                   const val = e.target.value;
                   setTranscriptionLanguage(val);
-                  await api.setSetting("transcription_language", val);
-                }}
-                style={{
-                  flex: 1,
-                  background: "var(--surface)",
-                  color: "var(--text)",
-                  border: "1px solid var(--hair)",
-                  padding: "5px 10px",
-                  borderRadius: "5px",
-                  fontSize: "12.5px",
+                  await saveSetting("transcription_language", val);
                 }}
               >
                 <option value="it">Italiano (it)</option>
@@ -666,63 +454,33 @@ export function SettingsPage() {
               </select>
             </div>
 
-            <div style={{ fontSize: "11px", color: "var(--dim)" }}>{t("settings.transcription_note")}</div>
+            <div className="settings-note">{t("settings.transcription_note")}</div>
           </div>
         )}
 
-        <div
-          className="field"
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            maxWidth: 520,
-            marginTop: 14,
+        <SettingSwitch
+          label={t("settings.dense.label")}
+          description={t("settings.dense.sub")}
+          value={captureAllEvents}
+          onLabel={t("settings.active")}
+          offLabel={t("settings.inactive")}
+          onChange={(next) => {
+            setCaptureAllEvents(next);
+            return saveSetting("capture_all_events", String(next));
           }}
-        >
-          <div>
-            <label style={{ margin: 0 }}>{t("settings.dense.label")}</label>
-            <div style={{ fontSize: "12px", color: "var(--dim)" }}>{t("settings.dense.sub")}</div>
-          </div>
-          <div className="seg">
-            <button
-              type="button"
-              className={captureAllEvents ? "on" : ""}
-              onClick={async () => {
-                setCaptureAllEvents(true);
-                await api.setSetting("capture_all_events", "true");
-              }}
-            >{t("settings.active")}</button>
-            <button
-              type="button"
-              className={!captureAllEvents ? "on" : ""}
-              onClick={async () => {
-                setCaptureAllEvents(false);
-                await api.setSetting("capture_all_events", "false");
-              }}
-            >{t("settings.inactive")}</button>
-          </div>
-        </div>
+        />
 
-        <div className="field" style={{ maxWidth: 520, marginTop: 14 }}>
+        <div className="field settings-device">
           <label htmlFor="settings-mon-select">{t("settings.monitor.label")}</label>
-          <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+          <div className="settings-device-row">
             <select
               id="settings-mon-select"
+              className="settings-select"
               value={selectedMonitorId}
               onChange={async (e) => {
                 const val = e.target.value;
                 setSelectedMonitorId(val);
-                await api.setSetting("selected_monitor_id", val);
-              }}
-              style={{
-                flex: 1,
-                background: "var(--surface)",
-                color: "var(--text)",
-                border: "1px solid var(--hair)",
-                padding: "8px 12px",
-                borderRadius: "6px",
-                fontSize: "13px",
+                await saveSetting("selected_monitor_id", val);
               }}
             >
               {monitors.map((mon, i) => (
@@ -730,45 +488,25 @@ export function SettingsPage() {
                   {mon.name} {mon.is_primary ? "(Principale)" : ""} · {mon.width}x{mon.height}
                 </option>
               ))}
-              {monitors.length === 0 && (
-                <option value="">{t("settings.primary_screen")}</option>
-              )}
+              {monitors.length === 0 && <option value="">{t("settings.primary_screen")}</option>}
             </select>
-            <button
-              type="button"
-              onClick={() => refreshMonitors()}
-              style={{
-                background: "transparent",
-                border: "1px solid var(--hair)",
-                padding: "8px 12px",
-                borderRadius: "6px",
-                color: "var(--text)",
-                fontSize: "12px",
-                cursor: "pointer",
-              }}
-            >{t("settings.detect")}</button>
+            <button type="button" className="settings-outline-btn" onClick={() => refreshMonitors()}>
+              {t("settings.detect")}
+            </button>
           </div>
         </div>
 
-        <div className="field" style={{ maxWidth: 520, marginTop: 14 }}>
+        <div className="field settings-device">
           <label htmlFor="settings-mic-select">{t("settings.mic_default.label")}</label>
-          <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+          <div className="settings-device-row">
             <select
               id="settings-mic-select"
+              className="settings-select"
               value={selectedMicId}
               onChange={async (e) => {
                 const val = e.target.value;
                 setSelectedMicId(val);
-                await api.setSetting("selected_microphone_id", val);
-              }}
-              style={{
-                flex: 1,
-                background: "var(--surface)",
-                color: "var(--text)",
-                border: "1px solid var(--hair)",
-                padding: "8px 12px",
-                borderRadius: "6px",
-                fontSize: "13px",
+                await saveSetting("selected_microphone_id", val);
               }}
             >
               <option value="">{t("settings.system_default")}</option>
@@ -780,25 +518,19 @@ export function SettingsPage() {
             </select>
             <button
               type="button"
+              className="settings-outline-btn"
               onClick={() => {
                 navigator.mediaDevices
                   ?.getUserMedia({ audio: true })
                   .then((stream) => {
-                    stream.getTracks().forEach((t) => t.stop());
+                    stream.getTracks().forEach((track) => track.stop());
                     return refreshDevices();
                   })
                   .catch(() => undefined);
               }}
-              style={{
-                background: "transparent",
-                border: "1px solid var(--hair)",
-                padding: "8px 12px",
-                borderRadius: "6px",
-                color: "var(--text)",
-                fontSize: "12px",
-                cursor: "pointer",
-              }}
-            >{t("settings.detect")}</button>
+            >
+              {t("settings.detect")}
+            </button>
           </div>
         </div>
       </div>
@@ -809,83 +541,53 @@ export function SettingsPage() {
           Controlla il ragionamento (Think / No-Think) e specifica parametri JSON personalizzati inviati alle API dei modelli AI (LM Studio, Ollama, OpenAI, Claude, ecc.).
         </div>
 
-        <div style={{ marginTop: 18 }}>
-          <label style={{ fontWeight: 600, display: "block", marginBottom: 6 }}>
-            Modalità Ragionamento (Think / No-Think)
-          </label>
-          <div className="seg" style={{ display: "inline-flex", marginBottom: 12 }}>
-            <button
-              type="button"
-              className={aiThinkingMode === "auto" ? "on" : ""}
-              onClick={async () => {
-                setAiThinkingMode("auto");
-                await api.setSetting("ai_thinking_mode", "auto");
-              }}
-            >
-              Automatico (Consigliato)
-            </button>
-            <button
-              type="button"
-              className={aiThinkingMode === "think" ? "on" : ""}
-              onClick={async () => {
-                setAiThinkingMode("think");
-                await api.setSetting("ai_thinking_mode", "think");
-              }}
-            >
-              Think Abilitato
-            </button>
-            <button
-              type="button"
-              className={aiThinkingMode === "no_think" ? "on" : ""}
-              onClick={async () => {
-                setAiThinkingMode("no_think");
-                await api.setSetting("ai_thinking_mode", "no_think");
-              }}
-            >
-              Disabilita Think
-            </button>
+        <div className="settings-section">
+          <label className="settings-label">Modalità Ragionamento (Think / No-Think)</label>
+          <div className="seg settings-seg">
+            {[
+              { value: "auto", label: "Automatico (Consigliato)" },
+              { value: "think", label: "Think Abilitato" },
+              { value: "no_think", label: "Disabilita Think" },
+            ].map((mode) => (
+              <button
+                key={mode.value}
+                type="button"
+                className={aiThinkingMode === mode.value ? "on" : ""}
+                onClick={async () => {
+                  setAiThinkingMode(mode.value);
+                  await saveSetting("ai_thinking_mode", mode.value);
+                }}
+              >
+                {mode.label}
+              </button>
+            ))}
           </div>
 
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              gap: "8px",
-              padding: "12px 16px",
-              borderRadius: "8px",
-              background: "rgba(255, 255, 255, 0.03)",
-              border: "1px solid var(--hair)",
-              fontSize: "12px",
-              lineHeight: 1.5,
-              marginBottom: 20,
-            }}
-          >
-            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-              <span style={{ fontWeight: 600, minWidth: 160 }}>📝 Generazione Documento:</span>
-              <span style={{ color: aiThinkingMode === "no_think" ? "var(--dim)" : "#34d399" }}>
+          <div className="settings-summary">
+            <div className="settings-summary-row">
+              <span className="settings-summary-key">📝 Generazione Documento:</span>
+              <span className={aiThinkingMode === "no_think" ? "settings-summary-off" : "settings-summary-on"}>
                 {aiThinkingMode === "no_think"
                   ? "⚡ No-Think (disattivato da impostazione)"
                   : "🧠 Think attivo (analizza ed elabora le azioni con ragionamento)"}
               </span>
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-              <span style={{ fontWeight: 600, minWidth: 160 }}>🌐 Traduzione Documento:</span>
-              <span style={{ color: "#38bdf8" }}>
+            <div className="settings-summary-row">
+              <span className="settings-summary-key">🌐 Traduzione Documento:</span>
+              <span className="settings-summary-info">
                 ⚡ No-Think forzato (traduzione diretta, massima velocità e zero riflessioni interne)
               </span>
             </div>
           </div>
         </div>
 
-        <div style={{ marginTop: 18, marginBottom: 20 }}>
-          <label style={{ fontWeight: 600, display: "block", marginBottom: 6 }}>
-            Timeout Generazione Documentazione AI
-          </label>
-          <div className="sub" style={{ fontSize: "12.5px", color: "var(--muted)", marginBottom: 8 }}>
+        <div className="settings-section">
+          <label className="settings-label">Timeout Generazione Documentazione AI</label>
+          <div className="sub settings-help">
             Tempo massimo di attesa per il consolidamento dei passaggi e la stesura della documentazione con i modelli LLM. Per sessioni lunghe o modelli locali (Ollama / LM Studio), è consigliato un valore tra 180s e 600s.
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" }}>
-            <div className="seg" style={{ display: "inline-flex" }}>
+          <div className="settings-timeout-row">
+            <div className="seg settings-seg-inline">
               {[
                 { label: "60s", val: "60" },
                 { label: "120s (2m)", val: "120" },
@@ -899,7 +601,7 @@ export function SettingsPage() {
                   className={aiGenerationTimeout === item.val ? "on" : ""}
                   onClick={async () => {
                     setAiGenerationTimeout(item.val);
-                    await api.setSetting("ai_generation_timeout_seconds", item.val);
+                    await saveSetting("ai_generation_timeout_seconds", item.val);
                     setMessage(`Timeout AI impostato a ${item.val} secondi`);
                   }}
                 >
@@ -907,9 +609,10 @@ export function SettingsPage() {
                 </button>
               ))}
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+            <div className="settings-timeout-custom">
               <input
                 type="number"
+                className="settings-number"
                 min="30"
                 max="3600"
                 step="10"
@@ -918,112 +621,48 @@ export function SettingsPage() {
                   const val = e.target.value;
                   setAiGenerationTimeout(val);
                   if (val && !isNaN(Number(val)) && Number(val) >= 10) {
-                    await api.setSetting("ai_generation_timeout_seconds", val);
+                    await saveSetting("ai_generation_timeout_seconds", val);
                   }
                 }}
-                style={{
-                  width: "85px",
-                  padding: "5px 8px",
-                  borderRadius: "6px",
-                  background: "var(--surface)",
-                  border: "1px solid var(--hair)",
-                  color: "var(--text)",
-                  fontFamily: "var(--mono)",
-                  fontSize: "13px",
-                }}
               />
-              <span style={{ fontSize: "12px", color: "var(--dim)" }}>sec</span>
+              <span className="settings-note">sec</span>
             </div>
           </div>
         </div>
 
-        <div style={{ marginTop: 16 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-            <label style={{ fontWeight: 600, margin: 0 }}>
-              Parametri Personalizzati Richieste (JSON)
-            </label>
-            <div style={{ display: "flex", gap: "6px" }}>
-              <button
-                type="button"
-                onClick={() => applyPreset({ temperature: 0.2 })}
-                style={{
-                  background: "transparent",
-                  border: "1px solid var(--hair)",
-                  borderRadius: "4px",
-                  padding: "3px 8px",
-                  fontSize: "11px",
-                  cursor: "pointer",
-                  color: "var(--text)",
-                }}
-              >
+        <div className="settings-section">
+          <div className="settings-params-head">
+            <label className="settings-label">Parametri Personalizzati Richieste (JSON)</label>
+            <div className="settings-presets">
+              <button type="button" className="settings-preset" onClick={() => applyPreset({ temperature: 0.2 })}>
                 Preset Base
               </button>
               <button
                 type="button"
-                onClick={() =>
-                  applyPreset({
-                    temperature: 0.3,
-                    top_p: 0.95,
-                    max_tokens: 4096,
-                  })
-                }
-                style={{
-                  background: "transparent",
-                  border: "1px solid var(--hair)",
-                  borderRadius: "4px",
-                  padding: "3px 8px",
-                  fontSize: "11px",
-                  cursor: "pointer",
-                  color: "var(--text)",
-                }}
+                className="settings-preset"
+                onClick={() => applyPreset({ temperature: 0.3, top_p: 0.95, max_tokens: 4096 })}
               >
                 Preset LM Studio / OpenAI
               </button>
               <button
                 type="button"
-                onClick={() =>
-                  applyPreset({
-                    options: {
-                      temperature: 0.2,
-                      num_ctx: 8192,
-                    },
-                  })
-                }
-                style={{
-                  background: "transparent",
-                  border: "1px solid var(--hair)",
-                  borderRadius: "4px",
-                  padding: "3px 8px",
-                  fontSize: "11px",
-                  cursor: "pointer",
-                  color: "var(--text)",
-                }}
+                className="settings-preset"
+                onClick={() => applyPreset({ options: { temperature: 0.2, num_ctx: 8192 } })}
               >
                 Preset Ollama
               </button>
-              <button
-                type="button"
-                onClick={() => applyPreset({})}
-                style={{
-                  background: "transparent",
-                  border: "1px solid var(--hair)",
-                  borderRadius: "4px",
-                  padding: "3px 8px",
-                  fontSize: "11px",
-                  cursor: "pointer",
-                  color: "var(--dim)",
-                }}
-              >
-                Svuota ({})
+              <button type="button" className="settings-preset muted" onClick={() => applyPreset({})}>
+                Svuota ({"{}"})
               </button>
             </div>
           </div>
 
-          <div style={{ fontSize: "12px", color: "var(--dim)", marginBottom: 10 }}>
+          <div className="settings-note settings-params-help">
             Questi parametri verranno inseriti direttamente nel payload della richiesta API inviata ai modelli AI.
           </div>
 
           <textarea
+            className={`settings-json${customParamsError ? " invalid" : ""}`}
             value={aiCustomParams}
             onChange={(e) => {
               const val = e.target.value;
@@ -1039,36 +678,17 @@ export function SettingsPage() {
             }}
             onBlur={() => handleSaveCustomParams(aiCustomParams)}
             rows={5}
-            style={{
-              width: "100%",
-              fontFamily: "Consolas, Monaco, monospace",
-              fontSize: "12px",
-              padding: "10px",
-              borderRadius: "6px",
-              background: "rgba(0, 0, 0, 0.25)",
-              border: customParamsError ? "1px solid var(--rose)" : "1px solid var(--hair)",
-              color: "var(--text)",
-              resize: "vertical",
-            }}
             placeholder={'{\n  "temperature": 0.2\n}'}
           />
 
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8 }}>
+          <div className="settings-json-status">
             {customParamsError ? (
-              <span style={{ color: "var(--rose)", fontSize: "12px" }}>
-                ⚠ {customParamsError}
-              </span>
+              <span className="settings-json-error">⚠ {customParamsError}</span>
             ) : (
-              <span style={{ color: "#34d399", fontSize: "12px" }}>
-                ✓ JSON valido (salvato automaticamente)
-              </span>
+              <span className="settings-json-ok">✓ JSON valido (salvato automaticamente)</span>
             )}
 
-            <AppButton
-              size="sm"
-              kind="ghost"
-              onClick={() => handleSaveCustomParams(aiCustomParams)}
-            >
+            <AppButton size="sm" kind="ghost" onClick={() => handleSaveCustomParams(aiCustomParams)}>
               💾 Salva Parametri
             </AppButton>
           </div>
@@ -1083,31 +703,25 @@ export function SettingsPage() {
               <h3>{provider.name}</h3>
               <div className="pid">{provider.provider_type}</div>
             </div>
-            {activeProvider?.id === provider.id ? (
-              <span className="active-tag">● Active</span>
-            ) : null}
+            {activeProvider?.id === provider.id ? <span className="active-tag">● Active</span> : null}
           </div>
-          <div className="field-row" style={{ marginTop: 18 }}>
-            <div className="field" style={{ margin: 0 }}>
+          <div className="field-row settings-provider-row">
+            <div className="field">
               <label htmlFor={`${provider.id}-key`}>API Key</label>
               <input
                 id={`${provider.id}-key`}
                 type="password"
                 placeholder="sk-••••••••••••••••"
                 defaultValue={provider.api_key ?? ""}
-                onBlur={(event) =>
-                  saveProvider({ ...provider, api_key: event.target.value })
-                }
+                onBlur={(event) => saveProvider({ ...provider, api_key: event.target.value })}
               />
             </div>
-            <div className="field" style={{ margin: 0 }}>
+            <div className="field">
               <label htmlFor={`${provider.id}-model`}>Model</label>
               <input
                 id={`${provider.id}-model`}
                 defaultValue={provider.model ?? ""}
-                onBlur={(event) =>
-                  saveProvider({ ...provider, model: event.target.value })
-                }
+                onBlur={(event) => saveProvider({ ...provider, model: event.target.value })}
               />
             </div>
           </div>
@@ -1116,12 +730,10 @@ export function SettingsPage() {
             <input
               id={`${provider.id}-url`}
               defaultValue={provider.base_url ?? ""}
-              onBlur={(event) =>
-                saveProvider({ ...provider, base_url: event.target.value })
-              }
+              onBlur={(event) => saveProvider({ ...provider, base_url: event.target.value })}
             />
           </div>
-          <div style={{ marginTop: 18 }}>
+          <div className="settings-actions wide">
             <AppButton
               kind={activeProvider?.id === provider.id ? "ghost" : "primary"}
               onClick={() => {
@@ -1135,6 +747,42 @@ export function SettingsPage() {
           </div>
         </div>
       ))}
+    </div>
+  );
+}
+
+/** Label + description on the left, a two-option segmented switch on the right. */
+function SettingSwitch({
+  label,
+  description,
+  value,
+  onLabel,
+  offLabel,
+  onChange,
+  narrow = false,
+}: {
+  label: string;
+  description?: string;
+  value: boolean;
+  onLabel: string;
+  offLabel: string;
+  onChange: (next: boolean) => void | Promise<void>;
+  narrow?: boolean;
+}) {
+  return (
+    <div className={`field setting-row${narrow ? " narrow" : ""}`}>
+      <div>
+        <label>{label}</label>
+        {description ? <div className="setting-desc">{description}</div> : null}
+      </div>
+      <div className="seg">
+        <button type="button" className={value ? "on" : ""} onClick={() => onChange(true)}>
+          {onLabel}
+        </button>
+        <button type="button" className={!value ? "on" : ""} onClick={() => onChange(false)}>
+          {offLabel}
+        </button>
+      </div>
     </div>
   );
 }

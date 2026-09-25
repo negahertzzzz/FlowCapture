@@ -40,6 +40,42 @@ pub struct BrowserDomEvent {
     pub height: Option<i32>,
     #[serde(default)]
     pub timestamp_ms: i64,
+    /// `window.devicePixelRatio` in the page (OS scaling × page zoom). `x`/`y` are CSS pixels.
+    #[serde(default)]
+    pub device_pixel_ratio: Option<f64>,
+}
+
+impl BrowserDomEvent {
+    /// Screen positions this event may correspond to in the input hook's coordinate space.
+    ///
+    /// The extension reports CSS pixels (`screenX/Y`), the native hook reports physical pixels
+    /// on Windows/Linux (the app is DPI aware) but logical points on macOS. `screenX × dpr`
+    /// gives physical pixels independently of page zoom (both factors include it), so at
+    /// 125–150 % scaling the scaled candidate is the right one; the raw CSS position is kept as
+    /// a fallback (macOS, older extension builds without the ratio).
+    fn candidate_positions(&self) -> Vec<(i64, i64)> {
+        let raw = (self.x as i64, self.y as i64);
+        let ratio = self.device_pixel_ratio.filter(|r| r.is_finite() && *r > 0.0).unwrap_or(1.0);
+        let scaled = (
+            (self.x as f64 * ratio).round() as i64,
+            (self.y as f64 * ratio).round() as i64,
+        );
+        if scaled == raw {
+            vec![raw]
+        } else if cfg!(target_os = "macos") {
+            vec![raw, scaled]
+        } else {
+            vec![scaled, raw]
+        }
+    }
+
+    fn distance_to(&self, x: i32, y: i32) -> i64 {
+        self.candidate_positions()
+            .into_iter()
+            .map(|(cx, cy)| (cx - x as i64).abs() + (cy - y as i64).abs())
+            .min()
+            .unwrap_or(i64::MAX / 4)
+    }
 }
 
 #[derive(Clone, Default)]
@@ -99,9 +135,7 @@ impl BrowserBridgeState {
             .filter(|(_, ev)| (ev.timestamp_ms - timestamp_ms).abs() <= 1500)
             .min_by_key(|(_, ev)| {
                 let dt = (ev.timestamp_ms - timestamp_ms).abs();
-                let dx = (ev.x - x).abs() as i64;
-                let dy = (ev.y - y).abs() as i64;
-                dt + (dx + dy) * 2
+                dt + ev.distance_to(x, y) * 2
             })
             .map(|(idx, _)| idx);
 
@@ -254,6 +288,7 @@ mod tests {
             width: Some(80),
             height: Some(30),
             timestamp_ms: 10000,
+            device_pixel_ratio: None,
         });
 
         // Query matching event
@@ -285,9 +320,42 @@ mod tests {
             width: None,
             height: None,
             timestamp_ms: 1000,
+            device_pixel_ratio: None,
         });
 
         // Query with large delta (3500ms > 1500ms limit)
         assert!(state.match_and_take_event(4500, 100, 100).is_none());
+    }
+
+    fn dom_event(text: &str, x: i32, y: i32, dpr: Option<f64>) -> BrowserDomEvent {
+        BrowserDomEvent {
+            tag: "BUTTON".to_string(),
+            text: text.to_string(),
+            input_type: None,
+            role: None,
+            url: "https://example.com".to_string(),
+            page_title: "Example".to_string(),
+            selector: None,
+            element_id: None,
+            name: None,
+            x,
+            y,
+            width: None,
+            height: None,
+            timestamp_ms: now_ms(),
+            device_pixel_ratio: dpr,
+        }
+    }
+
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn matches_physical_click_at_150_percent_scaling() {
+        let state = BrowserBridgeState::new();
+        // Two buttons: CSS (800,400) is physical (1200,600) at 150 %; the other sits where the
+        // unscaled CSS coordinates would wrongly point.
+        state.push_event(dom_event("Salva", 800, 400, Some(1.5)));
+        state.push_event(dom_event("Annulla", 1190, 590, Some(1.0)));
+        let matched = state.match_and_take_event(now_ms(), 1200, 600).unwrap();
+        assert_eq!(matched.text, "Salva");
     }
 }

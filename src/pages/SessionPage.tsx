@@ -5,12 +5,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { ProcessingPanel } from "@/components/ai/ProcessingPanel";
 import { MarkdownEditor } from "@/components/documentation/MarkdownEditor";
-import { MarkdownPreview } from "@/components/documentation/MarkdownPreview";
-import { ImageAnnotationModal, type AnnotationItem } from "@/components/sessions/ImageAnnotationModal";
+import type { PreviewImageInfo } from "@/components/documentation/MarkdownPreview";
+import { ImageAnnotationModal } from "@/components/sessions/ImageAnnotationModal";
 import { ScreenshotPickerModal } from "@/components/sessions/ScreenshotPickerModal";
 import { DuplicateScreenshotsModal } from "@/components/sessions/DuplicateScreenshotsModal";
-import { AnnotationOverlay } from "@/components/sessions/AnnotationOverlay";
 import { ExportPanel } from "@/components/export/ExportPanel";
+import { ReplayPanel } from "@/components/replay/ReplayPanel";
 import { AppButton } from "@/components/ui/AppButton";
 import { ConfirmModal } from "@/components/ui/ConfirmModal";
 import { Icon } from "@/components/ui/Icon";
@@ -32,6 +32,7 @@ import {
   type WorkflowStep,
 } from "@/lib/api";
 import { timelineIcon } from "@/lib/icons";
+import { replaceImageOnLine } from "@/lib/markdownSteps";
 import { formatDuration } from "@/lib/utils";
 
 const TABS = [
@@ -84,19 +85,13 @@ export function SessionPage() {
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [redactionSummary, setRedactionSummary] = useState<RedactionSummary | null>(null);
-  const [replayIndex, setReplayIndex] = useState(0);
   const [tab, setTab] = useState<TabName>("Timeline");
 
   const [scanningDuplicates, setScanningDuplicates] = useState(false);
   const [duplicateGroups, setDuplicateGroups] = useState<DuplicateScreenshotGroup[] | null>(null);
 
-  const [pickingScreenshotForStep, setPickingScreenshotForStep] = useState<number | null>(null);
-  const [selectedAnnotationId, setSelectedAnnotationId] = useState<string | null>(null);
-  const [editingStep, setEditingStep] = useState(false);
-  const [editStepTitle, setEditStepTitle] = useState("");
-  const [editStepDesc, setEditStepDesc] = useState("");
-  const [savingStep, setSavingStep] = useState(false);
-  const [imgNaturalDims, setImgNaturalDims] = useState<{ w: number; h: number }>({ w: 1920, h: 1080 });
+  const [docImagePick, setDocImagePick] = useState<PreviewImageInfo | null>(null);
+  const [docImageVersion, setDocImageVersion] = useState(0);
   const [confirmModal, setConfirmModal] = useState<{
     isOpen: boolean;
     title: string;
@@ -250,42 +245,6 @@ export function SessionPage() {
       refresh().catch(() => undefined);
     }
   }, [activeJob?.sessionId, activeJob?.isDone, activeJob?.result, sessionId]);
-
-  const replayStep = steps[replayIndex];
-
-  const replayScreenshot = useMemo(() => {
-    if (!replayStep) return null;
-    const screenshotId = replayStep.screenshot_ids[0];
-    return (
-      screenshots.find((shot) => shot.id === screenshotId) ??
-      screenshots[replayIndex] ??
-      null
-    );
-  }, [steps, screenshots, replayIndex, replayStep]);
-
-  const currentStepAnnotations: AnnotationItem[] = useMemo(() => {
-    if (!replayStep) return [];
-    const jsonStr = replayStep.annotations_json || replayScreenshot?.annotations_json;
-    if (!jsonStr) {
-      if (replayScreenshot?.click_x != null && replayScreenshot?.click_y != null) {
-        return [{
-          id: "click_primary",
-          type: "click",
-          x: replayScreenshot.click_x,
-          y: replayScreenshot.click_y,
-          color: "#ef4444",
-          strokeWidth: 3,
-        }];
-      }
-      return [];
-    }
-    try {
-      const parsed = JSON.parse(jsonStr);
-      return Array.isArray(parsed) ? parsed : [];
-    } catch {
-      return [];
-    }
-  }, [replayStep, replayScreenshot]);
 
   const [selectedVideoMode, setSelectedVideoMode] = useState<"full" | "timelapse">("full");
 
@@ -535,7 +494,7 @@ export function SessionPage() {
     setError(null);
     try {
       await revealItemInDir(path);
-      setToast("Revealed in Finder");
+      setToast("Revealed in folder");
     } catch (err) {
       setError(String(err));
     }
@@ -615,41 +574,17 @@ export function SessionPage() {
     await refresh();
   }
 
-  async function handleSaveStepContent() {
-    if (!replayStep) return;
-    setSavingStep(true);
-    try {
-      await api.updateStepContent(sessionId, replayStep.step, editStepTitle, editStepDesc);
-      setSteps((prev) =>
-        prev.map((s) =>
-          s.step === replayStep.step ? { ...s, title: editStepTitle, description: editStepDesc } : s,
-        ),
-      );
-      setToast("Passo aggiornato con successo");
-      setEditingStep(false);
-      await refresh({ syncMarkdown: false });
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setSavingStep(false);
-    }
-  }
-
-  async function handleSyncStepsFromDoc() {
-    setBusy(true);
-    try {
-      const synced = await api.getReplaySteps(sessionId);
-      setSteps(synced);
-      if (synced.length > 0) {
-        setToast(`Recuperati ${synced.length} passi dalla documentazione`);
-      } else {
-        setToast("Nessun passo trovato nella documentazione");
-      }
-    } catch (err) {
-      setError(String(err));
-    } finally {
-      setBusy(false);
-    }
+  async function handleDocImageSelected(screenshotId: string) {
+    const target = docImagePick;
+    const shot = screenshots.find((item) => item.id === screenshotId);
+    if (!target?.line || !shot) return;
+    const filename = shot.path.split(/[/\\]/).pop() ?? shot.path;
+    const next = replaceImageOnLine(markdown, target.line, `screenshots/${filename}`);
+    if (next === markdown) return;
+    setMarkdown(next);
+    await handleSaveDocumentation(next);
+    await refresh({ syncMarkdown: false });
+    setToast("Immagine sostituita nella documentazione");
   }
 
   return (
@@ -694,39 +629,12 @@ export function SessionPage() {
       </div>
 
       {error ? (
-        <div
-          className="card set-card"
-          style={{
-            marginTop: 18,
-            borderColor: "rgba(255,138,138,.45)",
-            background: "rgba(255,100,100,0.06)",
-            color: "var(--rose)",
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            gap: "12px",
-          }}
-        >
-          <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
+        <div className="card set-card error-card">
+          <div className="error-card-body">
             <Icon name="alert" size={18} />
-            <span style={{ fontSize: "13px", lineHeight: "1.4" }}>{error}</span>
+            <span>{error}</span>
           </div>
-          <button
-            type="button"
-            onClick={() => setError(null)}
-            style={{
-              background: "rgba(255, 255, 255, 0.08)",
-              border: "none",
-              borderRadius: "6px",
-              color: "var(--rose)",
-              cursor: "pointer",
-              padding: "4px 8px",
-              fontSize: "13px",
-              fontWeight: "bold",
-              flexShrink: 0,
-            }}
-            title="Chiudi messaggio di errore"
-          >
+          <button type="button" className="error-card-close" onClick={() => setError(null)} title="Chiudi messaggio di errore">
             ✕
           </button>
         </div>
@@ -1165,6 +1073,13 @@ export function SessionPage() {
               showSaveButton={true}
               saving={savingMarkdown}
               onSave={() => handleSaveDocumentation(markdown)}
+              imageVersion={docImageVersion}
+              imageActions={{
+                onChange: (info) => setDocImagePick(info),
+                onAnnotate: (info) => {
+                  if (info.screenshot) setAnnotatingScreenshot(info.screenshot);
+                },
+              }}
             />
           </div>
         </div>
@@ -1505,354 +1420,16 @@ export function SessionPage() {
       ) : null}
 
       {tab === "Replay" ? (
-        <div className="card panel">
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              flexWrap: "wrap",
-              gap: "10px",
-              marginBottom: "8px",
-            }}
-          >
-            <div>
-              <h3 style={{ margin: 0 }}>Session Replay</h3>
-              <div className="pd">
-                Riproduci e modifica i passaggi generati, con rendering Markdown e annotazioni interattive.
-              </div>
-            </div>
-            {steps.length === 0 && session?.documentation_md ? (
-              <AppButton
-                size="sm"
-                kind="primary"
-                icon="sparkles"
-                onClick={handleSyncStepsFromDoc}
-                disabled={busy}
-              >
-                Sincronizza Passi dalla Guida
-              </AppButton>
-            ) : null}
-          </div>
-
-          {steps.length === 0 ? (
-            <div
-              style={{
-                marginTop: 18,
-                padding: "24px",
-                background: "rgba(255,255,255,0.02)",
-                borderRadius: "8px",
-                border: "1px dashed var(--hair)",
-                textAlign: "center",
-              }}
-            >
-              <div style={{ color: "var(--dim)", marginBottom: "12px" }}>
-                Nessun passaggio strutturato trovato per questa sessione.
-              </div>
-              {session?.documentation_md ? (
-                <AppButton
-                  size="sm"
-                  kind="primary"
-                  onClick={handleSyncStepsFromDoc}
-                  disabled={busy}
-                >
-                  Recupera automaticamente i Passi dal Markdown
-                </AppButton>
-              ) : (
-                <div style={{ fontSize: "12.5px", color: "var(--dim)" }}>
-                  Genera la documentazione per popolare i passaggi di replay.
-                </div>
-              )}
-            </div>
-          ) : (
-            <>
-              <div className="rp-progress" style={{ marginTop: 18 }}>
-                <i style={{ width: `${((replayIndex + 1) / steps.length) * 100}%` }} />
-              </div>
-              <div className="rp-step">
-                <div
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                    marginBottom: "8px",
-                  }}
-                >
-                  <div className="rpn">
-                    Step {replayIndex + 1} of {steps.length}
-                  </div>
-                  {!editingStep ? (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setEditStepTitle(replayStep.title);
-                        setEditStepDesc(replayStep.description);
-                        setEditingStep(true);
-                      }}
-                      style={{
-                        background: "none",
-                        border: "none",
-                        color: "var(--mint, #38bdf8)",
-                        fontSize: "12px",
-                        cursor: "pointer",
-                        display: "flex",
-                        alignItems: "center",
-                        gap: "4px",
-                      }}
-                    >
-                      ✏️ Modifica Testo Passo
-                    </button>
-                  ) : (
-                    <div style={{ display: "flex", gap: "8px" }}>
-                      <button
-                        type="button"
-                        onClick={() => setEditingStep(false)}
-                        style={{
-                          background: "none",
-                          border: "none",
-                          color: "var(--dim)",
-                          fontSize: "12px",
-                          cursor: "pointer",
-                        }}
-                      >
-                        Annulla
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handleSaveStepContent}
-                        disabled={savingStep}
-                        style={{
-                          background: "var(--color-primary)",
-                          border: "none",
-                          borderRadius: "4px",
-                          color: "#fff",
-                          padding: "2px 8px",
-                          fontSize: "12px",
-                          cursor: "pointer",
-                        }}
-                      >
-                        {savingStep ? "Salvataggio..." : "Salva"}
-                      </button>
-                    </div>
-                  )}
-                </div>
-
-                {editingStep ? (
-                  <div style={{ display: "flex", flexDirection: "column", gap: "12px", marginBottom: "16px" }}>
-                    <div>
-                      <div style={{ fontSize: "11px", color: "var(--dim)", marginBottom: "4px", fontWeight: 600 }}>
-                        Titolo del Passo:
-                      </div>
-                      <input
-                        type="text"
-                        value={editStepTitle}
-                        onChange={(e) => setEditStepTitle(e.target.value)}
-                        placeholder="Titolo del passo..."
-                        style={{
-                          width: "100%",
-                          padding: "8px 12px",
-                          borderRadius: "6px",
-                          border: "1px solid var(--hair)",
-                          background: "var(--bg-2)",
-                          color: "var(--text)",
-                          fontSize: "14px",
-                          fontWeight: 500,
-                        }}
-                      />
-                    </div>
-                    <div>
-                      <div style={{ fontSize: "11px", color: "var(--dim)", marginBottom: "6px", fontWeight: 600 }}>
-                        Descrizione (Editor Markdown completo, anteprima modificabile & zoom):
-                      </div>
-                      <MarkdownEditor
-                        value={editStepDesc}
-                        onChange={setEditStepDesc}
-                        screenshots={screenshots}
-                        minHeight="280px"
-                        maxHeight="520px"
-                        compact={true}
-                        hideStepTemplate={true}
-                        showSaveButton={true}
-                        onSave={handleSaveStepContent}
-                        onCancel={() => setEditingStep(false)}
-                      />
-                    </div>
-                  </div>
-                ) : (
-                  <>
-                    <h3>{replayStep.title}</h3>
-                    <div
-                      className="rpd"
-                      style={{
-                        marginTop: "6px",
-                        marginBottom: "12px",
-                        lineHeight: "1.6",
-                      }}
-                    >
-                      <MarkdownPreview
-                        markdown={replayStep.description}
-                        screenshots={screenshots}
-                        editable={true}
-                        onTextChange={async (oldText, newText) => {
-                          let updatedDesc = replayStep.description;
-                          if (updatedDesc.includes(oldText)) {
-                            updatedDesc = updatedDesc.replace(oldText, newText);
-                          } else if (updatedDesc.includes(oldText.trim())) {
-                            updatedDesc = updatedDesc.replace(oldText.trim(), newText.trim());
-                          } else {
-                            const lines = updatedDesc.split("\n");
-                            const trimmedOld = oldText.trim();
-                            let matched = false;
-                            for (let i = 0; i < lines.length; i++) {
-                              const stripped = lines[i].replace(/^(\s*#+\s*|\s*[-*+]\s*|\s*\d+\.\s*|\s*>\s*)/, "").trim();
-                              if (stripped === trimmedOld || lines[i].includes(trimmedOld)) {
-                                const matchPrefix = lines[i].match(/^(\s*#+\s*|\s*[-*+]\s*|\s*\d+\.\s*|\s*>\s*)/);
-                                const prefix = matchPrefix ? matchPrefix[0] : "";
-                                lines[i] = `${prefix}${newText.trim()}`;
-                                updatedDesc = lines.join("\n");
-                                matched = true;
-                                break;
-                              }
-                            }
-                            if (!matched) {
-                              updatedDesc = newText;
-                            }
-                          }
-                          try {
-                            setSteps((prev) =>
-                              prev.map((s) => (s.step === replayStep.step ? { ...s, description: updatedDesc } : s))
-                            );
-                            await api.updateStepContent(sessionId, replayStep.step, replayStep.title, updatedDesc);
-                            setToast("Passo aggiornato con successo");
-                          } catch (err) {
-                            setError(String(err));
-                            await refresh({ syncMarkdown: false });
-                          }
-                        }}
-                      />
-                    </div>
-                  </>
-                )}
-
-                {/* Screenshot with Right-Click support & Interactive Annotation Overlay */}
-                <div
-                  className="rp-shot"
-                  onContextMenu={(e) => {
-                    e.preventDefault();
-                    setPickingScreenshotForStep(replayStep.step);
-                  }}
-                  title="Tasto destro per cambiare lo screenshot di questo step"
-                  style={{ position: "relative", cursor: "crosshair" }}
-                >
-                  {replayScreenshot ? (
-                    <>
-                      <img
-                        src={convertFileSrc(replayScreenshot.path)}
-                        alt={replayStep.title}
-                        onLoad={(e) => {
-                          const target = e.currentTarget;
-                          if (target.naturalWidth && target.naturalHeight) {
-                            setImgNaturalDims({ w: target.naturalWidth, h: target.naturalHeight });
-                          }
-                        }}
-                        style={{
-                          position: "absolute",
-                          inset: 0,
-                          width: "100%",
-                          height: "100%",
-                          objectFit: "contain",
-                          backgroundColor: "rgba(0, 0, 0, 0.4)",
-                        }}
-                        onError={(event) => {
-                          (event.target as HTMLImageElement).style.display = "none";
-                        }}
-                      />
-
-                      <AnnotationOverlay
-                        items={currentStepAnnotations}
-                        naturalWidth={imgNaturalDims.w}
-                        naturalHeight={imgNaturalDims.h}
-                        onAnnotationClick={(item) => {
-                          setSelectedAnnotationId(item.id);
-                          setAnnotatingScreenshot(replayScreenshot);
-                        }}
-                        onOpenEditor={() => {
-                          setSelectedAnnotationId(null);
-                          setAnnotatingScreenshot(replayScreenshot);
-                        }}
-                        onChangeScreenshot={() => {
-                          setPickingScreenshotForStep(replayStep.step);
-                        }}
-                      />
-                    </>
-                  ) : (
-                    <div className="rwin" />
-                  )}
-                </div>
-
-                <div
-                  style={{
-                    marginTop: "10px",
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                    flexWrap: "wrap",
-                    gap: "8px",
-                  }}
-                >
-                  <div style={{ fontSize: "11.5px", color: "var(--dim)" }}>
-                    💡 Fai clic con il tasto destro sull'immagine per sostituire lo screenshot di questo passo.
-                  </div>
-                  {replayScreenshot && (
-                    <div style={{ display: "flex", gap: "8px" }}>
-                      <button
-                        type="button"
-                        className="btn btn-ghost btn-sm"
-                        onClick={() => setPickingScreenshotForStep(replayStep.step)}
-                        style={{ display: "flex", alignItems: "center", gap: "5px", fontSize: "12px" }}
-                        title="Seleziona un altro screenshot tra quelli acquisiti"
-                      >
-                        🖼️ Cambia Immagine
-                      </button>
-                      <button
-                        type="button"
-                        className="btn btn-ghost btn-sm"
-                        onClick={() => {
-                          setSelectedAnnotationId(null);
-                          setAnnotatingScreenshot(replayScreenshot);
-                        }}
-                        style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "12px" }}
-                        title="Modifica questo screenshot, sposta click o aggiungi annotazioni grafiche"
-                      >
-                        🎨 Modifica / Evidenzia Step
-                      </button>
-                    </div>
-                  )}
-                </div>
-
-                <div className="rp-nav">
-                  <AppButton
-                    size="sm"
-                    disabled={replayIndex === 0}
-                    onClick={() => setReplayIndex((value) => Math.max(0, value - 1))}
-                  >
-                    Previous
-                  </AppButton>
-                  <AppButton
-                    size="sm"
-                    kind="primary"
-                    disabled={replayIndex >= steps.length - 1}
-                    onClick={() =>
-                      setReplayIndex((value) => Math.min(steps.length - 1, value + 1))
-                    }
-                  >
-                    Next step
-                  </AppButton>
-                </div>
-              </div>
-            </>
-          )}
-        </div>
+        <ReplayPanel
+          sessionId={sessionId}
+          hasDocumentation={Boolean(session.documentation_md?.trim())}
+          steps={steps}
+          setSteps={setSteps}
+          screenshots={screenshots}
+          refresh={refresh}
+          onToast={setToast}
+          onError={setError}
+        />
       ) : null}
 
       {tab === "Recording" ? (
@@ -1943,17 +1520,13 @@ export function SessionPage() {
         />
       ) : null}
 
-      {pickingScreenshotForStep != null && (
+      {docImagePick && (
         <ScreenshotPickerModal
-          stepIndex={pickingScreenshotForStep}
-          currentScreenshotId={replayScreenshot?.id}
+          title="Cambia immagine nella documentazione"
+          currentScreenshotId={docImagePick.screenshot?.id}
           screenshots={screenshots}
-          onSelect={async (newId) => {
-            await api.updateStepScreenshot(sessionId, pickingScreenshotForStep, newId);
-            setToast("Screenshot del passo aggiornato con successo!");
-            await refresh();
-          }}
-          onClose={() => setPickingScreenshotForStep(null)}
+          onSelect={handleDocImageSelected}
+          onClose={() => setDocImagePick(null)}
         />
       )}
 
@@ -1970,15 +1543,10 @@ export function SessionPage() {
         <ImageAnnotationModal
           sessionId={sessionId}
           screenshot={annotatingScreenshot}
-          stepIndex={tab === "Replay" ? replayStep?.step : undefined}
-          stepAnnotationsJson={tab === "Replay" ? (replayStep?.annotations_json || null) : null}
-          initialSelectedId={selectedAnnotationId}
-          onClose={() => {
-            setAnnotatingScreenshot(null);
-            setSelectedAnnotationId(null);
-          }}
+          onClose={() => setAnnotatingScreenshot(null)}
           onSaved={async () => {
             setToast("Screenshot aggiornato con successo!");
+            setDocImageVersion((value) => value + 1);
             await refresh();
           }}
         />

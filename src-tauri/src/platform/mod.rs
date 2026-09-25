@@ -2,7 +2,7 @@ mod common;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
-mod linux_capture;
+pub(crate) mod linux_capture;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "macos")]
