@@ -40,7 +40,7 @@ zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 
 # Linux uses xcap 0.4.x (X11/dbus) to avoid PipeWire 1.0+ required by xcap 0.5+ on Ubuntu 22.04.
 [target.'cfg(target_os = "linux")'.dependencies]
-xcap = "=0.4.1"
+xcap = "=0.9.6"
 dbus = "0.9"
 percent-encoding = "2.3"
 
