@@ -1,4 +1,4 @@
-mod styled_html;
+pub(crate) mod styled_html;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -6,13 +6,12 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use chrono::Utc;
-use pulldown_cmark::{Options, Parser, html};
 use uuid::Uuid;
 
 pub use styled_html::{ExportOptions, render_styled_export_html};
 use crate::ai::documentation::{
-    export_markdown_image_path, infer_workflow_summary, markdown_image_path,
-    render_documentation_markdown, strip_screenshot_references,
+    infer_workflow_summary, markdown_image_path, render_documentation_markdown,
+    strip_screenshot_references,
 };
 use crate::media::{ensure_session_mp4, resolve_ffmpeg};
 use crate::storage::Database;
@@ -37,9 +36,14 @@ impl ExportEngine {
         let screenshots = self.db.list_screenshots(session_id)?;
         prepare_screenshots_for_export(&screenshots);
         let markdown = self.resolve_markdown(session_id, &session, &screenshots)?;
-        let export_path = self.export_path(session_id, "md");
+        let export_path = self.export_path(session_id, &session, "md");
         let rewritten = if options.screenshots {
-            rewrite_markdown_for_export(&markdown, &screenshots)
+            // Images are copied next to the file (exports/screenshots/) so the .md and its
+            // "screenshots" folder can be moved together.
+            let normalized = crate::ai::documentation::normalize_screenshot_references(&markdown, &screenshots);
+            let images_dir = export_path.parent().map(|p| p.join("screenshots")).context("invalid export path")?;
+            copy_referenced_screenshots(&normalized, &screenshots, &images_dir)?;
+            normalized
         } else {
             strip_screenshot_references(&markdown, &screenshots)
         };
@@ -63,7 +67,7 @@ impl ExportEngine {
             &options.unwrap_or_default(),
             "html",
         );
-        let path = self.export_path(session_id, "html");
+        let path = self.export_path(session_id, &session, "html");
         std::fs::write(&path, html)?;
         self.persist_export(session_id, "html", path)
     }
@@ -84,22 +88,28 @@ impl ExportEngine {
             &options.unwrap_or_default(),
             "pdf",
         );
-        let html_path = self.export_path(session_id, "html");
+        let pdf_path = self.export_path(session_id, &session, "pdf");
+        // Intermediate page for the headless browser: not an export, removed afterwards.
+        let html_path = pdf_path.with_extension("print.html");
         std::fs::write(&html_path, html)?;
-        let pdf_path = self.export_path(session_id, "pdf");
-        try_print_pdf(html_path.to_string_lossy().as_ref(), &pdf_path).with_context(|| {
-            format!(
-                "PDF export failed for {}. Install Google Chrome, Chromium, or Microsoft Edge.",
-                html_path.display()
-            )
-        })?;
+        let printed = try_print_pdf(html_path.to_string_lossy().as_ref(), &pdf_path);
+        let _ = std::fs::remove_file(&html_path);
+        printed.context("PDF export failed. Install Google Chrome, Chromium, or Microsoft Edge.")?;
         self.persist_export(session_id, "pdf", pdf_path)
     }
 
     pub fn export_video(&self, session_id: &str) -> Result<ExportRecord> {
         let session = self.require_session(session_id)?;
         let session_dir = self.db.session_dir(session_id);
-        let mp4 = match ensure_session_mp4(
+        // Prefer the full-resolution recording; the slideshow is a low-fps fallback.
+        let full_video = session
+            .full_video_path
+            .as_deref()
+            .map(std::path::PathBuf::from)
+            .filter(|p| p.is_file() && p.extension().is_some_and(|e| e == "mp4"));
+        let mp4 = match full_video {
+            Some(path) => path,
+            None => match ensure_session_mp4(
             &session_dir,
             session.video_path.as_deref(),
             session.duration,
@@ -109,8 +119,9 @@ impl ExportEngine {
                 anyhow::bail!("Video encoding is unavailable. Rebuild the app to bundle ffmpeg.")
             }
             None => anyhow::bail!("No recorded video found for this session"),
+            },
         };
-        let path = self.export_path(session_id, "mp4");
+        let path = self.export_path(session_id, &session, "mp4");
         std::fs::copy(&mp4, &path)?;
         self.persist_export(session_id, "video", path)
     }
@@ -153,6 +164,7 @@ impl ExportEngine {
         let steps = self.load_steps(session_id)?;
         let (title, overview) = infer_workflow_summary(&session.title, &[], &steps, None);
         Ok(render_documentation_markdown(
+            crate::ai::prompts::DocLanguage::from_db(&self.db),
             &title,
             &overview,
             &steps,
@@ -160,11 +172,22 @@ impl ExportEngine {
         ))
     }
 
-    fn export_path(&self, session_id: &str, extension: &str) -> PathBuf {
-        self.db
-            .session_dir(session_id)
-            .join("exports")
-            .join(format!("export_{}.{}", Uuid::new_v4(), extension))
+    /// Readable, unique file name: "<session title>_<date-time>.<ext>".
+    fn export_path(&self, session_id: &str, session: &Session, extension: &str) -> PathBuf {
+        let dir = self.db.session_dir(session_id).join("exports");
+        let _ = std::fs::create_dir_all(&dir);
+        let base = format!(
+            "{}_{}",
+            file_name_slug(&session.title),
+            chrono::Local::now().format("%Y-%m-%d_%H-%M-%S")
+        );
+        let mut candidate = dir.join(format!("{base}.{extension}"));
+        let mut counter = 2;
+        while candidate.exists() {
+            candidate = dir.join(format!("{base}_{counter}.{extension}"));
+            counter += 1;
+        }
+        candidate
     }
 
     fn persist_export(&self, session_id: &str, format: &str, path: PathBuf) -> Result<ExportRecord> {
@@ -184,20 +207,51 @@ impl ExportEngine {
     }
 }
 
-fn rewrite_markdown_for_export(markdown: &str, screenshots: &[Screenshot]) -> String {
-    crate::ai::documentation::normalize_screenshot_references(markdown, screenshots)
-        .lines()
-        .map(|line| {
-            let mut output = line.to_string();
-            for shot in screenshots {
-                let inline = markdown_image_path(shot);
-                let export_relative = export_markdown_image_path(shot);
-                output = output.replace(&inline, &export_relative);
-            }
-            output
-        })
+/// Session title -> safe file name (keeps letters incl. accents, digits, '-' and '_').
+fn file_name_slug(title: &str) -> String {
+    let slug: String = title
+        .trim()
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+        .collect();
+    let slug = slug
+        .split('_')
+        .filter(|part| !part.is_empty())
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("_");
+    let slug: String = slug.chars().take(60).collect();
+    if slug.is_empty() {
+        "FlowCapture".to_string()
+    } else {
+        slug
+    }
+}
+
+/// Copies the screenshots referenced by the guide into `images_dir`, preferring the
+/// annotated / click-highlighted variant, under the name the Markdown already uses.
+fn copy_referenced_screenshots(markdown: &str, screenshots: &[Screenshot], images_dir: &Path) -> Result<()> {
+    std::fs::create_dir_all(images_dir)?;
+    for shot in screenshots {
+        let reference = markdown_image_path(shot);
+        if !markdown.contains(&reference) {
+            continue;
+        }
+        let Some(name) = Path::new(&reference).file_name() else {
+            continue;
+        };
+        let original = Path::new(&shot.path);
+        let annotated = original.with_file_name(format!(
+            "{}_annotated.{}",
+            original.file_stem().unwrap_or_default().to_string_lossy(),
+            original.extension().unwrap_or_default().to_string_lossy()
+        ));
+        let source = if annotated.is_file() { annotated } else { original.to_path_buf() };
+        if source.is_file() {
+            std::fs::copy(&source, images_dir.join(name))
+                .with_context(|| format!("copying {}", source.display()))?;
+        }
+    }
+    Ok(())
 }
 
 fn try_print_pdf(html_path: &str, pdf_path: &Path) -> Result<()> {
@@ -206,7 +260,7 @@ fn try_print_pdf(html_path: &str, pdf_path: &Path) -> Result<()> {
     const PDF_TIMEOUT: Duration = Duration::from_secs(45);
 
     for chrome in chrome_binary_candidates() {
-        let mut command = std::process::Command::new(&chrome);
+        let mut command = crate::process_util::background_command(&chrome);
         command.args([
             "--headless=new",
             "--disable-gpu",
@@ -230,7 +284,7 @@ fn try_print_pdf(html_path: &str, pdf_path: &Path) -> Result<()> {
         }
     }
 
-    let mut wkhtml = std::process::Command::new("wkhtmltopdf");
+    let mut wkhtml = crate::process_util::background_command("wkhtmltopdf");
     wkhtml
         .args([html_path, pdf_path.to_string_lossy().as_ref()])
         .stdout(std::process::Stdio::null())
@@ -327,48 +381,6 @@ fn path_to_file_url(path: &str) -> Result<String> {
     Ok(format!("file://{}", absolute.replace(' ', "%20")))
 }
 
-#[allow(dead_code)]
-fn render_html_from_markdown(
-    session: &Session,
-    markdown: &str,
-    screenshots: &[Screenshot],
-) -> String {
-    let markdown_for_html = rewrite_markdown_for_html(markdown, screenshots);
-    let mut body = String::new();
-    let parser = Parser::new_ext(&markdown_for_html, Options::all());
-    html::push_html(&mut body, parser);
-
-    format!(
-        r#"<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <title>{title}</title>
-</head>
-<body>{body}</body>
-</html>"#,
-        title = session.title,
-        body = body,
-    )
-}
-
-fn rewrite_markdown_for_html(markdown: &str, screenshots: &[Screenshot]) -> String {
-    crate::ai::documentation::normalize_screenshot_references(markdown, screenshots)
-        .lines()
-        .map(|line| {
-            let mut output = line.to_string();
-            for shot in screenshots {
-                let inline = markdown_image_path(shot);
-                if let Ok(file_url) = path_to_file_url(&shot.path) {
-                    output = output.replace(&inline, &file_url);
-                }
-            }
-            output
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
 pub fn prepare_screenshots_for_export(screenshots: &[Screenshot]) {
     for shot in screenshots {
         let path = PathBuf::from(&shot.path);
@@ -394,5 +406,18 @@ pub fn prepare_screenshots_for_export(screenshots: &[Screenshot]) {
                 let _ = crate::screenshots::highlight_click_on_image(&path, cx, cy, None);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::file_name_slug;
+
+    #[test]
+    fn slugs_are_safe_file_names() {
+        assert_eq!(file_name_slug("Come creare un ordine: guida/2"), "Come_creare_un_ordine_guida_2");
+        assert_eq!(file_name_slug("Perché? Più file"), "Perché_Più_file");
+        assert_eq!(file_name_slug("  "), "FlowCapture");
+        assert_eq!(file_name_slug(r"..\evil"), "evil");
     }
 }

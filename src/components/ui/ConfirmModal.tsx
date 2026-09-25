@@ -24,7 +24,7 @@ export function ConfirmModal({
   if (!isOpen) return null;
 
   const isDanger = kind === "danger";
-  const accentColor = isDanger ? "#ef4444" : kind === "warning" ? "#f59e0b" : "#38bdf8";
+  const accentColor = isDanger ? "#ef4444" : kind === "warning" ? "#f59e0b" : "var(--mint)";
 
   return (
     <div
@@ -49,7 +49,7 @@ export function ConfirmModal({
         style={{
           width: "100%",
           maxWidth: "460px",
-          background: "var(--surface, #1e293b)",
+          background: "var(--surface)",
           border: `1px solid ${isDanger ? "rgba(239, 68, 68, 0.4)" : "var(--hair)"}`,
           borderRadius: "12px",
           boxShadow: "0 20px 50px rgba(0, 0, 0, 0.6)",
@@ -115,8 +115,8 @@ export function ConfirmModal({
               fontWeight: 600,
               borderRadius: "6px",
               border: "none",
-              background: isDanger ? "#dc2626" : kind === "warning" ? "#d97706" : "var(--color-primary, #0284c7)",
-              color: "#ffffff",
+              background: isDanger ? "#dc2626" : kind === "warning" ? "#d97706" : "var(--mint)",
+              color: isDanger || kind === "warning" ? "#ffffff" : "var(--mint-ink)",
               cursor: isLoading ? "wait" : "pointer",
               display: "flex",
               alignItems: "center",

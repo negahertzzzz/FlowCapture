@@ -90,18 +90,16 @@ pub fn parse_segments_from_json(json_val: &serde_json::Value) -> Vec<AudioSegmen
                 .filter_map(|seg| {
                     let start_ms = if let Some(ms) = seg["start_ms"].as_i64() {
                         ms
-                    } else if let Some(s) = seg["start"].as_f64() {
-                        (s * 1000.0).round() as i64
                     } else {
-                        return None;
+                        let s = seg["start"].as_f64()?;
+                        (s * 1000.0).round() as i64
                     };
 
                     let end_ms = if let Some(ms) = seg["end_ms"].as_i64() {
                         ms
-                    } else if let Some(s) = seg["end"].as_f64() {
-                        (s * 1000.0).round() as i64
                     } else {
-                        return None;
+                        let s = seg["end"].as_f64()?;
+                        (s * 1000.0).round() as i64
                     };
 
                     let seg_text = seg["text"].as_str()?.trim().to_string();

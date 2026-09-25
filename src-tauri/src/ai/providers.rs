@@ -4,6 +4,12 @@ use serde_json::json;
 
 use crate::storage::models::ProviderConfig;
 
+/// Default models used when a provider has no model configured.
+pub const DEFAULT_OPENAI_MODEL: &str = "gpt-5-mini";
+pub const DEFAULT_CLAUDE_MODEL: &str = "claude-opus-5";
+pub const DEFAULT_GEMINI_MODEL: &str = "gemini-2.5-flash";
+pub const DEFAULT_OLLAMA_MODEL: &str = "llama3.2";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AiOperation {
     DocumentGeneration,
@@ -23,6 +29,27 @@ impl Default for GenerateOptions {
             custom_params: None,
         }
     }
+}
+
+/// Token counts reported by the provider for one request.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TokenUsage {
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+}
+
+impl std::ops::AddAssign for TokenUsage {
+    fn add_assign(&mut self, other: Self) {
+        self.input_tokens += other.input_tokens;
+        self.output_tokens += other.output_tokens;
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct LlmResponse {
+    pub text: String,
+    /// `None` when the server did not report usage (some local servers).
+    pub usage: Option<TokenUsage>,
 }
 
 pub fn get_ai_generate_options(
@@ -49,10 +76,7 @@ pub fn get_ai_generate_options(
     let allow_thinking = match operation {
         // Regola esplicita: "la traduzione non deve pensare, e la traduzione è l' unica con no think"
         AiOperation::Translation => false,
-        AiOperation::DocumentGeneration => match thinking_mode.as_str() {
-            "no_think" => false,
-            _ => true, // "auto" o "think"
-        },
+        AiOperation::DocumentGeneration => thinking_mode != "no_think",
     };
 
     GenerateOptions {
@@ -79,30 +103,105 @@ pub fn clean_ai_output(raw: &str) -> String {
 
 #[async_trait]
 pub trait LlmProvider: Send + Sync {
-    async fn generate(&self, system: &str, prompt: &str, options: &GenerateOptions) -> Result<String>;
-
-    #[allow(dead_code)]
-    async fn generate_default(&self, system: &str, prompt: &str) -> Result<String> {
-        self.generate(system, prompt, &GenerateOptions::default()).await
-    }
+    async fn generate(&self, system: &str, prompt: &str, options: &GenerateOptions) -> Result<LlmResponse>;
 }
 
 pub fn build_provider(config: &ProviderConfig) -> Result<Box<dyn LlmProvider>> {
     match config.provider_type.as_str() {
-        "openai" => Ok(Box::new(OpenAiProvider::new(config.clone())?)),
-        "claude" => Ok(Box::new(ClaudeProvider::new(config.clone())?)),
-        "ollama" => Ok(Box::new(OllamaProvider::new(config.clone())?)),
-        "gemini" => Ok(Box::new(GeminiProvider::new(config.clone())?)),
+        "openai" => Ok(Box::new(OpenAiProvider::new(config.clone()))),
+        "claude" => Ok(Box::new(ClaudeProvider::new(config.clone()))),
+        "ollama" => Ok(Box::new(OllamaProvider::new(config.clone()))),
+        "gemini" => Ok(Box::new(GeminiProvider::new(config.clone()))),
         other => anyhow::bail!("unsupported provider type: {other}"),
     }
 }
 
+/// No overall request timeout: long documents must be allowed to finish. The pipeline applies
+/// its own (user-configurable) deadline; here we only give up when the server goes silent.
 fn create_http_client() -> reqwest::Client {
     reqwest::Client::builder()
         .connect_timeout(std::time::Duration::from_secs(15))
-        .timeout(std::time::Duration::from_secs(300)) // 5 minuti di timeout per LLM locali
+        .read_timeout(std::time::Duration::from_secs(300)) // 5 minuti senza dati (LLM locali lenti)
         .build()
         .unwrap_or_else(|_| reqwest::Client::new())
+}
+
+const NO_THINK_SUFFIX: &str = "\n\nIMPORTANT: Do NOT output thinking steps, reasoning chains, or <think>...</think> tags. Respond immediately and strictly with the final result.";
+
+fn effective_system(system: &str, options: &GenerateOptions) -> String {
+    if options.allow_thinking {
+        system.to_string()
+    } else {
+        format!("{system}{NO_THINK_SUFFIX}")
+    }
+}
+
+/// Merges the user's custom JSON parameters into `target`, skipping the protected keys.
+fn merge_custom_params(target: &mut serde_json::Value, options: &GenerateOptions, protected: &[&str]) {
+    let (Some(serde_json::Value::Object(custom_map)), Some(obj)) =
+        (&options.custom_params, target.as_object_mut())
+    else {
+        return;
+    };
+    for (k, v) in custom_map {
+        if !protected.contains(&k.as_str()) {
+            obj.insert(k.clone(), v.clone());
+        }
+    }
+}
+
+/// Removes thinking-related overrides (e.g. coming from custom params) when thinking is off.
+fn strip_thinking_params(target: &mut serde_json::Value, options: &GenerateOptions) {
+    if options.allow_thinking {
+        return;
+    }
+    if let Some(obj) = target.as_object_mut() {
+        obj.remove("thinking");
+        obj.remove("chat_template_kwargs");
+        obj.remove("reasoning_effort");
+    }
+}
+
+/// Reasoning models reject sampling parameters (`temperature`, `top_p`, `top_k`) with a 400:
+/// OpenAI GPT-5 / o-series and Claude Opus 4.7+, Sonnet 5, Fable. Names are also matched in
+/// the dotted form used by proxies such as GitHub Copilot ("claude-opus-4.7").
+fn supports_sampling_params(model: &str) -> bool {
+    let lower = model.to_ascii_lowercase().replace('.', "-");
+    let m = lower.rsplit('/').next().unwrap_or(&lower);
+    let reasoning_only = m.starts_with("gpt-5")
+        || m.starts_with("o1")
+        || m.starts_with("o3")
+        || m.starts_with("o4")
+        || m.starts_with("claude-opus-4-7")
+        || m.starts_with("claude-opus-4-8")
+        || m.starts_with("claude-opus-5")
+        || m.starts_with("claude-sonnet-5")
+        || m.starts_with("claude-fable")
+        || m.starts_with("claude-mythos");
+    !reasoning_only
+}
+
+/// Drops sampling parameters (e.g. a saved `{"temperature": 0.2}` custom parameter) that the
+/// model would reject.
+fn strip_unsupported_sampling(target: &mut serde_json::Value, model: &str) {
+    if supports_sampling_params(model) {
+        return;
+    }
+    if let Some(obj) = target.as_object_mut() {
+        for key in ["temperature", "top_p", "top_k"] {
+            if obj.remove(key).is_some() {
+                crate::logger::info("AI", &format!("Parametro '{key}' ignorato: non supportato da {model}"));
+            }
+        }
+    }
+}
+
+fn usage_from_openai(json_val: &serde_json::Value) -> Option<TokenUsage> {
+    let usage = json_val.get("usage")?;
+    Some(TokenUsage {
+        input_tokens: usage.get("prompt_tokens")?.as_u64()?,
+        output_tokens: usage.get("completion_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+    })
 }
 
 pub struct OpenAiProvider {
@@ -111,17 +210,17 @@ pub struct OpenAiProvider {
 }
 
 impl OpenAiProvider {
-    pub fn new(config: ProviderConfig) -> Result<Self> {
-        Ok(Self {
+    pub fn new(config: ProviderConfig) -> Self {
+        Self {
             client: create_http_client(),
             config,
-        })
+        }
     }
 }
 
 #[async_trait]
 impl LlmProvider for OpenAiProvider {
-    async fn generate(&self, system: &str, prompt: &str, options: &GenerateOptions) -> Result<String> {
+    async fn generate(&self, system: &str, prompt: &str, options: &GenerateOptions) -> Result<LlmResponse> {
         let api_key = self
             .config
             .api_key
@@ -145,47 +244,30 @@ impl LlmProvider for OpenAiProvider {
             .config
             .model
             .clone()
-            .unwrap_or_else(|| "gpt-4o-mini".to_string());
+            .filter(|m| !m.trim().is_empty())
+            .unwrap_or_else(|| DEFAULT_OPENAI_MODEL.to_string());
 
-        let effective_system = if !options.allow_thinking {
-            format!("{system}\n\nIMPORTANT: Do NOT output thinking steps, reasoning chains, or <think>...</think> tags. Respond immediately and strictly with the final result.")
-        } else {
-            system.to_string()
-        };
-
+        // No max_tokens: the model may write the whole document, however long.
         let mut request_payload = json!({
             "model": model,
             "messages": [
-                {"role": "system", "content": effective_system},
+                {"role": "system", "content": effective_system(system, options)},
                 {"role": "user", "content": prompt}
-            ],
-            "temperature": 0.2
+            ]
         });
-
-        // Unisci i parametri personalizzati se specificati dall'utente
-        if let Some(serde_json::Value::Object(custom_map)) = &options.custom_params {
-            if let Some(obj) = request_payload.as_object_mut() {
-                for (k, v) in custom_map {
-                    if k != "messages" {
-                        obj.insert(k.clone(), v.clone());
-                    }
-                }
-            }
+        if supports_sampling_params(&model) {
+            request_payload["temperature"] = json!(0.2);
         }
 
-        // Se think è disabilitato (es. Traduzione), rimuovi eventuali override di thinking nei custom params
-        if !options.allow_thinking {
-            if let Some(obj) = request_payload.as_object_mut() {
-                obj.remove("thinking");
-                obj.remove("chat_template_kwargs");
-                obj.remove("reasoning_effort");
-            }
-        }
+        merge_custom_params(&mut request_payload, options, &["messages"]);
+        strip_thinking_params(&mut request_payload, options);
+        strip_unsupported_sampling(&mut request_payload, &model);
 
+        let service = format!("OpenAI/Local ({model})");
         let payload_str = serde_json::to_string_pretty(&request_payload).unwrap_or_default();
 
         crate::logger::log_api_request(
-            &format!("OpenAI/Local ({model}) [think={}]", options.allow_thinking),
+            &format!("{service} [think={}]", options.allow_thinking),
             "POST",
             &url,
             Some(&[("Authorization", &format!("Bearer {api_key}")), ("Content-Type", "application/json")]),
@@ -207,7 +289,7 @@ impl LlmProvider for OpenAiProvider {
             Err(e) => {
                 let err_msg = if e.is_timeout() {
                     format!(
-                        "Timeout di connessione superato (oltre 5 minuti) verso il server AI ({url}). \
+                        "Timeout di connessione superato (oltre 5 minuti senza risposta) verso il server AI ({url}). \
                         Il modello locale potrebbe essere troppo lento o sovraccarico."
                     )
                 } else if e.is_connect() {
@@ -218,7 +300,7 @@ impl LlmProvider for OpenAiProvider {
                 } else {
                     format!("Errore di comunicazione verso il server AI ({url}): {e}")
                 };
-                crate::logger::log_api_error(&format!("OpenAI/Local ({model})"), &url, duration_ms, &err_msg);
+                crate::logger::log_api_error(&service, &url, duration_ms, &err_msg);
                 anyhow::bail!("{err_msg}");
             }
         };
@@ -227,32 +309,104 @@ impl LlmProvider for OpenAiProvider {
         let body_text = response.text().await.unwrap_or_default();
 
         if !status.is_success() {
-            crate::logger::log_api_error(
-                &format!("OpenAI/Local ({model})"),
-                &url,
-                duration_ms,
-                &format!("HTTP {status}: {body_text}"),
-            );
+            crate::logger::log_api_error(&service, &url, duration_ms, &format!("HTTP {status}: {body_text}"));
             anyhow::bail!("Il server AI su {url} ha restituito un errore HTTP {status}: {body_text}");
         }
 
-        crate::logger::log_api_response(
-            &format!("OpenAI/Local ({model})"),
-            &url,
-            status.as_u16(),
-            duration_ms,
-            &body_text,
-        );
+        crate::logger::log_api_response(&service, &url, status.as_u16(), duration_ms, &body_text);
 
         let json_val: serde_json::Value = serde_json::from_str(&body_text)
             .context("Risposta non valida dal server AI (formato JSON non riconosciuto)")?;
 
-        let raw_content = json_val["choices"][0]["message"]["content"]
+        let choice = &json_val["choices"][0];
+        let raw_content = choice["message"]["content"]
             .as_str()
             .context("Contenuto mancante nella risposta del modello AI")?;
+        if choice["finish_reason"].as_str() == Some("length") {
+            crate::logger::warn(&service, "La risposta è stata troncata dal limite di token del modello/server.");
+        }
 
-        Ok(clean_ai_output(raw_content))
+        Ok(LlmResponse {
+            text: clean_ai_output(raw_content),
+            usage: usage_from_openai(&json_val),
+        })
     }
+}
+
+/// Largest `max_tokens` each Claude generation accepts. We always ask for the maximum so long
+/// documents are never cut off (you only pay for the tokens actually generated).
+/// Can still be overridden with `max_tokens` in the custom parameters.
+fn claude_max_output_tokens(model: &str) -> u64 {
+    let m = model.to_ascii_lowercase();
+    if m.contains("claude-3-haiku") || m.contains("claude-3-opus") || m.contains("claude-3-sonnet") {
+        4_096
+    } else if m.contains("claude-3-5") {
+        8_192
+    } else if m.contains("opus-4-0") || m.contains("opus-4-1") || m.contains("claude-opus-4-2025") {
+        32_000
+    } else if m.contains("claude-3-7")
+        || m.contains("sonnet-4-0")
+        || m.contains("claude-sonnet-4-2025")
+        || m.contains("sonnet-4-5")
+        || m.contains("opus-4-5")
+        || m.contains("haiku-4")
+    {
+        64_000
+    } else {
+        // Claude 4.6+ / 5 family (Opus, Sonnet, Fable) and newer.
+        128_000
+    }
+}
+
+/// Result of reading a Claude streaming (SSE) response.
+#[derive(Debug, Default, PartialEq)]
+struct ClaudeStreamResult {
+    text: String,
+    stop_reason: Option<String>,
+    usage: TokenUsage,
+}
+
+/// Parses the server-sent events of a streamed Messages API response. Only `text` deltas are
+/// kept: thinking blocks (on by default for newer models) are skipped.
+fn parse_claude_sse(body: &str) -> Result<ClaudeStreamResult> {
+    let mut result = ClaudeStreamResult::default();
+    for line in body.lines() {
+        let Some(data) = line.strip_prefix("data:") else {
+            continue;
+        };
+        let Ok(event) = serde_json::from_str::<serde_json::Value>(data.trim()) else {
+            continue;
+        };
+        match event["type"].as_str() {
+            Some("message_start") => {
+                let usage = &event["message"]["usage"];
+                result.usage.input_tokens = usage["input_tokens"].as_u64().unwrap_or(0)
+                    + usage["cache_creation_input_tokens"].as_u64().unwrap_or(0)
+                    + usage["cache_read_input_tokens"].as_u64().unwrap_or(0);
+            }
+            Some("content_block_delta") => {
+                if event["delta"]["type"].as_str() == Some("text_delta") {
+                    if let Some(text) = event["delta"]["text"].as_str() {
+                        result.text.push_str(text);
+                    }
+                }
+            }
+            Some("message_delta") => {
+                if let Some(reason) = event["delta"]["stop_reason"].as_str() {
+                    result.stop_reason = Some(reason.to_string());
+                }
+                if let Some(out) = event["usage"]["output_tokens"].as_u64() {
+                    result.usage.output_tokens = out;
+                }
+            }
+            Some("error") => {
+                let msg = event["error"]["message"].as_str().unwrap_or("errore sconosciuto");
+                anyhow::bail!("Claude ha interrotto la risposta: {msg}");
+            }
+            _ => {}
+        }
+    }
+    Ok(result)
 }
 
 pub struct ClaudeProvider {
@@ -261,70 +415,59 @@ pub struct ClaudeProvider {
 }
 
 impl ClaudeProvider {
-    pub fn new(config: ProviderConfig) -> Result<Self> {
-        Ok(Self {
+    pub fn new(config: ProviderConfig) -> Self {
+        Self {
             client: create_http_client(),
             config,
-        })
+        }
     }
 }
 
 #[async_trait]
 impl LlmProvider for ClaudeProvider {
-    async fn generate(&self, system: &str, prompt: &str, options: &GenerateOptions) -> Result<String> {
+    async fn generate(&self, system: &str, prompt: &str, options: &GenerateOptions) -> Result<LlmResponse> {
         let api_key = self
             .config
             .api_key
             .clone()
+            .filter(|k| !k.trim().is_empty())
             .context("Claude API key not configured")?;
         let base_url = self
             .config
             .base_url
             .clone()
+            .filter(|u| !u.trim().is_empty())
             .unwrap_or_else(|| "https://api.anthropic.com/v1".to_string());
         let model = self
             .config
             .model
             .clone()
-            .unwrap_or_else(|| "claude-3-5-haiku-latest".to_string());
+            .filter(|m| !m.trim().is_empty())
+            .unwrap_or_else(|| DEFAULT_CLAUDE_MODEL.to_string());
 
-        let url = format!("{base_url}/messages");
+        let url = format!("{}/messages", base_url.trim().trim_end_matches('/'));
 
-        let effective_system = if !options.allow_thinking {
-            format!("{system}\n\nIMPORTANT: Do NOT output thinking steps, reasoning chains, or <think>...</think> tags. Respond immediately and strictly with the final result.")
-        } else {
-            system.to_string()
-        };
-
+        // Streaming: with a very large max_tokens a non-streamed request can exceed HTTP
+        // timeouts; the stream keeps the connection alive until the document is complete.
         let mut request_payload = json!({
             "model": model,
-            "max_tokens": 4096,
-            "system": effective_system,
+            "max_tokens": claude_max_output_tokens(&model),
+            "stream": true,
+            "system": effective_system(system, options),
             "messages": [
                 {"role": "user", "content": prompt}
             ]
         });
 
-        if let Some(serde_json::Value::Object(custom_map)) = &options.custom_params {
-            if let Some(obj) = request_payload.as_object_mut() {
-                for (k, v) in custom_map {
-                    if k != "messages" && k != "system" {
-                        obj.insert(k.clone(), v.clone());
-                    }
-                }
-            }
-        }
+        merge_custom_params(&mut request_payload, options, &["messages", "system", "stream"]);
+        strip_thinking_params(&mut request_payload, options);
+        strip_unsupported_sampling(&mut request_payload, &model);
 
-        if !options.allow_thinking {
-            if let Some(obj) = request_payload.as_object_mut() {
-                obj.remove("thinking");
-            }
-        }
-
+        let service = format!("Anthropic Claude ({model})");
         let payload_str = serde_json::to_string_pretty(&request_payload).unwrap_or_default();
 
         crate::logger::log_api_request(
-            &format!("Anthropic Claude ({model}) [think={}]", options.allow_thinking),
+            &format!("{service} [think={}]", options.allow_thinking),
             "POST",
             &url,
             Some(&[("x-api-key", &api_key), ("anthropic-version", "2023-06-01"), ("Content-Type", "application/json")]),
@@ -340,46 +483,82 @@ impl LlmProvider for ClaudeProvider {
             .json(&request_payload)
             .send()
             .await;
-        let duration_ms = start_time.elapsed().as_millis();
 
         let response = match send_res {
             Ok(resp) => resp,
             Err(e) => {
                 let err_msg = format!("Errore di rete verso Claude ({url}): {e}");
-                crate::logger::log_api_error(&format!("Anthropic Claude ({model})"), &url, duration_ms, &err_msg);
+                crate::logger::log_api_error(&service, &url, start_time.elapsed().as_millis(), &err_msg);
                 anyhow::bail!("{err_msg}");
             }
         };
 
         let status = response.status();
-        let body_text = response.text().await.unwrap_or_default();
+        let body_text = match response.text().await {
+            Ok(body) => body,
+            Err(e) => {
+                let err_msg = format!("Connessione con Claude interrotta durante la risposta ({url}): {e}");
+                crate::logger::log_api_error(&service, &url, start_time.elapsed().as_millis(), &err_msg);
+                anyhow::bail!("{err_msg}");
+            }
+        };
+        let duration_ms = start_time.elapsed().as_millis();
 
         if !status.is_success() {
-            crate::logger::log_api_error(
-                &format!("Anthropic Claude ({model})"),
-                &url,
-                duration_ms,
-                &format!("HTTP {status}: {body_text}"),
-            );
+            crate::logger::log_api_error(&service, &url, duration_ms, &format!("HTTP {status}: {body_text}"));
             anyhow::bail!("Claude API su {url} ha restituito un errore HTTP {status}: {body_text}");
         }
 
+        // Proxies that ignore `stream` answer with a regular JSON message.
+        let result = match serde_json::from_str::<serde_json::Value>(&body_text) {
+            Ok(message) if message["type"].as_str() == Some("message") => ClaudeStreamResult {
+                text: message["content"]
+                    .as_array()
+                    .map(|blocks| {
+                        blocks
+                            .iter()
+                            .filter(|b| b["type"].as_str() == Some("text"))
+                            .filter_map(|b| b["text"].as_str())
+                            .collect::<String>()
+                    })
+                    .unwrap_or_default(),
+                stop_reason: message["stop_reason"].as_str().map(str::to_string),
+                usage: TokenUsage {
+                    input_tokens: message["usage"]["input_tokens"].as_u64().unwrap_or(0),
+                    output_tokens: message["usage"]["output_tokens"].as_u64().unwrap_or(0),
+                },
+            },
+            _ => parse_claude_sse(&body_text)?,
+        };
+
         crate::logger::log_api_response(
-            &format!("Anthropic Claude ({model})"),
+            &service,
             &url,
             status.as_u16(),
             duration_ms,
-            &body_text,
+            &format!(
+                "stop_reason={:?}, input_tokens={}, output_tokens={}\n{}",
+                result.stop_reason, result.usage.input_tokens, result.usage.output_tokens, result.text
+            ),
         );
 
-        let json_val: serde_json::Value = serde_json::from_str(&body_text)
-            .context("Risposta non valida da Claude API")?;
+        match result.stop_reason.as_deref() {
+            Some("refusal") => anyhow::bail!("Claude ha rifiutato di completare la richiesta."),
+            Some("max_tokens") => crate::logger::warn(
+                &service,
+                "La risposta ha raggiunto il limite massimo di token del modello ed è stata troncata.",
+            ),
+            _ => {}
+        }
 
-        let raw_content = json_val["content"][0]["text"]
-            .as_str()
-            .context("missing Claude response content")?;
+        if result.text.trim().is_empty() {
+            anyhow::bail!("missing Claude response content");
+        }
 
-        Ok(clean_ai_output(raw_content))
+        Ok(LlmResponse {
+            text: clean_ai_output(&result.text),
+            usage: Some(result.usage),
+        })
     }
 }
 
@@ -389,67 +568,47 @@ pub struct OllamaProvider {
 }
 
 impl OllamaProvider {
-    pub fn new(config: ProviderConfig) -> Result<Self> {
-        Ok(Self {
+    pub fn new(config: ProviderConfig) -> Self {
+        Self {
             client: create_http_client(),
             config,
-        })
+        }
     }
 }
 
 #[async_trait]
 impl LlmProvider for OllamaProvider {
-    async fn generate(&self, system: &str, prompt: &str, options: &GenerateOptions) -> Result<String> {
+    async fn generate(&self, system: &str, prompt: &str, options: &GenerateOptions) -> Result<LlmResponse> {
         let base_url = self
             .config
             .base_url
             .clone()
+            .filter(|u| !u.trim().is_empty())
             .unwrap_or_else(|| "http://localhost:11434".to_string());
+        let clean_base = base_url.trim().trim_end_matches('/').to_string();
         let model = self
             .config
             .model
             .clone()
-            .unwrap_or_else(|| "llama3.2".to_string());
+            .filter(|m| !m.trim().is_empty())
+            .unwrap_or_else(|| DEFAULT_OLLAMA_MODEL.to_string());
 
-        let effective_system = if !options.allow_thinking {
-            format!("{system}\n\nIMPORTANT: Do NOT output thinking steps, reasoning chains, or <think>...</think> tags. Respond immediately and strictly with the final result.")
-        } else {
-            system.to_string()
-        };
+        let system_text = effective_system(system, options);
 
         // 1. Prova l'endpoint nativo di Ollama: /api/chat
-        let chat_url = format!("{base_url}/api/chat");
+        let chat_url = format!("{clean_base}/api/chat");
         let mut chat_payload = json!({
             "model": model,
             "messages": [
-                {"role": "system", "content": effective_system},
+                {"role": "system", "content": system_text},
                 {"role": "user", "content": prompt}
             ],
             "think": false,
             "stream": false
         });
-
-        if let Some(serde_json::Value::Object(custom_map)) = &options.custom_params {
-            if let Some(obj) = chat_payload.as_object_mut() {
-                for (k, v) in custom_map {
-                    if k != "messages" {
-                        obj.insert(k.clone(), v.clone());
-                    }
-                }
-            }
-        }
-
-        // if !options.allow_thinking {
-        //     if let Some(obj) = chat_payload.as_object_mut() {
-        //         obj.remove("think");
-        //         if let Some(opts) = obj.get_mut("options").and_then(|o| o.as_object_mut()) {
-        //             opts.remove("think");
-        //         }
-        //     }
-        // }
+        merge_custom_params(&mut chat_payload, options, &["messages"]);
 
         let chat_payload_str = serde_json::to_string_pretty(&chat_payload).unwrap_or_default();
-
         crate::logger::log_api_request(
             &format!("Ollama Native ({model}) [think={}]", options.allow_thinking),
             "POST",
@@ -459,12 +618,7 @@ impl LlmProvider for OllamaProvider {
         );
 
         let start_time = std::time::Instant::now();
-        let res = self
-            .client
-            .post(&chat_url)
-            .json(&chat_payload)
-            .send()
-            .await;
+        let res = self.client.post(&chat_url).json(&chat_payload).send().await;
         let duration_ms = start_time.elapsed().as_millis();
 
         if let Ok(resp) = res {
@@ -480,7 +634,14 @@ impl LlmProvider for OllamaProvider {
                     );
                     if let Ok(json_res) = serde_json::from_str::<serde_json::Value>(&body_text) {
                         if let Some(content) = json_res["message"]["content"].as_str() {
-                            return Ok(clean_ai_output(content));
+                            let usage = json_res["prompt_eval_count"].as_u64().map(|input| TokenUsage {
+                                input_tokens: input,
+                                output_tokens: json_res["eval_count"].as_u64().unwrap_or(0),
+                            });
+                            return Ok(LlmResponse {
+                                text: clean_ai_output(content),
+                                usage,
+                            });
                         }
                     }
                 } else {
@@ -494,61 +655,40 @@ impl LlmProvider for OllamaProvider {
             }
         }
 
-        let clean_base = base_url.trim().trim_end_matches('/');
+        // 2. Fallback all'endpoint OpenAI-compatibile: /v1/chat/completions (LM Studio, LocalAI, vLLM, Ollama)
         let v1_url = if clean_base.ends_with("/v1") {
             format!("{clean_base}/chat/completions")
         } else {
             format!("{clean_base}/v1/chat/completions")
         };
 
-        // 2. Fallback all'endpoint OpenAI-compatibile: /v1/chat/completions (LM Studio, LocalAI, vLLM, Ollama)
         let mut v1_payload = json!({
             "model": model,
             "messages": [
-                {"role": "system", "content": effective_system},
+                {"role": "system", "content": system_text},
                 {"role": "user", "content": prompt}
             ],
             "think": false,
             "stream": false
         });
-
-        if let Some(serde_json::Value::Object(custom_map)) = &options.custom_params {
-            if let Some(obj) = v1_payload.as_object_mut() {
-                for (k, v) in custom_map {
-                    if k != "messages" {
-                        obj.insert(k.clone(), v.clone());
-                    }
-                }
-            }
-        }
-
-        if !options.allow_thinking {
-            if let Some(obj) = v1_payload.as_object_mut() {
-                obj.remove("thinking");
-                obj.remove("chat_template_kwargs");
-                obj.remove("reasoning_effort");
-                // obj.remove("think");
-            }
-        }
+        merge_custom_params(&mut v1_payload, options, &["messages"]);
+        strip_thinking_params(&mut v1_payload, options);
 
         let v1_payload_str = serde_json::to_string_pretty(&v1_payload).unwrap_or_default();
 
         let auth_header = self.config.api_key.as_deref().filter(|k| !k.trim().is_empty());
         let headers_log = auth_header.map(|k| vec![("Authorization", k)]);
 
+        let service = format!("Ollama/Local V1 ({model})");
         crate::logger::log_api_request(
-            &format!("Ollama/Local V1 ({model}) [think={}]", options.allow_thinking),
+            &format!("{service} [think={}]", options.allow_thinking),
             "POST",
             &v1_url,
             headers_log.as_deref(),
             &v1_payload_str,
         );
 
-        let mut req = self
-            .client
-            .post(&v1_url)
-            .json(&v1_payload);
-
+        let mut req = self.client.post(&v1_url).json(&v1_payload);
         if let Some(key) = auth_header {
             req = req.bearer_auth(key);
         }
@@ -561,13 +701,13 @@ impl LlmProvider for OllamaProvider {
             Ok(resp) => resp,
             Err(e) => {
                 let err_msg = if e.is_timeout() {
-                    format!("Timeout scaduto (oltre 5 minuti) verso il server AI ({v1_url}).")
+                    format!("Timeout scaduto (oltre 5 minuti senza risposta) verso il server AI ({v1_url}).")
                 } else if e.is_connect() {
                     format!("Impossibile connettersi al server locale su {clean_base}. Verifica che sia attivo.")
                 } else {
                     format!("Errore di rete verso il server AI ({v1_url}): {e}")
                 };
-                crate::logger::log_api_error(&format!("Ollama/Local V1 ({model})"), &v1_url, duration_v1_ms, &err_msg);
+                crate::logger::log_api_error(&service, &v1_url, duration_v1_ms, &err_msg);
                 anyhow::bail!("{err_msg}");
             }
         };
@@ -576,29 +716,21 @@ impl LlmProvider for OllamaProvider {
         let body = response.text().await.unwrap_or_default();
 
         if !status.is_success() {
-            crate::logger::log_api_error(
-                &format!("Ollama/Local V1 ({model})"),
-                &v1_url,
-                duration_v1_ms,
-                &format!("HTTP {status}: {body}"),
-            );
+            crate::logger::log_api_error(&service, &v1_url, duration_v1_ms, &format!("HTTP {status}: {body}"));
             anyhow::bail!("Il server AI su {v1_url} ha risposto con errore HTTP {status}: {body}");
         }
 
-        crate::logger::log_api_response(
-            &format!("Ollama/Local V1 ({model})"),
-            &v1_url,
-            status.as_u16(),
-            duration_v1_ms,
-            &body,
-        );
+        crate::logger::log_api_response(&service, &v1_url, status.as_u16(), duration_v1_ms, &body);
 
         let json_val: serde_json::Value = serde_json::from_str(&body).context("risposta JSON non valida da Ollama/Local LLM")?;
         let raw_content = json_val["choices"][0]["message"]["content"]
             .as_str()
             .context("contenuto mancante nella risposta di Ollama/Local LLM")?;
 
-        Ok(clean_ai_output(raw_content))
+        Ok(LlmResponse {
+            text: clean_ai_output(raw_content),
+            usage: usage_from_openai(&json_val),
+        })
     }
 }
 
@@ -608,44 +740,41 @@ pub struct GeminiProvider {
 }
 
 impl GeminiProvider {
-    pub fn new(config: ProviderConfig) -> Result<Self> {
-        Ok(Self {
+    pub fn new(config: ProviderConfig) -> Self {
+        Self {
             client: create_http_client(),
             config,
-        })
+        }
     }
 }
 
 #[async_trait]
 impl LlmProvider for GeminiProvider {
-    async fn generate(&self, system: &str, prompt: &str, options: &GenerateOptions) -> Result<String> {
+    async fn generate(&self, system: &str, prompt: &str, options: &GenerateOptions) -> Result<LlmResponse> {
         let api_key = self
             .config
             .api_key
             .clone()
+            .filter(|k| !k.trim().is_empty())
             .context("Gemini API key not configured")?;
         let base_url = self
             .config
             .base_url
             .clone()
+            .filter(|u| !u.trim().is_empty())
             .unwrap_or_else(|| "https://generativelanguage.googleapis.com/v1beta".to_string());
         let model = self
             .config
             .model
             .clone()
-            .unwrap_or_else(|| "gemini-2.5-flash".to_string());
+            .filter(|m| !m.trim().is_empty())
+            .unwrap_or_else(|| DEFAULT_GEMINI_MODEL.to_string());
 
-        let url = format!("{base_url}/models/{model}:generateContent");
-
-        let effective_system = if !options.allow_thinking {
-            format!("{system}\n\nIMPORTANT: Do NOT output thinking steps, reasoning chains, or <think>...</think> tags. Respond immediately and strictly with the final result.")
-        } else {
-            system.to_string()
-        };
+        let url = format!("{}/models/{model}:generateContent", base_url.trim().trim_end_matches('/'));
 
         let mut payload = json!({
             "systemInstruction": {
-                "parts": [{ "text": effective_system }]
+                "parts": [{ "text": effective_system(system, options) }]
             },
             "contents": [{
                 "role": "user",
@@ -656,24 +785,18 @@ impl LlmProvider for GeminiProvider {
             }
         });
 
-        if let Some(serde_json::Value::Object(custom_map)) = &options.custom_params {
-            if let Some(gen_cfg) = payload.get_mut("generationConfig").and_then(|g| g.as_object_mut()) {
-                for (k, v) in custom_map {
-                    gen_cfg.insert(k.clone(), v.clone());
-                }
+        if let Some(gen_cfg) = payload.get_mut("generationConfig") {
+            merge_custom_params(gen_cfg, options, &[]);
+            if !options.allow_thinking {
+                gen_cfg["thinkingConfig"] = json!({ "thinkingBudget": 0 });
             }
         }
 
-        if !options.allow_thinking {
-            if let Some(gen_cfg) = payload.get_mut("generationConfig").and_then(|g| g.as_object_mut()) {
-                gen_cfg.insert("thinkingConfig".to_string(), json!({ "thinkingBudget": 0 }));
-            }
-        }
-
+        let service = format!("Google Gemini ({model})");
         let payload_str = serde_json::to_string_pretty(&payload).unwrap_or_default();
 
         crate::logger::log_api_request(
-            &format!("Google Gemini ({model}) [think={}]", options.allow_thinking),
+            &format!("{service} [think={}]", options.allow_thinking),
             "POST",
             &url,
             Some(&[("x-goog-api-key", &api_key), ("Content-Type", "application/json")]),
@@ -694,7 +817,7 @@ impl LlmProvider for GeminiProvider {
             Ok(r) => r,
             Err(e) => {
                 let err_msg = format!("Errore di rete verso Gemini ({url}): {e}");
-                crate::logger::log_api_error(&format!("Google Gemini ({model})"), &url, duration_ms, &err_msg);
+                crate::logger::log_api_error(&service, &url, duration_ms, &err_msg);
                 anyhow::bail!("{err_msg}");
             }
         };
@@ -703,28 +826,95 @@ impl LlmProvider for GeminiProvider {
         let body = response.text().await.unwrap_or_default();
 
         if !status.is_success() {
-            crate::logger::log_api_error(
-                &format!("Google Gemini ({model})"),
-                &url,
-                duration_ms,
-                &format!("HTTP {status}: {body}"),
-            );
+            crate::logger::log_api_error(&service, &url, duration_ms, &format!("HTTP {status}: {body}"));
             anyhow::bail!("Gemini API su {url} ha risposto con errore HTTP {status}: {body}");
         }
 
-        crate::logger::log_api_response(
-            &format!("Google Gemini ({model})"),
-            &url,
-            status.as_u16(),
-            duration_ms,
-            &body,
-        );
+        crate::logger::log_api_response(&service, &url, status.as_u16(), duration_ms, &body);
 
         let json_val: serde_json::Value = serde_json::from_str(&body).context("JSON non valido da Gemini")?;
-        let raw_content = json_val["candidates"][0]["content"]["parts"][0]["text"]
-            .as_str()
-            .context("missing Gemini response content")?;
+        // Join every non-thought text part (a response can be split across several parts).
+        let raw_content: String = json_val["candidates"][0]["content"]["parts"]
+            .as_array()
+            .map(|parts| {
+                parts
+                    .iter()
+                    .filter(|p| p["thought"].as_bool() != Some(true))
+                    .filter_map(|p| p["text"].as_str())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if raw_content.trim().is_empty() {
+            anyhow::bail!("missing Gemini response content");
+        }
 
-        Ok(clean_ai_output(raw_content))
+        let usage_meta = &json_val["usageMetadata"];
+        let usage = usage_meta["promptTokenCount"].as_u64().map(|input| TokenUsage {
+            input_tokens: input,
+            output_tokens: usage_meta["candidatesTokenCount"].as_u64().unwrap_or(0)
+                + usage_meta["thoughtsTokenCount"].as_u64().unwrap_or(0),
+        });
+
+        Ok(LlmResponse {
+            text: clean_ai_output(&raw_content),
+            usage,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn claude_max_tokens_per_generation() {
+        assert_eq!(claude_max_output_tokens("claude-opus-5"), 128_000);
+        assert_eq!(claude_max_output_tokens("claude-sonnet-5"), 128_000);
+        assert_eq!(claude_max_output_tokens("claude-haiku-4-5"), 64_000);
+        assert_eq!(claude_max_output_tokens("claude-sonnet-4-5-20250929"), 64_000);
+        assert_eq!(claude_max_output_tokens("claude-3-5-haiku-latest"), 8_192);
+    }
+
+    #[test]
+    fn parses_claude_stream_and_skips_thinking() {
+        let body = r##"event: message_start
+data: {"type":"message_start","message":{"usage":{"input_tokens":120,"output_tokens":1}}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"hmm"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"# Guida"}}
+
+event: content_block_delta
+data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":" completa"}}
+
+event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":42}}
+"##;
+        let parsed = parse_claude_sse(body).unwrap();
+        assert_eq!(parsed.text, "# Guida completa");
+        assert_eq!(parsed.stop_reason.as_deref(), Some("end_turn"));
+        assert_eq!(parsed.usage, TokenUsage { input_tokens: 120, output_tokens: 42 });
+    }
+
+    #[test]
+    fn claude_stream_error_is_reported() {
+        let body = "data: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n";
+        assert!(parse_claude_sse(body).is_err());
+    }
+
+    #[test]
+    fn sampling_params_are_dropped_for_reasoning_models() {
+        assert!(!supports_sampling_params("gpt-5-mini"));
+        assert!(!supports_sampling_params("openai/o3"));
+        assert!(!supports_sampling_params("claude-opus-5"));
+        assert!(!supports_sampling_params("claude-opus-4.7"));
+        assert!(supports_sampling_params("gpt-4.1"));
+        assert!(supports_sampling_params("claude-sonnet-4.5"));
+
+        let mut payload = json!({"model": "claude-opus-5", "temperature": 0.2, "top_p": 0.9});
+        strip_unsupported_sampling(&mut payload, "claude-opus-5");
+        assert!(payload.get("temperature").is_none() && payload.get("top_p").is_none());
     }
 }

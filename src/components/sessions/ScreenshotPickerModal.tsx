@@ -78,7 +78,7 @@ export function ScreenshotPickerModal({
             display: "flex",
             justifyContent: "space-between",
             alignItems: "center",
-            background: "var(--bg-2, #131b26)",
+            background: "var(--bg-2)",
           }}
         >
           <div>
@@ -110,11 +110,16 @@ export function ScreenshotPickerModal({
           <div
             style={{
               flex: "0 0 50%",
+              minWidth: 0,
+              minHeight: 0,
               borderRight: "1px solid var(--hair)",
               padding: "16px",
               overflowY: "auto",
               display: "grid",
               gridTemplateColumns: "repeat(auto-fill, minmax(170px, 1fr))",
+              // Rows sized by their content: with the default sizing inside a scrolling grid,
+              // rows could collapse to a couple of pixels.
+              gridAutoRows: "max-content",
               gap: "12px",
               alignContent: "start",
             }}
@@ -136,9 +141,9 @@ export function ScreenshotPickerModal({
                     borderRadius: "8px",
                     overflow: "hidden",
                     border: isSelected
-                      ? "2px solid var(--mint, #38bdf8)"
+                      ? "2px solid var(--mint)"
                       : isCurrent
-                      ? "2px solid rgba(56, 189, 248, 0.4)"
+                      ? "2px solid rgba(95, 233, 184, 0.4)"
                       : "1px solid var(--hair)",
                     cursor: "pointer",
                     background: "rgba(0,0,0,0.25)",
@@ -147,7 +152,7 @@ export function ScreenshotPickerModal({
                     flexDirection: "column",
                   }}
                 >
-                  <div style={{ position: "relative", paddingTop: "60%", background: "#000" }}>
+                  <div style={{ position: "relative", width: "100%", aspectRatio: "16 / 10", background: "#000", flexShrink: 0 }}>
                     <img
                       src={convertFileSrc(s.path)}
                       alt={`Screenshot ${idx + 1}`}
@@ -167,8 +172,8 @@ export function ScreenshotPickerModal({
                           position: "absolute",
                           top: "4px",
                           left: "4px",
-                          background: "rgba(14, 165, 233, 0.85)",
-                          color: "#fff",
+                          background: "rgba(95, 233, 184, 0.85)",
+                          color: "var(--mint-ink)",
                           fontSize: "10px",
                           padding: "2px 6px",
                           borderRadius: "4px",
@@ -184,8 +189,8 @@ export function ScreenshotPickerModal({
                           position: "absolute",
                           top: "4px",
                           right: "4px",
-                          background: "#38bdf8",
-                          color: "#000",
+                          background: "var(--mint)",
+                          color: "var(--mint-ink)",
                           fontSize: "10px",
                           padding: "2px 6px",
                           borderRadius: "4px",
@@ -203,7 +208,7 @@ export function ScreenshotPickerModal({
                       color: "var(--dim)",
                       display: "flex",
                       justifyContent: "space-between",
-                      background: isSelected ? "rgba(56, 189, 248, 0.1)" : "transparent",
+                      background: isSelected ? "rgba(95, 233, 184, 0.1)" : "transparent",
                     }}
                   >
                     <span>#{idx + 1}</span>

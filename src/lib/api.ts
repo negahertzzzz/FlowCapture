@@ -143,9 +143,34 @@ export interface AiLogEvent {
   timestamp_ms: number;
 }
 
+export interface TokenUsage {
+  input_tokens: number;
+  output_tokens: number;
+}
+
 export interface GenerateDocumentationResult {
   markdown: string;
   redaction_summary: RedactionSummary;
+  usage: TokenUsage;
+  /** Requests whose token usage the server did not report. */
+  unreported_calls: number;
+  cost_usd: number | null;
+}
+
+export interface ModelPrice {
+  input_per_mtok: number;
+  output_per_mtok: number;
+}
+
+export interface CostEstimate {
+  provider_name: string;
+  model: string | null;
+  llm_calls: number;
+  input_tokens: number;
+  output_tokens: number;
+  price: ModelPrice | null;
+  estimated_cost_usd: number | null;
+  needs_transcription: boolean;
 }
 
 export interface ExportOptionsPayload {
@@ -215,6 +240,8 @@ export const api = {
     invoke<void>("update_provider", { provider }),
   generateDocumentation: (sessionId: string) =>
     invoke<GenerateDocumentationResult>("generate_documentation", { sessionId }),
+  estimateGenerationCost: (sessionId: string) =>
+    invoke<CostEstimate>("estimate_generation_cost", { sessionId }),
   cancelDocumentation: (sessionId: string) =>
     invoke<boolean>("cancel_documentation_generation", { sessionId }),
   listAiJobs: (sessionId: string) =>

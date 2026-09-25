@@ -1,8 +1,14 @@
 import { useState, useRef } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Screenshot } from "@/lib/api";
+
+/** Keeps screenshot paths working (they are resolved by `resolveImageSrc`) but drops script URLs. */
+function safeUrl(url: string): string {
+  return /^\s*(javascript|vbscript|data:text\/html)/i.test(url) ? "" : url;
+}
 
 interface MarkdownPreviewProps {
   markdown: string;
@@ -75,10 +81,10 @@ function EditableBlock({
       title="Clicca per modificare direttamente questo testo nell'anteprima"
       style={{
         ...style,
-        outline: isFocused ? "2px solid #38bdf8" : "none",
+        outline: isFocused ? "2px solid var(--mint)" : "none",
         outlineOffset: "2px",
         borderRadius: "4px",
-        background: isFocused ? "rgba(56, 189, 248, 0.08)" : undefined,
+        background: isFocused ? "rgba(95, 233, 184, 0.08)" : undefined,
         cursor: "text",
         transition: "background 0.15s, outline 0.15s",
       }}
@@ -167,10 +173,10 @@ export function MarkdownPreview({
             padding: "6px 12px",
             marginBottom: "14px",
             borderRadius: "6px",
-            background: "rgba(56, 189, 248, 0.08)",
-            border: "1px solid rgba(56, 189, 248, 0.25)",
+            background: "rgba(95, 233, 184, 0.08)",
+            border: "1px solid rgba(95, 233, 184, 0.25)",
             fontSize: "12px",
-            color: "#38bdf8",
+            color: "var(--mint)",
           }}
         >
           <span>✏️</span>
@@ -182,8 +188,23 @@ export function MarkdownPreview({
 
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
-        urlTransform={(url) => url}
+        urlTransform={safeUrl}
         components={{
+          // Links open in the system browser: navigating the app window would replace the app.
+          a: ({ href, children }: any) => (
+            <a
+              href={href}
+              onClick={(event) => {
+                event.preventDefault();
+                if (typeof href === "string" && /^(https?:|mailto:)/i.test(href)) {
+                  openUrl(href).catch(() => undefined);
+                }
+              }}
+              style={{ color: "var(--mint)", textDecoration: "underline", cursor: "pointer" }}
+            >
+              {children}
+            </a>
+          ),
           img: ({ src, alt, node }: any) => {
             const resolved = resolveImageSrc(
               typeof src === "string" ? src : undefined,
@@ -269,7 +290,7 @@ export function MarkdownPreview({
               editable={editable}
               onTextChange={onTextChange}
               style={{
-                borderLeft: "3px solid var(--mint, #38bdf8)",
+                borderLeft: "3px solid var(--mint)",
                 paddingLeft: 12,
                 margin: "12px 0",
                 color: "var(--text-2, #94a3b8)",

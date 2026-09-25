@@ -239,7 +239,12 @@ export function MarkdownEditor({
 
   function insertFormatting(prefix: string, suffix = "", defaultText = "") {
     const textarea = textareaRef.current;
-    if (!textarea) return;
+    if (!textarea) {
+      // "Preview only" mode has no textarea (so no cursor): append at the end instead of
+      // silently doing nothing.
+      onChange(`${value}${prefix}${defaultText}${suffix}`);
+      return;
+    }
 
     const start = textarea.selectionStart;
     const end = textarea.selectionEnd;
@@ -261,7 +266,10 @@ export function MarkdownEditor({
 
   function insertLinePrefix(prefix: string) {
     const textarea = textareaRef.current;
-    if (!textarea) return;
+    if (!textarea) {
+      onChange(`${value}\n${prefix}`);
+      return;
+    }
 
     const start = textarea.selectionStart;
     const lineStart = value.lastIndexOf("\n", start - 1) + 1;
@@ -276,19 +284,38 @@ export function MarkdownEditor({
 
   function insertScreenshotMarkdown(shot: Screenshot, index: number) {
     const filename = shot.path.split(/[/\\]/).pop() ?? `screenshot_${index + 1}.jpg`;
-    const snippet = `\n\n![{t("md.step", "Step")} ${index + 1} - ${shot.trigger || "Screenshot"}](${filename})\n`;
+    const snippet = `\n\n![${t("md.step", "Step")} ${index + 1} - ${shot.trigger || "Screenshot"}](${filename})\n`;
     insertFormatting(snippet, "", "");
     setShowScreenshotPicker(false);
   }
 
   function insertStepTemplate() {
-    const snippet = `\n\n### {t("md.step", "Step")}: [Titolo {t("md.step", "Step")}]\n{t("md.step_desc", "Describe in detail what the user needs to do in this step.")}\n\n- **{t("md.action", "Action")}**: {t("md.click_on", "Click on...")}\n- **{t("md.expected", "Expected result")}**: {t("md.window_opens", "The window opens...")}\n`;
+    // The exporters recognise a step only as "### Passo N:" / "### Step N:", so the template
+    // carries the next free number.
+    const numbers = Array.from(value.matchAll(/^#{2,4}\s+(?:Step|Passo)?\s*(\d+)[:.]/gim), (m) => Number(m[1]));
+    const nextNumber = numbers.length > 0 ? Math.max(...numbers) + 1 : 1;
+    const snippet = `\n\n### ${t("md.step", "Step")} ${nextNumber}: ${t("annotation.step_title", "Step title")}\n${t("md.step_desc", "Describe in detail what the user needs to do in this step.")}\n\n- **${t("md.action", "Action")}**: ${t("md.click_on", "Click on...")}\n- **${t("md.expected", "Expected result")}**: ${t("md.window_opens", "The window opens...")}\n`;
     insertFormatting(snippet, "", "");
   }
 
   function insertTable() {
-    const tableSnippet = `\n\n| {t("md.param", "Parameter")} | {t("md.desc", "Description")} | {t("md.required", "Required")} |\n| :--- | :--- | :--- |\n| {t("md.val1", "Value 1")} | {t("md.desc1", "Explanation of the first field")} | {t("md.yes", "Yes")} |\n| {t("md.val2", "Value 2")} | {t("md.desc2", "Explanation of the second field")} | No |\n`;
+    const tableSnippet = `\n\n| ${t("md.param", "Parameter")} | ${t("md.desc", "Description")} | ${t("md.required", "Required")} |\n| :--- | :--- | :--- |\n| ${t("md.val1", "Value 1")} | ${t("md.desc1", "Explanation of the first field")} | ${t("md.yes", "Yes")} |\n| ${t("md.val2", "Value 2")} | ${t("md.desc2", "Explanation of the second field")} | No |\n`;
     insertFormatting(tableSnippet, "", "");
+  }
+
+  function handleEditorKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (!(event.ctrlKey || event.metaKey)) return;
+    const key = event.key.toLowerCase();
+    if (key === "b") {
+      event.preventDefault();
+      insertFormatting("**", "**", t("md.bold_text", "bold text"));
+    } else if (key === "i") {
+      event.preventDefault();
+      insertFormatting("*", "*", t("md.italic_text", "italic text"));
+    } else if (key === "s" && onSave) {
+      event.preventDefault();
+      onSave();
+    }
   }
 
   return (
@@ -298,7 +325,7 @@ export function MarkdownEditor({
         display: "flex",
         flexDirection: "column",
         height: "100%",
-        minHeight: "580px",
+        minHeight,
         border: "1px solid var(--hair)",
         borderRadius: "8px",
         overflow: "hidden",
@@ -314,7 +341,7 @@ export function MarkdownEditor({
           flexWrap: "wrap",
           gap: "6px",
           padding: "8px 12px",
-          background: "var(--bg-2, #18202c)",
+          background: "var(--bg-2)",
           borderBottom: "1px solid var(--hair)",
         }}
       >
@@ -521,7 +548,7 @@ export function MarkdownEditor({
                           fontSize: "12px",
                         }}
                         onMouseEnter={(e) => {
-                          e.currentTarget.style.background = "var(--surface)";
+                          e.currentTarget.style.background = "var(--hair)";
                         }}
                         onMouseLeave={(e) => {
                           e.currentTarget.style.background = "transparent";
@@ -606,9 +633,9 @@ export function MarkdownEditor({
               type="button"
               onClick={() => setEditablePreview(!editablePreview)}
               style={{
-                background: editablePreview ? "rgba(56, 189, 248, 0.15)" : "transparent",
-                border: editablePreview ? "1px solid #38bdf8" : "1px solid var(--hair)",
-                color: editablePreview ? "#38bdf8" : "var(--dim)",
+                background: editablePreview ? "rgba(95, 233, 184, 0.15)" : "transparent",
+                border: editablePreview ? "1px solid var(--mint)" : "1px solid var(--hair)",
+                color: editablePreview ? "var(--mint)" : "var(--dim)",
                 borderRadius: "6px",
                 padding: "3px 8px",
                 fontSize: "11.5px",
@@ -672,7 +699,7 @@ export function MarkdownEditor({
                   display: "inline-block",
                   width: "10px",
                   height: "10px",
-                  border: "2px solid #38bdf8",
+                  border: "2px solid var(--mint)",
                   borderTopColor: "transparent",
                   borderRadius: "50%",
                   animation: "spin 0.8s linear infinite",
@@ -701,10 +728,10 @@ export function MarkdownEditor({
                   onClick={onSave}
                   disabled={saving}
                   style={{
-                    background: "var(--color-primary, #0284c7)",
+                    background: "var(--mint)",
                     border: "none",
                     borderRadius: "6px",
-                    color: "#fff",
+                    color: "var(--mint-ink)",
                     padding: "3px 10px",
                     fontSize: "11.5px",
                     fontWeight: 600,
@@ -726,6 +753,7 @@ export function MarkdownEditor({
           display: "flex",
           flex: 1,
           minHeight,
+          maxHeight,
           position: "relative",
           overflow: "hidden",
         }}
@@ -774,6 +802,7 @@ export function MarkdownEditor({
               value={value}
               onChange={(e) => onChange(e.target.value)}
               onScroll={handleEditorScroll}
+              onKeyDown={handleEditorKeyDown}
               disabled={disabled}
               placeholder="Scrivi qui il markdown della documentazione o usa la toolbar sopra..."
               style={{
@@ -785,7 +814,7 @@ export function MarkdownEditor({
                 border: "none",
                 outline: "none",
                 background: "transparent",
-                color: "var(--text-1, #f0f6fc)",
+                color: "var(--text)",
                 fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
                 fontSize: "13.5px",
                 lineHeight: "1.6",

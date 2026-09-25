@@ -38,17 +38,46 @@ impl Database {
         self.data_dir.join("sessions").join(session_id)
     }
 
+    /// Schema changes are numbered and applied once, in order. The number of the last applied
+    /// step is stored in SQLite's `PRAGMA user_version`, so a failing step is a real error
+    /// instead of being silently ignored.
     fn run_migrations(&self) -> Result<()> {
-        let migration = include_str!("../../migrations/001_initial.sql");
         let conn = self.conn.lock();
-        conn.execute_batch(migration)?;
-        let _ = conn.execute("ALTER TABLE sessions ADD COLUMN audio_path TEXT", []);
-        let _ = conn.execute("ALTER TABLE sessions ADD COLUMN audio_transcript TEXT", []);
-        let _ = conn.execute("ALTER TABLE sessions ADD COLUMN full_video_path TEXT", []);
-        let _ = conn.execute("ALTER TABLE sessions ADD COLUMN audio_segments_json TEXT", []);
-        let _ = conn.execute("ALTER TABLE screenshots ADD COLUMN click_x INTEGER", []);
-        let _ = conn.execute("ALTER TABLE screenshots ADD COLUMN click_y INTEGER", []);
-        let _ = conn.execute("ALTER TABLE screenshots ADD COLUMN annotations_json TEXT", []);
+        conn.execute_batch(include_str!("../../migrations/001_initial.sql"))?;
+
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+
+        if version < 1 {
+            // Columns added after the first release. Databases created before versioned
+            // migrations may already have some of them.
+            for (table, column, kind) in [
+                ("sessions", "audio_path", "TEXT"),
+                ("sessions", "audio_transcript", "TEXT"),
+                ("sessions", "full_video_path", "TEXT"),
+                ("sessions", "audio_segments_json", "TEXT"),
+                ("screenshots", "click_x", "INTEGER"),
+                ("screenshots", "click_y", "INTEGER"),
+                ("screenshots", "annotations_json", "TEXT"),
+            ] {
+                add_column_if_missing(&conn, table, column, kind)
+                    .with_context(|| format!("migration 1: adding {table}.{column}"))?;
+            }
+            conn.execute_batch("PRAGMA user_version = 1")?;
+        }
+
+        if version < 2 {
+            // Replace retired default models, only where the user never changed them.
+            conn.execute(
+                "UPDATE providers SET model = ?1 WHERE id = 'claude' AND model = 'claude-3-5-haiku-latest'",
+                params![crate::ai::providers::DEFAULT_CLAUDE_MODEL],
+            )?;
+            conn.execute(
+                "UPDATE providers SET model = ?1 WHERE id = 'openai' AND model = 'gpt-4o-mini'",
+                params![crate::ai::providers::DEFAULT_OPENAI_MODEL],
+            )?;
+            conn.execute_batch("PRAGMA user_version = 2")?;
+        }
+
         Ok(())
     }
 
@@ -61,28 +90,28 @@ impl Database {
                 "OpenAI",
                 "openai",
                 "https://api.openai.com/v1",
-                "gpt-4o-mini",
+                crate::ai::providers::DEFAULT_OPENAI_MODEL,
             ),
             (
                 "claude",
                 "Claude",
                 "claude",
                 "https://api.anthropic.com/v1",
-                "claude-3-5-haiku-latest",
+                crate::ai::providers::DEFAULT_CLAUDE_MODEL,
             ),
             (
                 "ollama",
                 "Ollama",
                 "ollama",
                 "http://localhost:11434",
-                "llama3.2",
+                crate::ai::providers::DEFAULT_OLLAMA_MODEL,
             ),
             (
                 "gemini",
                 "Gemini",
                 "gemini",
                 "https://generativelanguage.googleapis.com/v1beta",
-                "gemini-2.5-flash",
+                crate::ai::providers::DEFAULT_GEMINI_MODEL,
             ),
         ] {
             conn.execute(
@@ -102,7 +131,6 @@ impl Database {
         let session_dir = self.session_dir(&id);
         std::fs::create_dir_all(session_dir.join("screenshots"))?;
         std::fs::create_dir_all(session_dir.join("exports"))?;
-        std::fs::create_dir_all(session_dir.join("frames"))?;
 
         self.conn.lock().execute(
             "INSERT INTO sessions (id, title, status, started_at) VALUES (?1, ?2, ?3, ?4)",
@@ -232,7 +260,7 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT id, title, status, started_at, ended_at, video_path, duration, documentation_md, steps_json, compressed_events_json, audio_path, audio_transcript, full_video_path, audio_segments_json FROM sessions ORDER BY started_at DESC",
         )?;
-        let rows = stmt.query_map([], |row| Session::from_row(row))?;
+        let rows = stmt.query_map([], Session::from_row)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
@@ -243,7 +271,7 @@ impl Database {
         )?;
         let mut rows = stmt.query(params![session_id])?;
         if let Some(row) = rows.next()? {
-            let mut s = Session::from_row(&row)?;
+            let mut s = Session::from_row(row)?;
             let session_dir = self.session_dir(session_id);
 
             // Self-healing for audio_path
@@ -374,7 +402,7 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT id, session_id, event_type, app_name, payload, created_at, timestamp_ms FROM events WHERE session_id = ?1 ORDER BY timestamp_ms ASC",
         )?;
-        let rows = stmt.query_map(params![session_id], |row| StoredEvent::from_row(row))?;
+        let rows = stmt.query_map(params![session_id], StoredEvent::from_row)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
@@ -401,7 +429,7 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT id, session_id, path, timestamp_ms, trigger, selected, click_x, click_y, annotations_json FROM screenshots WHERE session_id = ?1 ORDER BY timestamp_ms ASC",
         )?;
-        let rows = stmt.query_map(params![session_id], |row| Screenshot::from_row(row))?;
+        let rows = stmt.query_map(params![session_id], Screenshot::from_row)?;
         let mut screenshots = rows.collect::<Result<Vec<_>, _>>()?;
 
         // Self-healing path resolution: if a screenshot path does not exist on disk,
@@ -494,7 +522,7 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT id, session_id, format, path, created_at FROM exports WHERE session_id = ?1 ORDER BY created_at DESC",
         )?;
-        let rows = stmt.query_map(params![session_id], |row| ExportRecord::from_row(row))?;
+        let rows = stmt.query_map(params![session_id], ExportRecord::from_row)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
@@ -522,7 +550,7 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT id, name, provider_type, api_key, base_url, model, enabled, created_at FROM providers ORDER BY name ASC",
         )?;
-        let rows = stmt.query_map([], |row| ProviderConfig::from_row(row))?;
+        let rows = stmt.query_map([], ProviderConfig::from_row)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
@@ -549,7 +577,7 @@ impl Database {
         )?;
         let mut rows = stmt.query([])?;
         if let Some(row) = rows.next()? {
-            Ok(Some(ProviderConfig::from_row(&row)?))
+            Ok(Some(ProviderConfig::from_row(row)?))
         } else {
             Ok(None)
         }
@@ -595,7 +623,7 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT id, session_id, stage, status, input_json, output_json, error, created_at, completed_at FROM ai_jobs WHERE session_id = ?1 ORDER BY created_at ASC",
         )?;
-        let rows = stmt.query_map(params![session_id], |row| AiJob::from_row(row))?;
+        let rows = stmt.query_map(params![session_id], AiJob::from_row)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
@@ -613,8 +641,9 @@ impl Database {
         tx.execute(
             "INSERT INTO sessions (
                 id, title, status, started_at, ended_at, video_path, duration,
-                documentation_md, steps_json, compressed_events_json, audio_path, audio_transcript
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                documentation_md, steps_json, compressed_events_json, audio_path, audio_transcript,
+                full_video_path, audio_segments_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 session.id,
                 session.title,
@@ -628,6 +657,8 @@ impl Database {
                 session.compressed_events_json,
                 session.audio_path,
                 session.audio_transcript,
+                session.full_video_path,
+                session.audio_segments_json,
             ],
         )?;
 
@@ -716,4 +747,66 @@ fn preview_screenshot_path(paths: &[String]) -> Option<String> {
     };
 
     paths.get(index).cloned()
+}
+
+fn add_column_if_missing(conn: &Connection, table: &str, column: &str, kind: &str) -> Result<()> {
+    let exists = conn
+        .prepare(&format!("PRAGMA table_info({table})"))?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .filter_map(|name| name.ok())
+        .any(|name| name == column);
+    if !exists {
+        conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {column} {kind}"), [])?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_dir() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("flowcapture-test-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn migrations_are_versioned_and_idempotent() {
+        let dir = temp_dir();
+        {
+            let db = Database::new(dir.clone()).unwrap();
+            let version: i64 = db
+                .conn
+                .lock()
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(version, 2);
+        }
+        // Reopening must not fail on already existing columns.
+        let db = Database::new(dir.clone()).unwrap();
+        let claude = db.list_providers().unwrap().into_iter().find(|p| p.id == "claude").unwrap();
+        assert_eq!(claude.model.as_deref(), Some(crate::ai::providers::DEFAULT_CLAUDE_MODEL));
+        drop(db);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn old_default_model_is_upgraded_but_custom_model_is_kept() {
+        let dir = temp_dir();
+        {
+            let db = Database::new(dir.clone()).unwrap();
+            let conn = db.conn.lock();
+            conn.execute("UPDATE providers SET model = 'claude-3-5-haiku-latest' WHERE id = 'claude'", []).unwrap();
+            conn.execute("UPDATE providers SET model = 'my-copilot-model' WHERE id = 'openai'", []).unwrap();
+            conn.execute_batch("PRAGMA user_version = 1").unwrap();
+        }
+        let db = Database::new(dir.clone()).unwrap();
+        let providers = db.list_providers().unwrap();
+        let model = |id: &str| providers.iter().find(|p| p.id == id).unwrap().model.clone();
+        assert_eq!(model("claude").as_deref(), Some(crate::ai::providers::DEFAULT_CLAUDE_MODEL));
+        assert_eq!(model("openai").as_deref(), Some("my-copilot-model"));
+        drop(db);
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

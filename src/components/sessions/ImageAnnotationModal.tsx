@@ -705,7 +705,7 @@ export function ImageAnnotationModal({
           alignItems: "center",
           justifyContent: "space-between",
           padding: "10px 20px",
-          background: "var(--bg-2, #161e2b)",
+          background: "var(--bg-2)",
           borderBottom: "1px solid var(--hair)",
         }}
       >
@@ -718,8 +718,8 @@ export function ImageAnnotationModal({
             <span
               style={{
                 fontSize: "12px",
-                background: "rgba(56, 189, 248, 0.2)",
-                color: "#38bdf8",
+                background: "rgba(95, 233, 184, 0.2)",
+                color: "var(--mint)",
                 padding: "2px 8px",
                 borderRadius: "10px",
                 fontWeight: 600,
@@ -794,9 +794,9 @@ export function ImageAnnotationModal({
             <div
               style={{
                 padding: "10px",
-                background: "rgba(56, 189, 248, 0.08)",
+                background: "rgba(95, 233, 184, 0.08)",
                 borderRadius: "8px",
-                border: "1px solid rgba(56, 189, 248, 0.25)",
+                border: "1px solid rgba(95, 233, 184, 0.25)",
               }}
             >
               <label

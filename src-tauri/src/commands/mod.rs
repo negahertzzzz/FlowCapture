@@ -289,9 +289,12 @@ pub async fn generate_documentation(
     state.remove_ai_cancellation(&session_id);
 
     match result {
-        Ok((markdown, redaction_summary)) => Ok(GenerateDocumentationResult {
-            markdown,
-            redaction_summary,
+        Ok(output) => Ok(GenerateDocumentationResult {
+            markdown: output.markdown,
+            redaction_summary: output.redaction_summary,
+            usage: output.usage,
+            unreported_calls: output.unreported_calls,
+            cost_usd: output.cost_usd,
         }),
         Err(err) => {
             let _ = state.db.update_session_status(&session_id, crate::storage::models::SessionStatus::Ready);
@@ -304,6 +307,18 @@ pub async fn generate_documentation(
 pub struct GenerateDocumentationResult {
     pub markdown: String,
     pub redaction_summary: RedactionSummary,
+    pub usage: crate::ai::providers::TokenUsage,
+    pub unreported_calls: u32,
+    pub cost_usd: Option<f64>,
+}
+
+/// Token / cost estimate shown before starting a generation.
+#[tauri::command]
+pub fn estimate_generation_cost(
+    state: State<'_, Arc<AppState>>,
+    session_id: String,
+) -> Result<crate::ai::cost::CostEstimate, String> {
+    crate::ai::pipeline::estimate_generation_cost(&state.db, &session_id).map_err(|err| err.to_string())
 }
 
 #[tauri::command]
@@ -781,17 +796,7 @@ pub async fn translate_documentation(
         ),
     );
 
-    let system = "You are an expert technical documentation translator specializing in software user guides and SOPs. Translate accurately into natural, fluent Italian.";
-    let prompt = format!(
-        "Traduci in lingua {lang} la seguente documentazione di workflow Markdown.\n\n\
-        REGOLE FONDAMENTALI:\n\
-        1. NON alterare, non tradurre e non rimuovere i segnaposto <!-- FC_SCREENSHOT_X -->. Mantienili esattamente nella stessa posizione.\n\
-        2. Traduci tutti i titoli (#, ##, ###), le descrizioni delle azioni, le spiegazioni e gli elenchi in un italiano chiaro, naturale e professionale.\n\
-        3. Preserva fedelmente la formattazione Markdown (grassetti, corsivi, elenchi numerati e puntati, tabelle, blocchi di codice).\n\
-        4. Rispondi ESCLUSIVAMENTE con il Markdown tradotto, senza alcuna premessa, saluto o commento conversazionale.\n\n\
-        Testo Markdown da tradurre:\n\
-        {text_to_translate}"
-    );
+    let prompt = crate::ai::prompts::translate_guide(&lang, &text_to_translate);
 
     let options = crate::ai::providers::get_ai_generate_options(
         &state.db,
@@ -804,15 +809,22 @@ pub async fn translate_documentation(
         "Applicata modalità No-Think (ragionamento interno disabilitato per traduzione diretta)...",
     );
 
-    let translated_res = llm.generate(system, &prompt, &options).await;
+    let translated_res = llm.generate(&prompt.system, &prompt.user, &options).await;
     let translated_raw = match translated_res {
-        Ok(t) => {
+        Ok(response) => {
+            let usage_note = response
+                .usage
+                .map(|u| format!(", {} token in ingresso / {} in uscita", u.input_tokens, u.output_tokens))
+                .unwrap_or_default();
             crate::ai::emit_log(
                 &app,
                 &session_id,
-                &format!("Risposta ricevuta con successo dal server AI ({} caratteri)!", t.len()),
+                &format!(
+                    "Risposta ricevuta con successo dal server AI ({} caratteri{usage_note})!",
+                    response.text.len()
+                ),
             );
-            t
+            response.text
         }
         Err(err) => {
             let err_msg = format!("Errore durante la traduzione con {provider_name}: {err}");
@@ -851,7 +863,7 @@ pub async fn translate_documentation(
         .map_err(|err| err.to_string())?;
 
     crate::ai::emit_log(&app, &session_id, "Documentazione tradotta salvata nel database!");
-    crate::ai::emit_log(&app, &session_id, "Traduzione in italiano completata con successo!");
+    crate::ai::emit_log(&app, &session_id, &format!("Traduzione in {lang} completata con successo!"));
 
     Ok(final_md)
 }
@@ -1178,7 +1190,7 @@ pub fn find_duplicate_screenshots(
         for j in (i + 1)..n {
             let diff_sum: u64 = thumbs[i].pixels.iter()
                 .zip(thumbs[j].pixels.iter())
-                .map(|(&a, &b)| (a as i32 - b as i32).abs() as u64)
+                .map(|(&a, &b)| (a as i32 - b as i32).unsigned_abs() as u64)
                 .sum();
             let max_diff = 1024.0 * 255.0;
             let sim = (1.0 - (diff_sum as f64 / max_diff)).max(0.0);

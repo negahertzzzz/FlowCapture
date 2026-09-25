@@ -1,7 +1,7 @@
 ﻿{
   "manifest_version": 3,
   "name": "FlowCapture Companion",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Rileva e invia a FlowCapture gli elementi cliccati e i metadati DOM delle pagine web",
   "permissions": [
     "activeTab",

@@ -392,10 +392,10 @@ export function AnnotationOverlay({
           type="button"
           onClick={onOpenEditor}
           style={{
-            background: "rgba(14, 165, 233, 0.85)",
-            border: "1px solid rgba(56, 189, 248, 0.5)",
+            background: "rgba(95, 233, 184, 0.85)",
+            border: "1px solid rgba(95, 233, 184, 0.5)",
             backdropFilter: "blur(6px)",
-            color: "#ffffff",
+            color: "var(--mint-ink)",
             padding: "5px 12px",
             borderRadius: "6px",
             fontSize: "11.5px",

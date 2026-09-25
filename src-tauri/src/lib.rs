@@ -10,6 +10,7 @@ mod screenshots;
 mod security;
 mod state;
 mod storage;
+mod process_util;
 mod thread_util;
 pub mod logger;
 
@@ -75,6 +76,7 @@ pub fn run() {
             commands::list_providers,
             commands::update_provider,
             commands::generate_documentation,
+            commands::estimate_generation_cost,
             commands::cancel_documentation_generation,
             commands::list_ai_jobs,
             commands::export_session,

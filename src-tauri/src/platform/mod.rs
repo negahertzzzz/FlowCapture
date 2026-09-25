@@ -37,7 +37,7 @@ pub fn create_platform_services() -> Result<PlatformServices> {
     }
     #[cfg(target_os = "windows")]
     {
-        return Ok(windows::WindowsPlatform::new()?.into_services());
+        Ok(windows::WindowsPlatform::new()?.into_services())
     }
     #[cfg(target_os = "linux")]
     {

@@ -1,7 +1,9 @@
 use std::io::BufWriter;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -49,7 +51,7 @@ impl ScreenRecorder for MacScreenRecorder {
         let stop_flag = Arc::new(AtomicBool::new(false));
         self.stop_flag = stop_flag.clone();
         self.recording.store(true, Ordering::SeqCst);
-        *self.output_dir.lock().unwrap() = Some(output_dir.clone());
+        *self.output_dir.lock() = Some(output_dir.clone());
 
         let handle = thread::spawn(move || {
             let mut frame_index = 0u64;
@@ -78,7 +80,7 @@ impl ScreenRecorder for MacScreenRecorder {
             }
         });
 
-        *self.handle.lock().unwrap() = Some(handle);
+        *self.handle.lock() = Some(handle);
         Ok(output_dir)
     }
 
@@ -88,13 +90,13 @@ impl ScreenRecorder for MacScreenRecorder {
         }
 
         self.request_stop();
-        if let Some(handle) = self.handle.lock().unwrap().take() {
+        if let Some(handle) = self.handle.lock().take() {
             if !join_thread_with_timeout(handle, RECORDER_JOIN_TIMEOUT) {
                 eprintln!("FlowCapture: video frame capture thread did not stop within timeout");
             }
         }
         self.recording.store(false, Ordering::SeqCst);
-        self.output_dir.lock().unwrap().take();
+        self.output_dir.lock().take();
 
         Ok(None)
     }

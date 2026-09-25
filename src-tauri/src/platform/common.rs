@@ -1,6 +1,8 @@
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+
+use parking_lot::Mutex;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -86,11 +88,9 @@ impl ScreenRecorder for SharedRecorder {
         let stop_flag = Arc::new(AtomicBool::new(false));
         self.stop_flag = stop_flag.clone();
         self.is_paused.store(false, Ordering::SeqCst);
-        if let Ok(mut mon_guard) = self.current_monitor_id.lock() {
-            *mon_guard = monitor_id;
-        }
+        *self.current_monitor_id.lock() = monitor_id;
         self.recording.store(true, Ordering::SeqCst);
-        *self.output_dir.lock().unwrap() = Some(output_dir.clone());
+        *self.output_dir.lock() = Some(output_dir.clone());
 
         let frames_dir_clone = frames_dir.clone();
         let is_paused_clone = self.is_paused.clone();
@@ -102,7 +102,7 @@ impl ScreenRecorder for SharedRecorder {
                     thread::sleep(Duration::from_millis(200));
                     continue;
                 }
-                let target_mon_id = current_monitor_id_clone.lock().ok().and_then(|g| g.clone());
+                let target_mon_id = current_monitor_id_clone.lock().clone();
                 let path = frames_dir_clone.join(format!("frame_{frame_index:06}.png"));
                 let captured = {
                     #[cfg(target_os = "linux")]
@@ -125,7 +125,7 @@ impl ScreenRecorder for SharedRecorder {
             }
         });
 
-        *self.handle.lock().unwrap() = Some(handle);
+        *self.handle.lock() = Some(handle);
         Ok(output_dir)
     }
 
@@ -138,9 +138,7 @@ impl ScreenRecorder for SharedRecorder {
     }
 
     fn switch_monitor(&self, monitor_id: Option<String>) -> Result<()> {
-        if let Ok(mut guard) = self.current_monitor_id.lock() {
-            *guard = monitor_id;
-        }
+        *self.current_monitor_id.lock() = monitor_id;
         Ok(())
     }
 
@@ -150,14 +148,14 @@ impl ScreenRecorder for SharedRecorder {
         }
 
         self.request_stop();
-        if let Some(handle) = self.handle.lock().unwrap().take() {
+        if let Some(handle) = self.handle.lock().take() {
             if !join_thread_with_timeout(handle, SERVICE_JOIN_TIMEOUT) {
                 eprintln!("FlowCapture: shared recorder thread did not stop within timeout");
             }
         }
 
         self.recording.store(false, Ordering::SeqCst);
-        self.output_dir.lock().unwrap().take();
+        self.output_dir.lock().take();
         Ok(None)
     }
 
@@ -204,16 +202,17 @@ impl InputEventSource for SharedInputSource {
                 return;
             };
             let mut previous_keys: Vec<Keycode> = Vec::new();
+            let password_detector = crate::platform::windows_uia::PasswordFieldDetector::new();
             while !stop_flag.load(Ordering::SeqCst) {
                 let mouse = device_state.get_mouse();
                 let keys = device_state.get_keys();
                 let timestamp_ms = now_ms();
 
                 {
-                    let mut last = last_mouse.lock().unwrap();
+                    let mut last = last_mouse.lock();
                     if *last != Some(mouse.coords) {
                         *last = Some(mouse.coords);
-                        events.lock().unwrap().push(CapturedInputEvent {
+                        events.lock().push(CapturedInputEvent {
                             event_type: "mouse_move".to_string(),
                             app_name: active_window_name(),
                             payload: serde_json::json!({
@@ -226,8 +225,8 @@ impl InputEventSource for SharedInputSource {
                 }
 
                 {
-                    let mut was_down = left_button_down.lock().unwrap();
-                    let mut last_clicks = last_click_time.lock().unwrap();
+                    let mut was_down = left_button_down.lock();
+                    let mut last_clicks = last_click_time.lock();
                     for (index, button) in [(0_usize, "left"), (1, "right"), (2, "middle")] {
                         let is_down = mouse.button_pressed[index];
                         if is_down && !was_down[index] {
@@ -241,7 +240,7 @@ impl InputEventSource for SharedInputSource {
                                 "mouse_click".to_string()
                             };
 
-                            events.lock().unwrap().push(CapturedInputEvent {
+                            events.lock().push(CapturedInputEvent {
                                 event_type,
                                 app_name: active_window_name(),
                                 payload: serde_json::json!({
@@ -254,7 +253,7 @@ impl InputEventSource for SharedInputSource {
                             });
                         } else if !is_down && was_down[index] {
                             // Mouse release event (useful for drag-and-drop actions)
-                            events.lock().unwrap().push(CapturedInputEvent {
+                            events.lock().push(CapturedInputEvent {
                                 event_type: "mouse_release".to_string(),
                                 app_name: active_window_name(),
                                 payload: serde_json::json!({
@@ -275,6 +274,9 @@ impl InputEventSource for SharedInputSource {
                 let has_shift = keys.iter().any(|k| matches!(k, Keycode::LShift | Keycode::RShift));
                 let has_meta = keys.iter().any(|k| matches!(k, Keycode::LMeta | Keycode::RMeta));
 
+                // Checked at most once per poll, and only when something new was pressed.
+                let mut in_password_field: Option<bool> = None;
+
                 for key in keys.iter().copied().filter(|key| !previous_keys.contains(key)) {
                     // Skip standalone modifier presses when creating combo events
                     let is_mod = matches!(
@@ -289,8 +291,19 @@ impl InputEventSource for SharedInputSource {
                             | Keycode::RMeta
                     );
 
-                    let key_name = format!("{key:?}");
-                    let combo = if !is_mod && (has_ctrl || has_alt || has_shift || has_meta) {
+                    // Never store what is typed into a password field: every typing key
+                    // (letters, digits, symbols, also with Shift) is recorded as "*".
+                    let is_typing_key = !is_mod
+                        && !has_ctrl
+                        && !has_alt
+                        && !has_meta
+                        && !matches!(key, Keycode::Enter | Keycode::Tab | Keycode::Escape);
+                    let masked = is_typing_key
+                        && *in_password_field
+                            .get_or_insert_with(|| password_detector.focused_is_password());
+
+                    let key_name = if masked { "*".to_string() } else { format!("{key:?}") };
+                    let combo = if !masked && !is_mod && (has_ctrl || has_alt || has_shift || has_meta) {
                         let mut parts = Vec::new();
                         if has_ctrl {
                             parts.push("Ctrl");
@@ -310,7 +323,7 @@ impl InputEventSource for SharedInputSource {
                         None
                     };
 
-                    events.lock().unwrap().push(CapturedInputEvent {
+                    events.lock().push(CapturedInputEvent {
                         event_type: if combo.is_some() {
                             "shortcut_press".to_string()
                         } else {
@@ -334,7 +347,7 @@ impl InputEventSource for SharedInputSource {
             }
         });
 
-        *self.handle.lock().unwrap() = Some(handle);
+        *self.handle.lock() = Some(handle);
         Ok(())
     }
 
@@ -343,7 +356,7 @@ impl InputEventSource for SharedInputSource {
             return Ok(());
         }
         self.request_stop();
-        if let Some(handle) = self.handle.lock().unwrap().take() {
+        if let Some(handle) = self.handle.lock().take() {
             if !join_thread_with_timeout(handle, SERVICE_JOIN_TIMEOUT) {
                 eprintln!("FlowCapture: shared recorder thread did not stop within timeout");
             }
@@ -353,7 +366,7 @@ impl InputEventSource for SharedInputSource {
     }
 
     fn drain_events(&mut self) -> Vec<CapturedInputEvent> {
-        let mut events = self.events.lock().unwrap();
+        let mut events = self.events.lock();
         std::mem::take(&mut *events)
     }
 
@@ -390,10 +403,10 @@ impl WindowTracker for SharedWindowTracker {
             while !stop_flag.load(Ordering::SeqCst) {
                 if let Ok(window) = active_win_pos_rs::get_active_window() {
                     let window_key = format!("{}::{}", window.app_name, window.title);
-                    let mut last = last_window_key.lock().unwrap();
+                    let mut last = last_window_key.lock();
                     if last.as_deref() != Some(window_key.as_str()) {
                         *last = Some(window_key);
-                        events.lock().unwrap().push(WindowInfo {
+                        events.lock().push(WindowInfo {
                             app_name: window.app_name,
                             title: window.title,
                             timestamp_ms: now_ms(),
@@ -404,7 +417,7 @@ impl WindowTracker for SharedWindowTracker {
             }
         });
 
-        *self.handle.lock().unwrap() = Some(handle);
+        *self.handle.lock() = Some(handle);
         Ok(())
     }
 
@@ -413,7 +426,7 @@ impl WindowTracker for SharedWindowTracker {
             return Ok(());
         }
         self.request_stop();
-        if let Some(handle) = self.handle.lock().unwrap().take() {
+        if let Some(handle) = self.handle.lock().take() {
             if !join_thread_with_timeout(handle, SERVICE_JOIN_TIMEOUT) {
                 eprintln!("FlowCapture: shared recorder thread did not stop within timeout");
             }
@@ -423,7 +436,7 @@ impl WindowTracker for SharedWindowTracker {
     }
 
     fn drain_events(&mut self) -> Vec<WindowInfo> {
-        let mut events = self.events.lock().unwrap();
+        let mut events = self.events.lock();
         std::mem::take(&mut *events)
     }
 

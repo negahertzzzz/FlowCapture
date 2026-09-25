@@ -329,10 +329,10 @@ pub fn highlight_click_on_image(
             let color: Option<[u8; 4]> = if dist <= 4.0 {
                 // Central bright dot
                 Some([239, 68, 68, 255])
-            } else if dist >= 13.0 && dist <= 17.0 {
+            } else if (13.0..=17.0).contains(&dist) {
                 // Main neon ring
                 Some([239, 68, 68, 230])
-            } else if (dist > 17.0 && dist <= 19.5) || (dist >= 10.5 && dist < 13.0) {
+            } else if (dist > 17.0 && dist <= 19.5) || (10.5..13.0).contains(&dist) {
                 // White outline for contrast against both dark and light backgrounds
                 Some([255, 255, 255, 220])
             } else if dist > 19.5 && dist <= 28.0 {

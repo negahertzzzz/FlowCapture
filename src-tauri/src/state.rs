@@ -159,9 +159,14 @@ impl AppState {
             let mut platform = self.platform.lock();
             platform.input.start()?;
             platform.windows.start()?;
-            self.recorder
-                .lock()
-                .start_with_platform(session_dir.clone(), &mut platform, mon_id.clone())?;
+            // The low-fps "slideshow" (a PNG every 500 ms in video/frames) is only a fallback
+            // for when the full HD recording is off or could not start: running both captures
+            // the screen twice and fills the disk with frames.
+            if full_video_recorder.is_none() {
+                self.recorder
+                    .lock()
+                    .start_with_platform(session_dir.clone(), &mut platform, mon_id.clone())?;
+            }
             self.event_collector.lock().start(&session_id)?;
             self.screenshot_engine
                 .lock()

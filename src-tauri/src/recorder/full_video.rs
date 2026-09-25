@@ -1,6 +1,6 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -62,7 +62,7 @@ impl FullVideoRecorderHandle {
         let crf = config.quality_crf.clamp(15, 35).to_string();
         let fps_str = fps.to_string();
 
-        let mut child = Command::new(&ffmpeg_path)
+        let mut child = crate::process_util::background_command(&ffmpeg_path)
             .args([
                 "-hide_banner",
                 "-loglevel",
@@ -233,7 +233,7 @@ pub fn finalize_hd_video(session_dir: &Path, audio_path: Option<&Path>) -> Resul
     };
 
     if let Some(audio) = audio_path.filter(|p| p.is_file()) {
-        let mut cmd = Command::new(&ffmpeg);
+        let mut cmd = crate::process_util::background_command(&ffmpeg);
         cmd.args([
             "-hide_banner",
             "-loglevel",
