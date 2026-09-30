@@ -208,6 +208,9 @@ impl InputEventSource for SharedInputSource {
                 let mouse = device_state.get_mouse();
                 let keys = device_state.get_keys();
                 let timestamp_ms = now_ms();
+                // Looked up at most once per poll, and only when a click or key needs it: the
+                // foreground-window query is far more expensive than the poll itself.
+                let mut tick_app: Option<Option<String>> = None;
 
                 {
                     let mut last = last_mouse.lock().unwrap();
@@ -215,7 +218,8 @@ impl InputEventSource for SharedInputSource {
                         *last = Some(mouse.coords);
                         events.lock().unwrap().push(CapturedInputEvent {
                             event_type: "mouse_move".to_string(),
-                            app_name: active_window_name(),
+                            // Moves are only used for cursor tracking, never persisted.
+                            app_name: None,
                             payload: serde_json::json!({
                                 "x": mouse.coords.0,
                                 "y": mouse.coords.1
@@ -243,7 +247,7 @@ impl InputEventSource for SharedInputSource {
 
                             events.lock().unwrap().push(CapturedInputEvent {
                                 event_type,
-                                app_name: active_window_name(),
+                                app_name: app_for_tick(&mut tick_app),
                                 payload: serde_json::json!({
                                     "button": button,
                                     "x": mouse.coords.0,
@@ -256,7 +260,7 @@ impl InputEventSource for SharedInputSource {
                             // Mouse release event (useful for drag-and-drop actions)
                             events.lock().unwrap().push(CapturedInputEvent {
                                 event_type: "mouse_release".to_string(),
-                                app_name: active_window_name(),
+                                app_name: app_for_tick(&mut tick_app),
                                 payload: serde_json::json!({
                                     "button": button,
                                     "x": mouse.coords.0,
@@ -316,7 +320,7 @@ impl InputEventSource for SharedInputSource {
                         } else {
                             "key_press".to_string()
                         },
-                        app_name: active_window_name(),
+                        app_name: app_for_tick(&mut tick_app),
                         payload: serde_json::json!({
                             "key": key_name,
                             "combo": combo,
@@ -330,7 +334,7 @@ impl InputEventSource for SharedInputSource {
                 }
 
                 previous_keys = keys;
-                thread::sleep(Duration::from_millis(30));
+                thread::sleep(INPUT_POLL_INTERVAL);
             }
         });
 
@@ -361,6 +365,14 @@ impl InputEventSource for SharedInputSource {
         self.stop_flag.store(true, Ordering::SeqCst);
     }
 }
+/// Buttons and keys are polled, not hooked: a press shorter than this interval is missed.
+/// Trackpad taps last ~20–40 ms, so the interval has to stay well below that.
+const INPUT_POLL_INTERVAL: Duration = Duration::from_millis(8);
+
+fn app_for_tick(cache: &mut Option<Option<String>>) -> Option<String> {
+    cache.get_or_insert_with(active_window_name).clone()
+}
+
 fn active_window_name() -> Option<String> {
     active_win_pos_rs::get_active_window().ok().map(|window| window.app_name)
 }

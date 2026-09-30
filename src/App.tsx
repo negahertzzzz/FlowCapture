@@ -10,6 +10,7 @@ import { HomePage } from "@/pages/HomePage";
 import { SessionPage } from "@/pages/SessionPage";
 import { SettingsPage } from "@/pages/SettingsPage";
 import { formatDuration } from "@/lib/utils";
+import { recordedSeconds } from "@/hooks/useRecording";
 
 function FloatingAiProgress() {
   const { activeJob, cancelJob, clearJob } = useAiJob();
@@ -133,6 +134,7 @@ function AppShell() {
     selectedMonitorId,
     switchMonitor,
     isPaused,
+    pauseClock,
     isMuted,
     pause,
     resume,
@@ -147,15 +149,15 @@ function AppShell() {
       return;
     }
 
-    const startedAt = new Date(recording.started_at).getTime();
+    const startedAt = recording.started_at;
     function tick() {
-      setElapsed(Math.max(0, Math.floor((Date.now() - startedAt) / 1000)));
+      setElapsed(recordedSeconds(startedAt, pauseClock));
     }
 
     tick();
     const interval = window.setInterval(tick, 1000);
     return () => window.clearInterval(interval);
-  }, [recording]);
+  }, [recording, pauseClock]);
 
   useEffect(() => {
     const appWindow = getCurrentWindow();
@@ -210,6 +212,7 @@ function AppShell() {
           isMuted={isMuted}
           onToggleMute={toggleMute}
           isPaused={isPaused}
+          pauseClock={pauseClock}
           onPause={pause}
           onResume={resume}
           monitors={monitors}

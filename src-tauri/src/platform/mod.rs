@@ -30,6 +30,8 @@ pub use common::{list_monitors, SharedScreenshotCapturer};
 
 use anyhow::Result;
 
+// One `return` per platform block: only one of them is compiled in.
+#[allow(clippy::needless_return)]
 pub fn create_platform_services() -> Result<PlatformServices> {
     #[cfg(target_os = "macos")]
     {

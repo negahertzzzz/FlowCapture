@@ -52,17 +52,25 @@ impl FullVideoRecorderHandle {
             .or_else(|_| find_monitor(None))
             .context("no monitor found for video recording")?;
 
-        let width = monitor.width().map_err(|e| anyhow::anyhow!(e))? & !1;
-        let height = monitor.height().map_err(|e| anyhow::anyhow!(e))? & !1;
+        // Size the stream from a real capture: `monitor.width()` is in logical points on Retina
+        // and scaled displays, while the captured buffer is in physical pixels. A mismatch makes
+        // ffmpeg slice the raw stream at the wrong offsets and the video comes out garbled.
+        let first_image = monitor
+            .capture_image()
+            .map_err(|e| anyhow::anyhow!(e))
+            .context("failed to capture the first video frame")?;
+        let (width, height) = first_image.dimensions();
 
-        if width == 0 || height == 0 {
+        if width < 2 || height < 2 {
             anyhow::bail!("invalid monitor resolution: {}x{}", width, height);
         }
 
         let crf = config.quality_crf.clamp(15, 35).to_string();
         let fps_str = fps.to_string();
 
-        let mut child = Command::new(&ffmpeg_path)
+        let mut command = Command::new(&ffmpeg_path);
+        hide_console_window(&mut command);
+        let mut child = command
             .args([
                 "-hide_banner",
                 "-loglevel",
@@ -86,6 +94,9 @@ impl FullVideoRecorderHandle {
                 "zerolatency",
                 "-crf",
                 &crf,
+                // yuv420p needs even dimensions; drop the odd row/column if there is one.
+                "-vf",
+                "crop=trunc(iw/2)*2:trunc(ih/2)*2",
                 "-pix_fmt",
                 "yuv420p",
                 &temp_output_path.to_string_lossy(),
@@ -109,7 +120,7 @@ impl FullVideoRecorderHandle {
             .name("full-video-capture-thread".to_string())
             .spawn(move || {
                 let mut next_frame_time = Instant::now();
-                let mut last_frame: Option<Vec<u8>> = None;
+                let mut last_frame: Option<Vec<u8>> = Some(first_image.into_raw());
 
                 while !stop_clone.load(Ordering::SeqCst) {
                     if pause_clone.load(Ordering::SeqCst) {
@@ -124,6 +135,13 @@ impl FullVideoRecorderHandle {
 
                     if let Ok(mon) = monitor_res {
                         if let Ok(image) = mon.capture_image() {
+                            // The stream size is fixed at start: a monitor that was unplugged or
+                            // changed resolution is scaled into the same frame.
+                            let image = if image.dimensions() == (width, height) {
+                                image
+                            } else {
+                                image::imageops::resize(&image, width, height, image::imageops::FilterType::Triangle)
+                            };
                             last_frame = Some(image.into_raw());
                         }
                     }
@@ -234,6 +252,7 @@ pub fn finalize_hd_video(session_dir: &Path, audio_path: Option<&Path>) -> Resul
 
     if let Some(audio) = audio_path.filter(|p| p.is_file()) {
         let mut cmd = Command::new(&ffmpeg);
+        hide_console_window(&mut cmd);
         cmd.args([
             "-hide_banner",
             "-loglevel",
@@ -269,4 +288,17 @@ pub fn finalize_hd_video(session_dir: &Path, audio_path: Option<&Path>) -> Resul
     } else {
         Ok(Some(temp_video))
     }
+}
+
+/// ffmpeg is a console program: without this flag Windows opens a console window for it, which
+/// also ends up in the recording.
+pub(crate) fn hide_console_window(command: &mut Command) {
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = command;
 }

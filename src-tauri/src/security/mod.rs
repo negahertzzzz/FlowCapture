@@ -30,12 +30,13 @@ pub fn redact_text(input: &str) -> (String, RedactionSummary) {
     let mut count = 0usize;
 
     for (pattern, label) in PATTERNS.iter() {
-        if pattern.is_match(&output) {
+        let matches = pattern.find_iter(&output).count();
+        if matches > 0 {
             patterns.push(label.to_string());
             output = pattern
                 .replace_all(&output, "[REDACTED]")
                 .to_string();
-            count += 1;
+            count += matches;
         }
     }
 
@@ -84,5 +85,12 @@ mod tests {
         let (text, summary) = redact_text("api_key=super-secret-value");
         assert!(text.contains("[REDACTED]"));
         assert!(summary.count > 0);
+    }
+
+    #[test]
+    fn counts_every_occurrence() {
+        let (_, summary) = redact_text("a@example.com, b@example.com; token=abc");
+        assert_eq!(summary.count, 3);
+        assert_eq!(summary.patterns.len(), 2);
     }
 }

@@ -551,7 +551,7 @@ fn session_start_ms(started_at: &str) -> i64 {
 }
 
 fn format_step_time(step_ms: i64, session_start_ms: i64) -> String {
-    let secs = ((step_ms - session_start_ms).max(0) / 1000) as i64;
+    let secs = (step_ms - session_start_ms).max(0) / 1000;
     format!("{:02}:{:02}", secs / 60, secs % 60)
 }
 

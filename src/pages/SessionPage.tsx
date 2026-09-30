@@ -35,6 +35,9 @@ import { timelineIcon } from "@/lib/icons";
 import { replaceImageOnLine } from "@/lib/markdownSteps";
 import { formatDuration } from "@/lib/utils";
 
+/** How long after a recording ends the page keeps polling for its encoded videos. */
+const VIDEO_POLL_WINDOW_MS = 5 * 60 * 1000;
+
 const TABS = [
   "Timeline",
   "Screenshots",
@@ -279,26 +282,38 @@ export function SessionPage() {
       return;
     }
 
-    let unlistenTime: (() => void) | undefined;
-    let unlistenFull: (() => void) | undefined;
+    let disposed = false;
+    const unlisteners: (() => void)[] = [];
+    const keep = (unlisten: () => void) => {
+      if (disposed) unlisten();
+      else unlisteners.push(unlisten);
+    };
 
-    api
+    void api
       .onVideoReady(sessionId, () => {
         refresh({ syncMarkdown: false }).catch((err) => setError(String(err)));
       })
-      .then((fn) => {
-        unlistenTime = fn;
-      });
+      .then(keep);
 
-    api
+    void api
       .onFullVideoReady(sessionId, () => {
         refresh({ syncMarkdown: false }).catch((err) => setError(String(err)));
       })
-      .then((fn) => {
-        unlistenFull = fn;
-      });
+      .then(keep);
+
+    // Polling only backs up the "ready" events while the videos are being encoded right after a
+    // recording. A video that never comes (full video disabled, no ffmpeg) must not keep the
+    // page polling forever.
+    const endedAt = session?.ended_at ? Date.parse(session.ended_at) : Number.NaN;
+    const pollUntil = Number.isFinite(endedAt)
+      ? endedAt + VIDEO_POLL_WINDOW_MS
+      : Date.now() + VIDEO_POLL_WINDOW_MS;
 
     const interval = window.setInterval(async () => {
+      if (Date.now() > pollUntil) {
+        window.clearInterval(interval);
+        return;
+      }
       if ((!session?.full_video_path || !session?.video_path) && session && session.duration > 0) {
         try {
           const updated = await api.getSession(sessionId);
@@ -316,11 +331,11 @@ export function SessionPage() {
     }, 3000);
 
     return () => {
-      unlistenTime?.();
-      unlistenFull?.();
+      disposed = true;
+      unlisteners.forEach((unlisten) => unlisten());
       window.clearInterval(interval);
     };
-  }, [sessionId, session?.video_path, session?.full_video_path]);
+  }, [sessionId, session?.video_path, session?.full_video_path, session?.ended_at]);
 
   function handleGenerate() {
     if (session?.documentation_md && session.documentation_md.trim().length > 0) {
@@ -557,7 +572,7 @@ export function SessionPage() {
     try {
       const groups = await api.findDuplicateScreenshots(sessionId);
       if (groups.length === 0) {
-        setToast("Nessun duplicato trovato con somiglianza ≥ 60%");
+        setToast("Nessuno screenshot quasi identico trovato (somiglianza ≥ 97%)");
       } else {
         setDuplicateGroups(groups);
       }
@@ -571,7 +586,7 @@ export function SessionPage() {
   async function handleMergeDuplicates(keepId: string, removeIds: string[]) {
     await api.mergeDuplicateScreenshots(sessionId, keepId, removeIds);
     setToast(`Uniti ed eliminati ${removeIds.length} screenshot duplicati`);
-    await refresh();
+    await refresh({ syncMarkdown: !isEditingMarkdown.current });
   }
 
   async function handleDocImageSelected(screenshotId: string) {
@@ -892,7 +907,9 @@ export function SessionPage() {
                         onClick={() =>
                           api
                             .deleteScreenshot(shot.id)
-                            .then(() => refresh())
+                            // The backend also drops the image from the guide: reload it unless
+                            // the user is in the middle of editing it.
+                            .then(() => refresh({ syncMarkdown: !isEditingMarkdown.current }))
                             .catch((err) => setError(String(err)))
                         }
                       >

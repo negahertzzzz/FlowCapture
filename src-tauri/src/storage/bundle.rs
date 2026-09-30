@@ -26,6 +26,11 @@ pub struct SessionBundleManifest {
     pub audio_file_name: Option<String>,
     pub video_file_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub full_video_file_name: Option<String>,
+    /// Pause intervals (epoch ms) needed to align events with the audio track.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pauses: Vec<(i64, i64)>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audio_segments: Option<Vec<crate::ai::transcription::AudioSegment>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aligned_events: Option<Vec<serde_json::Value>>,
@@ -160,6 +165,25 @@ pub fn export_session_bundle(
         }
     }
 
+    // 3b. Pack the full-length HD video if present (stored under `video/` in the session)
+    let mut full_video_file_name = None;
+    if let Some(full_video_str) = &session.full_video_path {
+        let full_video = Path::new(full_video_str);
+        if full_video.is_file() {
+            let name = full_video
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| "recording_hd.mp4".to_string());
+            // Media entries share one folder: keep the timelapse and the HD video apart.
+            if video_file_name.as_deref() != Some(name.as_str()) {
+                zip.start_file(format!("media/{name}"), file_opts)?;
+                let mut source = File::open(full_video)?;
+                std::io::copy(&mut source, &mut zip)?;
+                full_video_file_name = Some(name);
+            }
+        }
+    }
+
     // 4. Pack exports directory files if present
     for export in &exports {
         let exp_path = Path::new(&export.path);
@@ -175,6 +199,7 @@ pub fn export_session_bundle(
     }
 
     // 5. Compute aligned events with nearby_audio if audio_segments are present
+    let pauses = db.get_session_pauses(session_id).unwrap_or_default();
     let (audio_segments, aligned_events) = if let Some(segs_json) = &session.audio_segments_json {
         if let Ok(segs) = serde_json::from_str::<Vec<crate::ai::transcription::AudioSegment>>(segs_json) {
             if !segs.is_empty() {
@@ -182,28 +207,16 @@ pub fn export_session_bundle(
                 const POST_MS: i64 = 2000;
 
                 let first_event_ts = events.first().map(|e| e.timestamp_ms).unwrap_or(0);
-                let is_epoch = first_event_ts > 1_000_000_000_000;
                 let parsed_start = chrono::DateTime::parse_from_rfc3339(&session.started_at)
                     .map(|dt| dt.timestamp_millis())
                     .ok();
-                let t0 = if is_epoch {
-                    if let Some(start_ms) = parsed_start.filter(|&s| s > 0 && (s - first_event_ts).abs() < 120_000) {
-                        start_ms.min(first_event_ts)
-                    } else {
-                        first_event_ts
-                    }
-                } else {
-                    0
-                };
+                let origin = crate::ai::pipeline::audio_timeline_origin(first_event_ts, parsed_start);
 
                 let aligned = events
                     .iter()
                     .map(|ev| {
-                        let event_offset_ms = if is_epoch {
-                            ev.timestamp_ms.saturating_sub(t0)
-                        } else {
-                            ev.timestamp_ms
-                        };
+                        let event_offset_ms =
+                            crate::ai::pipeline::event_audio_offset_ms(ev.timestamp_ms, origin, &pauses);
                         let w_start = event_offset_ms.saturating_sub(PRE_MS);
                         let w_end = event_offset_ms + POST_MS;
                         let nearby: Vec<&str> = segs
@@ -245,6 +258,8 @@ pub fn export_session_bundle(
         exports,
         audio_file_name,
         video_file_name,
+        full_video_file_name,
+        pauses,
         audio_segments,
         aligned_events,
     };
@@ -377,6 +392,13 @@ pub fn import_session_bundle(
         session.video_path = None;
     }
 
+    session.full_video_path = manifest
+        .full_video_file_name
+        .as_ref()
+        .map(|name| target_session_dir.join(name))
+        .filter(|path| path.is_file())
+        .map(|path| path.to_string_lossy().to_string());
+
     if session.audio_segments_json.is_none() {
         if let Some(segs) = &manifest.audio_segments {
             if let Ok(json_str) = serde_json::to_string(segs) {
@@ -448,6 +470,9 @@ pub fn import_session_bundle(
         &restored_ai_jobs,
         &restored_exports,
     )?;
+    if !manifest.pauses.is_empty() {
+        db.set_session_pauses(&target_session_id, &serde_json::to_string(&manifest.pauses)?)?;
+    }
 
     // 10. Return imported session
     db.get_session(&target_session_id)?

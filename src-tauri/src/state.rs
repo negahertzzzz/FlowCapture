@@ -9,7 +9,7 @@ use chrono::Utc;
 use parking_lot::Mutex;
 use uuid::Uuid;
 
-use crate::events::{should_trigger_screenshot, EventCollector};
+use crate::events::{is_flowcapture_app, should_trigger_screenshot, EventCollector};
 use crate::platform::{preflight_recording_start, PlatformServices, SharedScreenshotCapturer};
 use crate::recorder::RecorderEngine;
 use crate::screenshots::{
@@ -44,6 +44,11 @@ pub struct ActiveRecording {
     pub started_at: Instant,
     pub monitor_id: Option<String>,
     pub is_paused: Arc<AtomicBool>,
+    /// Closed pause intervals as epoch-ms `(start, end)`, plus the start of the current pause.
+    /// The microphone track stops during a pause, so these are needed to map event times onto
+    /// the audio timeline and to report the effective duration.
+    pauses: Vec<(i64, i64)>,
+    paused_since: Option<i64>,
     collector_stop: Arc<AtomicBool>,
     collector_handle: JoinHandle<()>,
     full_video_recorder: Option<crate::recorder::full_video::FullVideoRecorderHandle>,
@@ -195,6 +200,8 @@ impl AppState {
                     started_at: Instant::now(),
                     monitor_id: effective_monitor_id,
                     is_paused: collector_paused,
+                    pauses: Vec::new(),
+                    paused_since: None,
                     collector_stop,
                     collector_handle,
                     full_video_recorder,
@@ -220,7 +227,11 @@ impl AppState {
                 .ok_or_else(|| anyhow::anyhow!("no active recording"))?
         };
 
-        let duration = active.started_at.elapsed().as_secs() as i64;
+        if let Some(since) = active.paused_since.take() {
+            active.pauses.push((since, epoch_ms()));
+        }
+        let paused_ms: i64 = active.pauses.iter().map(|(start, end)| (end - start).max(0)).sum();
+        let duration = (active.started_at.elapsed().as_millis() as i64 - paused_ms).max(0) / 1000;
         let session_id = active.session.id.clone();
 
         active.collector_stop.store(true, Ordering::SeqCst);
@@ -257,6 +268,11 @@ impl AppState {
 
         self.db
             .finish_session(&session_id, None, duration)?;
+        if !active.pauses.is_empty() {
+            let _ = self
+                .db
+                .set_session_pauses(&session_id, &serde_json::to_string(&active.pauses)?);
+        }
 
         self.db
             .get_session(&session_id)?
@@ -285,8 +301,11 @@ impl AppState {
     }
 
     pub fn pause_recording(&self) -> Result<()> {
-        let guard = self.active_session.lock();
-        let active = guard.as_ref().ok_or_else(|| anyhow::anyhow!("no active recording"))?;
+        let mut guard = self.active_session.lock();
+        let active = guard.as_mut().ok_or_else(|| anyhow::anyhow!("no active recording"))?;
+        if active.paused_since.is_none() {
+            active.paused_since = Some(epoch_ms());
+        }
         active.is_paused.store(true, Ordering::SeqCst);
         if let Some(ref fvr) = active.full_video_recorder {
             fvr.pause();
@@ -298,8 +317,11 @@ impl AppState {
     }
 
     pub fn resume_recording(&self) -> Result<()> {
-        let guard = self.active_session.lock();
-        let active = guard.as_ref().ok_or_else(|| anyhow::anyhow!("no active recording"))?;
+        let mut guard = self.active_session.lock();
+        let active = guard.as_mut().ok_or_else(|| anyhow::anyhow!("no active recording"))?;
+        if let Some(since) = active.paused_since.take() {
+            active.pauses.push((since, epoch_ms()));
+        }
         active.is_paused.store(false, Ordering::SeqCst);
         if let Some(ref fvr) = active.full_video_recorder {
             fvr.resume();
@@ -335,6 +357,10 @@ impl AppState {
     }
 }
 
+fn epoch_ms() -> i64 {
+    Utc::now().timestamp_millis()
+}
+
 fn signal_platform_stop(state: &AppState) {
     for _ in 0..100 {
         if let Some(mut platform) = state.platform.try_lock() {
@@ -362,6 +388,7 @@ fn stop_platform_services(state: &AppState) -> Result<Option<String>> {
     anyhow::bail!("timed out while stopping recording services")
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_recording_collector(
     stop_flag: Arc<AtomicBool>,
     is_paused: Arc<AtomicBool>,
@@ -411,8 +438,14 @@ fn spawn_recording_collector(
                 )
             };
 
-            if stop_flag.load(Ordering::SeqCst) || is_paused.load(Ordering::SeqCst) {
+            if stop_flag.load(Ordering::SeqCst) {
                 break;
+            }
+            if is_paused.load(Ordering::SeqCst) {
+                // Paused while draining: these events belong to the pause, drop them and keep
+                // the loop alive so capture resumes with the recording.
+                post_click = None;
+                continue;
             }
 
             for input in &input_events {
@@ -437,6 +470,14 @@ fn spawn_recording_collector(
                         if stop_flag.load(Ordering::SeqCst) || is_paused.load(Ordering::SeqCst) {
                             break;
                         }
+                        // Clicks on FlowCapture itself (Stop, Pause, HUD) are not workflow steps,
+                        // and a pending "after" shot would now show FlowCapture as well.
+                        if input.app_name.as_deref().is_some_and(is_flowcapture_app) {
+                            if matches!(input.event_type.as_str(), "mouse_click" | "mouse_double_click") {
+                                post_click = None;
+                            }
+                            continue;
+                        }
                         if capture_all || should_trigger_screenshot(input) {
                             if let Ok(Some(pending)) = engine.prepare_input_event(
                                 &session_id,
@@ -457,6 +498,9 @@ fn spawn_recording_collector(
                     for window in &window_events {
                         if stop_flag.load(Ordering::SeqCst) {
                             break;
+                        }
+                        if is_flowcapture_app(&window.app_name) {
+                            continue;
                         }
                         if let Ok(Some(pending)) = engine.prepare_window_change(
                             &session_id,

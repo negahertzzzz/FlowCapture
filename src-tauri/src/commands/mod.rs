@@ -217,14 +217,104 @@ pub fn list_screenshots(
 }
 
 #[tauri::command]
-pub fn delete_screenshot(
+pub async fn delete_screenshot(
     state: State<'_, Arc<AppState>>,
     screenshot_id: String,
 ) -> Result<(), String> {
-    state
-        .db
-        .delete_screenshot(&screenshot_id)
+    let db = Arc::clone(&state.db);
+    tauri::async_runtime::spawn_blocking(move || delete_screenshot_everywhere(&db, &screenshot_id))
+        .await
+        .map_err(|err| err.to_string())?
         .map_err(|err| err.to_string())
+}
+
+/// Removes a screenshot from the database, from the steps and the Markdown that reference it,
+/// and from disk (with its `_clean`/`_annotated` variants).
+fn delete_screenshot_everywhere(db: &crate::storage::Database, screenshot_id: &str) -> anyhow::Result<()> {
+    let Some(shot) = db.get_screenshot(screenshot_id)? else {
+        return Ok(());
+    };
+
+    if let Some(session) = db.get_session(&shot.session_id)? {
+        let mut steps: Vec<crate::storage::models::WorkflowStep> = session
+            .steps_json
+            .as_deref()
+            .and_then(|json_str| serde_json::from_str(json_str).ok())
+            .unwrap_or_default();
+        let mut steps_changed = false;
+        for step in &mut steps {
+            let before = step.screenshot_ids.len();
+            step.screenshot_ids.retain(|id| id != screenshot_id);
+            if step.screenshot_ids.len() != before {
+                steps_changed = true;
+                // Annotations were drawn on this image; they mean nothing on another one.
+                step.annotations_json = None;
+            }
+        }
+
+        let doc_md = session.documentation_md.clone().unwrap_or_default();
+        let new_md = replace_image_file_refs(&doc_md, file_name_of(&shot.path), None);
+        if steps_changed || new_md != doc_md {
+            db.save_documentation(
+                &shot.session_id,
+                &new_md,
+                &serde_json::to_string(&steps)?,
+                session.compressed_events_json.as_deref().unwrap_or("[]"),
+            )?;
+        }
+    }
+
+    db.delete_screenshot(screenshot_id)?;
+    remove_screenshot_files(&shot.path);
+    Ok(())
+}
+
+fn remove_screenshot_files(path: &str) {
+    let p = std::path::Path::new(path);
+    let _ = std::fs::remove_file(p);
+    if let (Some(stem), Some(ext), Some(parent)) = (
+        p.file_stem().and_then(|s| s.to_str()),
+        p.extension().and_then(|e| e.to_str()),
+        p.parent(),
+    ) {
+        let _ = std::fs::remove_file(parent.join(format!("{stem}_clean.{ext}")));
+        let _ = std::fs::remove_file(parent.join(format!("{stem}_annotated.{ext}")));
+    }
+}
+
+/// Rewrites every Markdown image whose target is the file `old_name` (whatever folder prefix
+/// the reference uses): pointing it at `new_name`, or dropping the image when `None`.
+fn replace_image_file_refs(md: &str, old_name: &str, new_name: Option<&str>) -> String {
+    if old_name.is_empty() {
+        return md.to_string();
+    }
+    let image_re = regex::Regex::new(r"!\[([^\]]*)\]\(([^)]+)\)").unwrap();
+    let replaced = image_re.replace_all(md, |caps: &regex::Captures| {
+        let target = caps[2].trim();
+        if file_name_of(target) != old_name {
+            return caps[0].to_string();
+        }
+        match new_name {
+            Some(new_name) => {
+                let prefix = &target[..target.len() - old_name.len()];
+                format!("![{}]({prefix}{new_name})", &caps[1])
+            }
+            None => String::new(),
+        }
+    });
+    if new_name.is_some() {
+        return replaced.into_owned();
+    }
+    // Dropping an image leaves an empty line where it stood; don't let blank lines pile up.
+    let mut out: Vec<&str> = Vec::new();
+    for line in replaced.split('\n') {
+        let blank = line.trim().is_empty();
+        if blank && out.last().is_some_and(|prev| prev.trim().is_empty()) {
+            continue;
+        }
+        out.push(line);
+    }
+    out.join("\n")
 }
 
 #[tauri::command]
@@ -387,25 +477,17 @@ fn file_name_of(path: &str) -> &str {
     path.rsplit(['/', '\\']).next().unwrap_or(path)
 }
 
-fn replace_step_image(md: &str, step_index: usize, old_path: &str, new_path: &str) -> String {
-    let old_name = file_name_of(old_path);
-    let new_name = file_name_of(new_path);
-    if old_name.is_empty() || old_name == new_name {
-        return md.to_string();
-    }
+/// Line range `(header, end)` of step `step_index`'s section: from its `## Step N:` header up to
+/// (not including) the next heading.
+fn step_section(lines: &[&str], step_index: usize) -> Option<(usize, usize)> {
     let step_re = regex::Regex::new(r"(?i)^#{2,4}\s+(?:Step|Passo)?\s*(\d+)[:.]").unwrap();
     let boundary_re = regex::Regex::new(r"^#{1,4}\s").unwrap();
-
-    let lines: Vec<&str> = md.split('\n').collect();
     let start = lines.iter().position(|line| {
         step_re
             .captures(line.trim())
             .and_then(|caps| caps.get(1)?.as_str().parse::<usize>().ok())
             == Some(step_index)
-    });
-    let Some(start) = start else {
-        return md.replace(old_name, new_name);
-    };
+    })?;
     let end = lines
         .iter()
         .enumerate()
@@ -413,19 +495,82 @@ fn replace_step_image(md: &str, step_index: usize, old_path: &str, new_path: &st
         .find(|(_, line)| boundary_re.is_match(line.trim_start()))
         .map(|(idx, _)| idx)
         .unwrap_or(lines.len());
+    Some((start, end))
+}
+
+fn replace_step_image(md: &str, step_index: usize, old_path: &str, new_path: &str) -> String {
+    let old_name = file_name_of(old_path);
+    let new_name = file_name_of(new_path);
+    if old_name.is_empty() || old_name == new_name {
+        return md.to_string();
+    }
+
+    let lines: Vec<&str> = md.split('\n').collect();
+    let Some((start, end)) = step_section(&lines, step_index) else {
+        return replace_image_file_refs(md, old_name, Some(new_name));
+    };
 
     lines
         .iter()
         .enumerate()
         .map(|(idx, line)| {
             if idx > start && idx < end && line.contains("![") {
-                line.replace(old_name, new_name)
+                replace_image_file_refs(line, old_name, Some(new_name))
             } else {
                 (*line).to_string()
             }
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// Applies a step title/description edit to that step's section of the Markdown only, whatever
+/// heading style the document uses (`## Step 3.`, `### Passo 3:`…).
+fn update_step_markdown(
+    md: &str,
+    step_index: usize,
+    title: &str,
+    old_description: &str,
+    description: &str,
+) -> String {
+    let lines: Vec<&str> = md.split('\n').collect();
+    let Some((start, end)) = step_section(&lines, step_index) else {
+        return md.to_string();
+    };
+
+    let header_re =
+        regex::Regex::new(r"(?i)^(\s*#{2,4}\s+(?:Step|Passo)?\s*\d+[:.]\s*)(.*)$").unwrap();
+    let header = match header_re.captures(lines[start]) {
+        Some(caps) if !title.trim().is_empty() => format!("{}{}", &caps[1], title.trim()),
+        _ => lines[start].to_string(),
+    };
+
+    let body = lines[start + 1..end].join("\n");
+    let old_description = old_description.trim();
+    let new_body = if old_description == description.trim() {
+        body
+    } else if !old_description.is_empty() && body.contains(old_description) {
+        body.replacen(old_description, description.trim(), 1)
+    } else {
+        // The Markdown text of this step doesn't match what the editor showed (e.g. the AI
+        // rewrote it): the edited description replaces the step's text, images stay.
+        let mut parts = vec![String::new()];
+        if !description.trim().is_empty() {
+            parts.push(description.trim().to_string());
+            parts.push(String::new());
+        }
+        for image in lines[start + 1..end].iter().filter(|line| line.contains("![")) {
+            parts.push(image.to_string());
+            parts.push(String::new());
+        }
+        parts.join("\n")
+    };
+
+    let mut out: Vec<String> = lines[..start].iter().map(|l| l.to_string()).collect();
+    out.push(header);
+    out.push(new_body);
+    out.extend(lines[end..].iter().map(|l| l.to_string()));
+    out.join("\n")
 }
 
 /// Re-parsing the Markdown only yields titles, descriptions and images, so metadata that
@@ -784,25 +929,33 @@ pub fn delete_session(
 }
 
 #[tauri::command]
-pub fn export_session_bundle(
+pub async fn export_session_bundle(
     state: State<'_, Arc<AppState>>,
     session_id: String,
     target_path: String,
 ) -> Result<String, String> {
-    let path = std::path::Path::new(&target_path);
-    let result_path = crate::storage::bundle::export_session_bundle(&state.db, &session_id, path)
-        .map_err(|err| err.to_string())?;
-    Ok(result_path.to_string_lossy().to_string())
+    let db = Arc::clone(&state.db);
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::storage::bundle::export_session_bundle(&db, &session_id, std::path::Path::new(&target_path))
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map(|path| path.to_string_lossy().to_string())
+    .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
-pub fn import_session_bundle(
+pub async fn import_session_bundle(
     state: State<'_, Arc<AppState>>,
     archive_path: String,
 ) -> Result<Session, String> {
-    let path = std::path::Path::new(&archive_path);
-    crate::storage::bundle::import_session_bundle(&state.db, path)
-        .map_err(|err| err.to_string())
+    let db = Arc::clone(&state.db);
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::storage::bundle::import_session_bundle(&db, std::path::Path::new(&archive_path))
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
@@ -966,6 +1119,7 @@ pub struct NewStepPayload {
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub fn save_annotated_screenshot(
     state: State<'_, Arc<AppState>>,
     session_id: String,
@@ -1147,13 +1301,12 @@ pub fn update_step_content(
 
     let new_steps_json = serde_json::to_string(&steps).map_err(|e| e.to_string())?;
 
-    let mut doc_md = session.documentation_md.clone().unwrap_or_default();
-    if !old_title.is_empty() && !title.is_empty() {
-        doc_md = doc_md.replace(&format!("### Step {}: {}", step_index, old_title), &format!("### Step {}: {}", step_index, title));
-    }
-    if !old_description.is_empty() && !description.is_empty() {
-        doc_md = doc_md.replace(&old_description, &description);
-    }
+    let doc_md = session.documentation_md.clone().unwrap_or_default();
+    let doc_md = if old_title == title && old_description == description {
+        doc_md
+    } else {
+        update_step_markdown(&doc_md, step_index, &title, &old_description, &description)
+    };
 
     state.db.save_documentation(
         &session_id,
@@ -1234,132 +1387,172 @@ pub fn save_step_annotations(
     Ok(())
 }
 
+/// Side of the grayscale thumbnail screenshots are compared on.
+const DUPLICATE_THUMB_SIDE: u32 = 64;
+/// Per-pixel difference (0–255) below which two thumbnail pixels count as equal.
+const DUPLICATE_PIXEL_TOLERANCE: u8 = 24;
+/// Share of equal pixels needed to call two screenshots duplicates.
+const DUPLICATE_MIN_SIMILARITY: f64 = 0.97;
+
+fn thumbnail_similarity(a: &[u8], b: &[u8]) -> f64 {
+    let total = a.len().min(b.len()).max(1);
+    let changed = a
+        .iter()
+        .zip(b)
+        .filter(|(&x, &y)| x.abs_diff(y) > DUPLICATE_PIXEL_TOLERANCE)
+        .count();
+    1.0 - changed as f64 / total as f64
+}
+
+/// Groups near-identical screenshots. Every member of a group must match every other member
+/// (complete linkage), so a slowly changing screen doesn't chain unrelated shots together.
+fn group_duplicates(thumbs: &[Vec<u8>]) -> Vec<(Vec<usize>, f64)> {
+    let n = thumbs.len();
+    let mut sim = vec![vec![0.0; n]; n];
+    for i in 0..n {
+        for j in (i + 1)..n {
+            let value = thumbnail_similarity(&thumbs[i], &thumbs[j]);
+            sim[i][j] = value;
+            sim[j][i] = value;
+        }
+    }
+
+    let mut assigned = vec![false; n];
+    let mut groups = Vec::new();
+    for i in 0..n {
+        if assigned[i] {
+            continue;
+        }
+        let mut members = vec![i];
+        for j in (i + 1)..n {
+            if !assigned[j] && members.iter().all(|&m| sim[m][j] >= DUPLICATE_MIN_SIMILARITY) {
+                members.push(j);
+            }
+        }
+        if members.len() < 2 {
+            continue;
+        }
+        let mut total = 0.0;
+        let mut pairs = 0;
+        for (idx, &a) in members.iter().enumerate() {
+            for &b in &members[idx + 1..] {
+                total += sim[a][b];
+                pairs += 1;
+            }
+        }
+        for &m in &members {
+            assigned[m] = true;
+        }
+        groups.push((members, total / pairs as f64));
+    }
+    groups
+}
+
 #[tauri::command]
-pub fn find_duplicate_screenshots(
+pub async fn find_duplicate_screenshots(
     state: State<'_, Arc<AppState>>,
     session_id: String,
 ) -> Result<Vec<crate::storage::models::DuplicateScreenshotGroup>, String> {
-    let screenshots = state.db.list_screenshots(&session_id).map_err(|e| e.to_string())?;
+    let db = Arc::clone(&state.db);
+    tauri::async_runtime::spawn_blocking(move || find_duplicate_screenshots_blocking(&db, &session_id))
+        .await
+        .map_err(|err| err.to_string())?
+        .map_err(|err| err.to_string())
+}
+
+fn find_duplicate_screenshots_blocking(
+    db: &crate::storage::Database,
+    session_id: &str,
+) -> anyhow::Result<Vec<crate::storage::models::DuplicateScreenshotGroup>> {
+    let screenshots = db.list_screenshots(session_id)?;
     if screenshots.len() < 2 {
         return Ok(Vec::new());
     }
 
-    struct Thumb {
-        id: String,
-        pixels: Vec<u8>,
-    }
-
-    let mut thumbs: Vec<Thumb> = Vec::new();
-    for s in &screenshots {
-        if let Ok(img) = image::open(&s.path) {
-            let gray = img.thumbnail_exact(32, 32).to_luma8();
-            thumbs.push(Thumb {
-                id: s.id.clone(),
-                pixels: gray.into_raw(),
-            });
-        }
-    }
+    // Decoding full-resolution PNGs dominates the cost: spread it over the available cores.
+    let workers = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(1, 8);
+    let chunk = screenshots.len().div_ceil(workers);
+    let thumbs: Vec<(String, Vec<u8>)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = screenshots
+            .chunks(chunk)
+            .map(|part| {
+                scope.spawn(move || {
+                    part.iter()
+                        .filter_map(|shot| {
+                            let img = image::open(&shot.path).ok()?;
+                            let gray = img
+                                .thumbnail_exact(DUPLICATE_THUMB_SIDE, DUPLICATE_THUMB_SIDE)
+                                .to_luma8();
+                            Some((shot.id.clone(), gray.into_raw()))
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|handle| handle.join().unwrap_or_default())
+            .collect()
+    });
 
     if thumbs.len() < 2 {
         return Ok(Vec::new());
     }
 
-    let n = thumbs.len();
-    let mut parent: Vec<usize> = (0..n).collect();
-    fn find(p: &mut [usize], i: usize) -> usize {
-        if p[i] == i {
-            i
-        } else {
-            let root = find(p, p[i]);
-            p[i] = root;
-            root
-        }
-    }
-    fn union(p: &mut [usize], i: usize, j: usize) {
-        let root_i = find(p, i);
-        let root_j = find(p, j);
-        if root_i != root_j {
-            p[root_i] = root_j;
-        }
-    }
-
-    let mut pair_similarities: std::collections::HashMap<(usize, usize), f64> = std::collections::HashMap::new();
-
-    for i in 0..n {
-        for j in (i + 1)..n {
-            let diff_sum: u64 = thumbs[i].pixels.iter()
-                .zip(thumbs[j].pixels.iter())
-                .map(|(&a, &b)| (a as i32 - b as i32).abs() as u64)
-                .sum();
-            let max_diff = 1024.0 * 255.0;
-            let sim = (1.0 - (diff_sum as f64 / max_diff)).max(0.0);
-            if sim >= 0.60 {
-                union(&mut parent, i, j);
-                pair_similarities.insert((i, j), sim);
-            }
-        }
-    }
-
-    let mut clusters: std::collections::HashMap<usize, Vec<usize>> = std::collections::HashMap::new();
-    for i in 0..n {
-        let root = find(&mut parent, i);
-        clusters.entry(root).or_default().push(i);
-    }
-
-    let mut result = Vec::new();
-    let mut group_counter = 1;
-    for (_root, indices) in clusters {
-        if indices.len() > 1 {
-            let mut total_sim = 0.0;
-            let mut count = 0;
-            for (idx_a_idx, &a) in indices.iter().enumerate() {
-                for &b in &indices[idx_a_idx + 1..] {
-                    let key = if a < b { (a, b) } else { (b, a) };
-                    if let Some(&sim) = pair_similarities.get(&key) {
-                        total_sim += sim;
-                        count += 1;
-                    }
-                }
-            }
-            let avg_sim = if count > 0 { (total_sim / count as f64) * 100.0 } else { 60.0 };
-
-            result.push(crate::storage::models::DuplicateScreenshotGroup {
-                group_id: format!("group_{}", group_counter),
-                similarity_pct: (avg_sim * 10.0).round() / 10.0,
-                screenshot_ids: indices.iter().map(|&idx| thumbs[idx].id.clone()).collect(),
-            });
-            group_counter += 1;
-        }
-    }
-
-    Ok(result)
+    let pixels: Vec<Vec<u8>> = thumbs.iter().map(|(_, px)| px.clone()).collect();
+    Ok(group_duplicates(&pixels)
+        .into_iter()
+        .enumerate()
+        .map(|(idx, (members, similarity))| crate::storage::models::DuplicateScreenshotGroup {
+            group_id: format!("group_{}", idx + 1),
+            similarity_pct: (similarity * 1000.0).round() / 10.0,
+            screenshot_ids: members.iter().map(|&m| thumbs[m].0.clone()).collect(),
+        })
+        .collect())
 }
 
 #[tauri::command]
-pub fn merge_duplicate_screenshots(
+pub async fn merge_duplicate_screenshots(
     state: State<'_, Arc<AppState>>,
     session_id: String,
     keep_id: String,
     remove_ids: Vec<String>,
 ) -> Result<(), String> {
+    let db = Arc::clone(&state.db);
+    tauri::async_runtime::spawn_blocking(move || {
+        merge_duplicate_screenshots_blocking(&db, &session_id, &keep_id, &remove_ids)
+    })
+    .await
+    .map_err(|err| err.to_string())?
+    .map_err(|err| err.to_string())
+}
+
+fn merge_duplicate_screenshots_blocking(
+    db: &crate::storage::Database,
+    session_id: &str,
+    keep_id: &str,
+    remove_ids: &[String],
+) -> anyhow::Result<()> {
+    let remove_ids: Vec<&String> = remove_ids.iter().filter(|id| id.as_str() != keep_id).collect();
     if remove_ids.is_empty() {
         return Ok(());
     }
 
-    let session = state.db.get_session(&session_id)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "Session not found".to_string())?;
+    let session = db
+        .get_session(session_id)?
+        .ok_or_else(|| anyhow!("Session not found"))?;
 
-    let screenshots = state.db.list_screenshots(&session_id).map_err(|e| e.to_string())?;
-    let keep_screenshot = screenshots.iter().find(|s| s.id == keep_id)
-        .ok_or_else(|| "Keep screenshot not found".to_string())?;
+    let screenshots = db.list_screenshots(session_id)?;
+    let keep_screenshot = screenshots
+        .iter()
+        .find(|s| s.id == keep_id)
+        .ok_or_else(|| anyhow!("Keep screenshot not found"))?;
 
-    let mut remove_paths: Vec<String> = Vec::new();
-    for rem_id in &remove_ids {
-        if let Some(s) = screenshots.iter().find(|s| &s.id == rem_id) {
-            remove_paths.push(s.path.clone());
-        }
-    }
+    let remove_paths: Vec<String> = screenshots
+        .iter()
+        .filter(|s| remove_ids.contains(&&s.id))
+        .map(|s| s.path.clone())
+        .collect();
 
     // 1. Update steps_json: replace any remove_id with keep_id
     let mut steps: Vec<crate::storage::models::WorkflowStep> = session
@@ -1371,116 +1564,87 @@ pub fn merge_duplicate_screenshots(
     for step in steps.iter_mut() {
         let mut new_ids: Vec<String> = Vec::new();
         for id in &step.screenshot_ids {
-            if remove_ids.contains(id) {
-                if !new_ids.contains(&keep_id) {
-                    new_ids.push(keep_id.clone());
-                }
-            } else {
-                if !new_ids.contains(id) {
-                    new_ids.push(id.clone());
-                }
+            let id = if remove_ids.contains(&id) { keep_id } else { id.as_str() };
+            if !new_ids.iter().any(|existing| existing == id) {
+                new_ids.push(id.to_string());
             }
         }
         step.screenshot_ids = new_ids;
     }
-    let new_steps_json = serde_json::to_string(&steps).map_err(|e| e.to_string())?;
+    let new_steps_json = serde_json::to_string(&steps)?;
 
-    // 2. Update documentation_md: replace any remove_path with keep_screenshot.path
+    // 2. Point the Markdown images at the kept file. References use `screenshots/<file>`, an
+    //    absolute path or a bare name, so match on the file name.
     let mut doc_md = session.documentation_md.unwrap_or_default();
+    let keep_name = file_name_of(&keep_screenshot.path);
     for rem_path in &remove_paths {
-        doc_md = doc_md.replace(rem_path, &keep_screenshot.path);
+        doc_md = replace_image_file_refs(&doc_md, file_name_of(rem_path), Some(keep_name));
     }
 
-    state.db.save_documentation(
-        &session_id,
+    db.save_documentation(
+        session_id,
         &doc_md,
         &new_steps_json,
         session.compressed_events_json.as_deref().unwrap_or("[]"),
-    ).map_err(|e| e.to_string())?;
+    )?;
 
     // 3. Delete removed screenshots from db and remove files from disk
     for rem_id in &remove_ids {
-        let _ = state.db.delete_screenshot(rem_id);
+        let _ = db.delete_screenshot(rem_id);
     }
     for rem_path in &remove_paths {
-        let p = std::path::Path::new(rem_path);
-        if p.exists() {
-            let _ = std::fs::remove_file(p);
-        }
-        if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
-            if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
-                if let Some(parent) = p.parent() {
-                    let clean_p = parent.join(format!("{stem}_clean.{ext}"));
-                    if clean_p.exists() {
-                        let _ = std::fs::remove_file(clean_p);
-                    }
-                    let ann_p = parent.join(format!("{stem}_annotated.{ext}"));
-                    if ann_p.exists() {
-                        let _ = std::fs::remove_file(ann_p);
-                    }
-                }
-            }
-        }
+        remove_screenshot_files(rem_path);
     }
 
     Ok(())
 }
 
-#[tauri::command]
-pub fn open_logs_folder() -> Result<String, String> {
-    let log_dir = crate::logger::get_log_dir();
-    let path_str = log_dir.to_string_lossy().to_string();
+fn open_in_file_manager(path: &std::path::Path) {
     #[cfg(target_os = "windows")]
-    {
-        let _ = std::process::Command::new("explorer").arg(&log_dir).spawn();
-    }
+    let program = "explorer";
     #[cfg(target_os = "macos")]
-    {
-        let _ = std::process::Command::new("open").arg(&log_dir).spawn();
-    }
+    let program = "open";
     #[cfg(target_os = "linux")]
-    {
-        let _ = std::process::Command::new("xdg-open").arg(&log_dir).spawn();
-    }
-    Ok(path_str)
+    let program = "xdg-open";
+    let _ = std::process::Command::new(program).arg(path).spawn();
 }
 
 #[tauri::command]
-pub fn open_browser_extension_folder() -> Result<String, String> {
-    let mut candidate = std::env::current_dir()
-        .map(|p| p.join("browser-extension"))
-        .unwrap_or_else(|_| std::path::PathBuf::from("browser-extension"));
+pub fn open_logs_folder() -> Result<String, String> {
+    let log_dir = crate::logger::get_log_dir();
+    open_in_file_manager(&log_dir);
+    Ok(log_dir.to_string_lossy().to_string())
+}
 
-    if !candidate.is_dir() {
-        if let Ok(exe) = std::env::current_exe() {
-            if let Some(parent) = exe.parent() {
-                let p2 = parent.join("browser-extension");
-                if p2.is_dir() {
-                    candidate = p2;
-                } else if let Some(grandparent) = parent.parent() {
-                    let p3 = grandparent.join("browser-extension");
-                    if p3.is_dir() {
-                        candidate = p3;
-                    }
-                }
-            }
-        }
-    }
+#[tauri::command]
+pub fn open_browser_extension_folder(app: AppHandle) -> Result<String, String> {
+    use tauri::Manager;
 
-    let path_str = candidate.to_string_lossy().to_string();
-    #[cfg(target_os = "windows")]
-    {
-        let _ = std::process::Command::new("explorer").arg(&candidate).spawn();
+    // Installed builds ship the extension as a bundled resource; in development it lives at
+    // the repository root, next to `src-tauri`.
+    let mut candidates = Vec::new();
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        candidates.push(resource_dir.join("browser-extension"));
     }
-    #[cfg(target_os = "macos")]
-    {
-        let _ = std::process::Command::new("open").arg(&candidate).spawn();
+    candidates.push(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("browser-extension"));
+
+    let folder = candidates
+        .into_iter()
+        .find(|dir| dir.join("manifest.json").is_file())
+        .ok_or_else(|| "Cartella dell'estensione browser non trovata".to_string())?;
+    let folder = dunce_canonicalize(&folder);
+    open_in_file_manager(&folder);
+    Ok(folder.to_string_lossy().to_string())
+}
+
+/// `canonicalize` without the `\\?\` prefix Windows adds, which Explorer doesn't open.
+fn dunce_canonicalize(path: &std::path::Path) -> std::path::PathBuf {
+    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let text = canonical.to_string_lossy();
+    match text.strip_prefix(r"\\?\") {
+        Some(stripped) if !stripped.starts_with("UNC\\") => std::path::PathBuf::from(stripped),
+        _ => canonical,
     }
-    #[cfg(target_os = "linux")]
-    {
-        let _ = std::process::Command::new("xdg-open").arg(&candidate).spawn();
-    }
-    Ok(path_str)
 }
 
 #[tauri::command]
@@ -1496,8 +1660,55 @@ pub fn get_browser_bridge_status(state: State<'_, Arc<AppState>>) -> Result<serd
 
 #[cfg(test)]
 mod doc_step_tests {
-    use super::{carry_over_step_metadata, replace_step_image};
+    use super::{
+        carry_over_step_metadata, group_duplicates, replace_image_file_refs, replace_step_image,
+        update_step_markdown,
+    };
     use crate::storage::models::WorkflowStep;
+
+    #[test]
+    fn step_edit_only_touches_its_own_section() {
+        let md = "## Step 1. Apri\nClicca OK\n\n## Step 2. Salva\nClicca OK\n![s](screenshots/a.png)\n";
+        let out = update_step_markdown(md, 2, "Salva tutto", "Clicca OK", "Premi Ctrl+S");
+        assert_eq!(
+            out,
+            "## Step 1. Apri\nClicca OK\n\n## Step 2. Salva tutto\nPremi Ctrl+S\n![s](screenshots/a.png)\n"
+        );
+    }
+
+    #[test]
+    fn step_edit_replaces_text_the_editor_did_not_show_but_keeps_images() {
+        let md = "### Passo 1: Apri\nTesto riscritto dall'AI.\n\n![a](screenshots/a.png)\n## Risultato\nFine";
+        let out = update_step_markdown(md, 1, "Apri", "Descrizione originale", "Nuova descrizione");
+        assert_eq!(
+            out,
+            "### Passo 1: Apri\n\nNuova descrizione\n\n![a](screenshots/a.png)\n\n## Risultato\nFine"
+        );
+    }
+
+    #[test]
+    fn image_refs_are_matched_by_file_name() {
+        let md = "a\n\n![x](screenshots/old.png)\n\nb\n![y](C:\\data\\screenshots\\old.png)";
+        assert_eq!(
+            replace_image_file_refs(md, "old.png", Some("new.png")),
+            "a\n\n![x](screenshots/new.png)\n\nb\n![y](C:\\data\\screenshots\\new.png)"
+        );
+        assert_eq!(replace_image_file_refs(md, "old.png", None), "a\n\nb\n");
+    }
+
+    #[test]
+    fn duplicates_need_near_identical_images_and_do_not_chain() {
+        let base = vec![100u8; 64 * 64];
+        let mut tiny_change = base.clone();
+        tiny_change[..40].fill(255); // 1 % of the pixels
+        let mut drift = tiny_change.clone();
+        drift[40..160].fill(255); // ~4 % away from `base`, <3 % from `tiny_change`
+        let different = vec![20u8; 64 * 64];
+
+        let groups = group_duplicates(&[base, tiny_change, drift, different]);
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].0, vec![0, 1]);
+    }
 
     fn step(n: usize, title: &str, shot: Option<&str>) -> WorkflowStep {
         WorkflowStep {

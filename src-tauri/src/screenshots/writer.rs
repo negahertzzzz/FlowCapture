@@ -250,7 +250,7 @@ impl PostClickSampler {
 
         let scale = frame.scale.0;
         let vs_reference = diff_frames(&self.reference.image, &frame.image, &ref_zones);
-        if vs_reference.map_or(true, |diff| !is_insignificant(&diff, scale)) {
+        if vs_reference.is_none_or(|diff| !is_insignificant(&diff, scale)) {
             self.changed_since_click = true;
         }
 

@@ -31,6 +31,13 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
         .setup(|app| {
+            // Installed builds can't write next to the executable (or to the working directory,
+            // often System32): log to the platform log folder. Development keeps `<repo>/log`.
+            if !cfg!(debug_assertions) {
+                if let Ok(log_dir) = app.path().app_log_dir() {
+                    logger::init(log_dir);
+                }
+            }
             let app_data_dir = app
                 .path()
                 .app_data_dir()

@@ -147,7 +147,7 @@ export function DuplicateScreenshotsModal({
             <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
               <span style={{ fontSize: "18px" }}>🔍</span>
               <h3 style={{ margin: 0, fontSize: "16px", fontWeight: 600 }}>
-                Rilevamento Duplicati Screenshot (Somiglianza ≥ 60%)
+                Rilevamento Duplicati Screenshot (Somiglianza ≥ 97%)
               </h3>
               <span
                 style={{

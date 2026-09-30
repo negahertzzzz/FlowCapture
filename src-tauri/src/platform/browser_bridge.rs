@@ -143,6 +143,52 @@ impl BrowserBridgeState {
     }
 }
 
+/// Largest request accepted from the extension (a click payload is well under 4 KB).
+const MAX_REQUEST_BYTES: usize = 256 * 1024;
+const REQUEST_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Reads one HTTP request: headers, then as many body bytes as `Content-Length` announces. A
+/// single `read` is not enough, the body can arrive in several TCP segments.
+async fn read_http_request(socket: &mut tokio::net::TcpStream) -> Option<Vec<u8>> {
+    let read_all = async {
+        let mut data: Vec<u8> = Vec::with_capacity(4096);
+        let mut chunk = [0u8; 8192];
+        loop {
+            if let Some(header_end) = find_subsequence(&data, b"\r\n\r\n") {
+                let headers = String::from_utf8_lossy(&data[..header_end]);
+                let content_length = headers
+                    .lines()
+                    .filter_map(|line| line.split_once(':'))
+                    .find(|(name, _)| name.trim().eq_ignore_ascii_case("content-length"))
+                    .and_then(|(_, value)| value.trim().parse::<usize>().ok())
+                    .unwrap_or(0);
+                let total = header_end + 4 + content_length;
+                if total > MAX_REQUEST_BYTES {
+                    return None;
+                }
+                if data.len() >= total {
+                    data.truncate(total);
+                    return Some(data);
+                }
+            } else if data.len() > MAX_REQUEST_BYTES {
+                return None;
+            }
+
+            let n = socket.read(&mut chunk).await.ok()?;
+            if n == 0 {
+                // Peer closed early: hand over whatever arrived.
+                return (!data.is_empty()).then_some(data);
+            }
+            data.extend_from_slice(&chunk[..n]);
+        }
+    };
+    tokio::time::timeout(REQUEST_READ_TIMEOUT, read_all).await.ok().flatten()
+}
+
+fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack.windows(needle.len()).position(|window| window == needle)
+}
+
 pub fn start_browser_bridge_server(state: BrowserBridgeState, port: u16) {
     std::thread::Builder::new()
         .name("browser-bridge-server".to_string())
@@ -179,13 +225,10 @@ pub fn start_browser_bridge_server(state: BrowserBridgeState, port: u16) {
 
                     let state_clone = state.clone();
                     tokio::spawn(async move {
-                let mut buf = vec![0u8; 8192];
-                let n = match socket.read(&mut buf).await {
-                    Ok(n) if n > 0 => n,
-                    _ => return,
+                let Some(raw) = read_http_request(&mut socket).await else {
+                    return;
                 };
-
-                let request = String::from_utf8_lossy(&buf[..n]);
+                let request = String::from_utf8_lossy(&raw);
                 let (first_line, body) = match request.split_once("\r\n\r\n") {
                     Some((headers, b)) => (headers.lines().next().unwrap_or(""), b),
                     None => (request.lines().next().unwrap_or(""), ""),
@@ -269,6 +312,35 @@ pub fn start_browser_bridge_server(state: BrowserBridgeState, port: u16) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reads_a_body_split_across_segments() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        rt.block_on(async {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let body = format!("{{\"text\":\"{}\"}}", "x".repeat(20_000));
+            let request = format!(
+                "POST /browser-event HTTP/1.1\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            );
+            let client = tokio::spawn(async move {
+                let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+                let bytes = request.into_bytes();
+                let (head, tail) = bytes.split_at(100);
+                stream.write_all(head).await.unwrap();
+                stream.flush().await.unwrap();
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                stream.write_all(tail).await.unwrap();
+                stream
+            });
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let raw = read_http_request(&mut socket).await.unwrap();
+            let text = String::from_utf8(raw).unwrap();
+            assert!(text.ends_with(&body));
+            drop(client.await.unwrap());
+        });
+    }
 
     #[test]
     fn matches_browser_dom_event_within_time_and_coords() {

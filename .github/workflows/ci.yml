@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: Frontend (tsc + vite build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      # `build` runs `tsc` first, so type errors fail the job.
+      - run: npm run build
+
+  rust:
+    name: Rust (clippy + tests)
+    # Windows is the main target and needs no extra system packages (Linux would need
+    # webkit2gtk, X11 and dbus headers).
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: src-tauri
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      # build.rs downloads ffmpeg into src-tauri/binaries when it is missing; keep it between runs.
+      - uses: actions/cache@v4
+        with:
+          path: src-tauri/binaries
+          key: ffmpeg-${{ runner.os }}-v1
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test --lib

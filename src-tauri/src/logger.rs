@@ -1,39 +1,29 @@
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use chrono::Local;
 
 static LOG_MUTEX: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
-pub fn get_log_dir() -> PathBuf {
-    let base = if let Ok(current) = std::env::current_dir() {
-        let clean = current.to_string_lossy();
-        if clean.ends_with("src-tauri") || clean.ends_with("src-tauri\\") || clean.ends_with("src-tauri/") {
-            current.parent().map(|p| p.to_path_buf()).unwrap_or(current)
-        } else {
-            current
-        }
-    } else if let Ok(exe) = std::env::current_exe() {
-        let parent = exe.parent().unwrap_or_else(|| std::path::Path::new("."));
-        let clean = parent.to_string_lossy();
-        if clean.contains("target") {
-            let mut p = parent.to_path_buf();
-            while let Some(parent_p) = p.parent() {
-                if p.ends_with("src-tauri") {
-                    p = parent_p.to_path_buf();
-                    break;
-                }
-                p = parent_p.to_path_buf();
-            }
-            p
-        } else {
-            parent.to_path_buf()
-        }
-    } else {
-        PathBuf::from(".")
-    };
+static LOG_DIR: OnceLock<PathBuf> = OnceLock::new();
 
-    let dir = base.join("log");
+/// Sets the folder logs go to (the platform log directory of the app). Called once at startup;
+/// without it (unit tests, early failures) logs fall back to the development location.
+pub fn init(log_dir: PathBuf) {
+    let _ = std::fs::create_dir_all(&log_dir);
+    let _ = LOG_DIR.set(log_dir);
+}
+
+pub fn get_log_dir() -> PathBuf {
+    if let Some(dir) = LOG_DIR.get() {
+        return dir.clone();
+    }
+    // Development fallback: `<repo>/log`, next to `src-tauri`.
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(|repo| repo.join("log"))
+        .unwrap_or_else(|| PathBuf::from("log"));
     let _ = std::fs::create_dir_all(&dir);
     dir
 }

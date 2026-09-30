@@ -91,7 +91,9 @@ export function exportTypeClass(format: string) {
 
 export function timelineIcon(eventType: string): IconName {
   if (eventType.includes("mouse")) return "mouse";
-  if (eventType.includes("key")) return "keyboard";
+  if (eventType.includes("key") || eventType.includes("shortcut") || eventType.includes("typed")) {
+    return "keyboard";
+  }
   if (eventType.includes("scroll")) return "scroll";
   if (eventType.includes("terminal")) return "terminal";
   if (eventType.includes("marker")) return "flag";

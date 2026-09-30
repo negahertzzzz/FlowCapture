@@ -49,6 +49,7 @@ impl Database {
         let _ = conn.execute("ALTER TABLE screenshots ADD COLUMN click_x INTEGER", []);
         let _ = conn.execute("ALTER TABLE screenshots ADD COLUMN click_y INTEGER", []);
         let _ = conn.execute("ALTER TABLE screenshots ADD COLUMN annotations_json TEXT", []);
+        let _ = conn.execute("ALTER TABLE sessions ADD COLUMN pauses_json TEXT", []);
         Ok(())
     }
 
@@ -217,6 +218,29 @@ impl Database {
         Ok(())
     }
 
+    /// Pause intervals of a finished recording, as a JSON array of epoch-ms `[start, end]` pairs.
+    pub fn set_session_pauses(&self, session_id: &str, pauses_json: &str) -> Result<()> {
+        self.conn.lock().execute(
+            "UPDATE sessions SET pauses_json = ?1 WHERE id = ?2",
+            params![pauses_json, session_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_session_pauses(&self, session_id: &str) -> Result<Vec<(i64, i64)>> {
+        let conn = self.conn.lock();
+        let raw: Option<String> = conn
+            .query_row(
+                "SELECT pauses_json FROM sessions WHERE id = ?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .unwrap_or(None);
+        Ok(raw
+            .and_then(|json| serde_json::from_str(&json).ok())
+            .unwrap_or_default())
+    }
+
     pub fn delete_session(&self, session_id: &str) -> Result<()> {
         let session_dir = self.session_dir(session_id);
         let _ = std::fs::remove_dir_all(&session_dir);
@@ -232,7 +256,7 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT id, title, status, started_at, ended_at, video_path, duration, documentation_md, steps_json, compressed_events_json, audio_path, audio_transcript, full_video_path, audio_segments_json FROM sessions ORDER BY started_at DESC",
         )?;
-        let rows = stmt.query_map([], |row| Session::from_row(row))?;
+        let rows = stmt.query_map([], Session::from_row)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
@@ -243,7 +267,7 @@ impl Database {
         )?;
         let mut rows = stmt.query(params![session_id])?;
         if let Some(row) = rows.next()? {
-            let mut s = Session::from_row(&row)?;
+            let mut s = Session::from_row(row)?;
             let session_dir = self.session_dir(session_id);
 
             // Self-healing for audio_path
@@ -374,7 +398,7 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT id, session_id, event_type, app_name, payload, created_at, timestamp_ms FROM events WHERE session_id = ?1 ORDER BY timestamp_ms ASC",
         )?;
-        let rows = stmt.query_map(params![session_id], |row| StoredEvent::from_row(row))?;
+        let rows = stmt.query_map(params![session_id], StoredEvent::from_row)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
@@ -401,7 +425,7 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT id, session_id, path, timestamp_ms, trigger, selected, click_x, click_y, annotations_json FROM screenshots WHERE session_id = ?1 ORDER BY timestamp_ms ASC",
         )?;
-        let rows = stmt.query_map(params![session_id], |row| Screenshot::from_row(row))?;
+        let rows = stmt.query_map(params![session_id], Screenshot::from_row)?;
         let mut screenshots = rows.collect::<Result<Vec<_>, _>>()?;
 
         // Self-healing path resolution: if a screenshot path does not exist on disk,
@@ -436,6 +460,18 @@ impl Database {
             .query_map(params![session_id], |row| row.get::<_, String>(0))?
             .collect::<Result<Vec<_>, _>>()?;
         Ok(preview_screenshot_path(&paths))
+    }
+
+    pub fn get_screenshot(&self, screenshot_id: &str) -> Result<Option<Screenshot>> {
+        let conn = self.conn.lock();
+        let mut stmt = conn.prepare(
+            "SELECT id, session_id, path, timestamp_ms, trigger, selected, click_x, click_y, annotations_json FROM screenshots WHERE id = ?1",
+        )?;
+        let mut rows = stmt.query(params![screenshot_id])?;
+        match rows.next()? {
+            Some(row) => Ok(Some(Screenshot::from_row(row)?)),
+            None => Ok(None),
+        }
     }
 
     pub fn delete_screenshot(&self, screenshot_id: &str) -> Result<()> {
@@ -494,7 +530,7 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT id, session_id, format, path, created_at FROM exports WHERE session_id = ?1 ORDER BY created_at DESC",
         )?;
-        let rows = stmt.query_map(params![session_id], |row| ExportRecord::from_row(row))?;
+        let rows = stmt.query_map(params![session_id], ExportRecord::from_row)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
@@ -522,7 +558,7 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT id, name, provider_type, api_key, base_url, model, enabled, created_at FROM providers ORDER BY name ASC",
         )?;
-        let rows = stmt.query_map([], |row| ProviderConfig::from_row(row))?;
+        let rows = stmt.query_map([], ProviderConfig::from_row)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
@@ -549,7 +585,7 @@ impl Database {
         )?;
         let mut rows = stmt.query([])?;
         if let Some(row) = rows.next()? {
-            Ok(Some(ProviderConfig::from_row(&row)?))
+            Ok(Some(ProviderConfig::from_row(row)?))
         } else {
             Ok(None)
         }
@@ -595,7 +631,7 @@ impl Database {
         let mut stmt = conn.prepare(
             "SELECT id, session_id, stage, status, input_json, output_json, error, created_at, completed_at FROM ai_jobs WHERE session_id = ?1 ORDER BY created_at ASC",
         )?;
-        let rows = stmt.query_map(params![session_id], |row| AiJob::from_row(row))?;
+        let rows = stmt.query_map(params![session_id], AiJob::from_row)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(Into::into)
     }
 
@@ -613,8 +649,9 @@ impl Database {
         tx.execute(
             "INSERT INTO sessions (
                 id, title, status, started_at, ended_at, video_path, duration,
-                documentation_md, steps_json, compressed_events_json, audio_path, audio_transcript
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                documentation_md, steps_json, compressed_events_json, audio_path, audio_transcript,
+                full_video_path, audio_segments_json
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 session.id,
                 session.title,
@@ -628,6 +665,8 @@ impl Database {
                 session.compressed_events_json,
                 session.audio_path,
                 session.audio_transcript,
+                session.full_video_path,
+                session.audio_segments_json,
             ],
         )?;
 

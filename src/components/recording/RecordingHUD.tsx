@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { AppButton } from "@/components/ui/AppButton";
 import { Icon } from "@/components/ui/Icon";
 import { api, type Session } from "@/lib/api";
+import { recordedSeconds, type PauseClock } from "@/hooks/useRecording";
 import { formatDuration } from "@/lib/utils";
 
 type FeedItem = {
@@ -23,6 +24,7 @@ type RecordingHUDProps = {
   isMuted?: boolean;
   onToggleMute?: () => void;
   isPaused?: boolean;
+  pauseClock?: PauseClock;
   onPause?: () => void;
   onResume?: () => void;
   monitors?: { id: string; name: string; is_primary: boolean }[];
@@ -31,6 +33,8 @@ type RecordingHUDProps = {
   highlightClicks?: boolean;
   selectedMonitorName?: string;
 };
+
+const NO_PAUSE_CLOCK: PauseClock = { pausedMs: 0, pausedAt: null };
 
 export function RecordingHUD({
   session,
@@ -44,6 +48,7 @@ export function RecordingHUD({
   isMuted = false,
   onToggleMute,
   isPaused = false,
+  pauseClock = NO_PAUSE_CLOCK,
   onPause,
   onResume,
   monitors = [],
@@ -58,14 +63,16 @@ export function RecordingHUD({
   const [feed, setFeed] = useState<FeedItem[]>([]);
 
   useEffect(() => {
-    const startedAt = new Date(session.started_at).getTime();
     function tick() {
-      setElapsed(Math.max(0, Math.floor((Date.now() - startedAt) / 1000)));
+      setElapsed(recordedSeconds(session.started_at, pauseClock));
     }
 
     tick();
     const timer = window.setInterval(tick, 1000);
+    return () => window.clearInterval(timer);
+  }, [session.started_at, pauseClock]);
 
+  useEffect(() => {
     async function pollStats() {
       try {
         const [shots, evts] = await Promise.all([
@@ -116,10 +123,9 @@ export function RecordingHUD({
     }, 1500);
 
     return () => {
-      window.clearInterval(timer);
       window.clearInterval(statsTimer);
     };
-  }, [session.id, session.started_at]);
+  }, [session.id]);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {

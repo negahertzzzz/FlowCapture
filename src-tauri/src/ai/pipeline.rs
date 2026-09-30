@@ -241,7 +241,8 @@ impl AiPipeline {
         // Build pre-aligned event+audio pairs in Rust (deterministic, no AI guesswork needed)
         let aligned_events = if let Some(ref result) = audio_transcript_result {
             if !result.segments.is_empty() {
-                let aligned = align_audio_to_events(&redacted_events, &result.segments, session_start_ms);
+                let pauses = self.db.get_session_pauses(session_id).unwrap_or_default();
+                let aligned = align_audio_to_events(&redacted_events, &result.segments, session_start_ms, &pauses);
                 emit_log(app, session_id, &format!(
                     "Allineamento deterministico audio-eventi: {}/{} eventi con audio associato",
                     aligned.iter().filter(|a| !a.nearby_audio.is_empty()).count(),
@@ -516,6 +517,7 @@ Rules: \
         parse_steps_json_with_retry(&*llm, system, &response, &options).await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn enhance_documentation(
         &self,
         provider: &ProviderConfig,
@@ -634,40 +636,54 @@ fn extract_json_array(response: &str) -> String {
     "[]".to_string()
 }
 
+/// Start of the audio timeline in the events' clock, or `None` when event timestamps are
+/// already relative (legacy sessions). The microphone starts with the recording, so the session
+/// start is used when it is close to the first event.
+pub(crate) fn audio_timeline_origin(first_event_ts: i64, session_start_ms: Option<i64>) -> Option<i64> {
+    if first_event_ts <= 1_000_000_000_000 {
+        return None;
+    }
+    Some(
+        session_start_ms
+            .filter(|&start| start > 0 && (start - first_event_ts).abs() < 120_000)
+            .map_or(first_event_ts, |start| start.min(first_event_ts)),
+    )
+}
+
+/// Position of an event in the audio file. The microphone recorder is paused together with the
+/// recording, so every pause that happened before the event is cut out of the audio timeline.
+pub(crate) fn event_audio_offset_ms(timestamp_ms: i64, origin: Option<i64>, pauses: &[(i64, i64)]) -> i64 {
+    let Some(t0) = origin else {
+        return timestamp_ms;
+    };
+    let paused_before: i64 = pauses
+        .iter()
+        .map(|&(start, end)| (end.min(timestamp_ms) - start.max(t0)).max(0))
+        .sum();
+    (timestamp_ms - t0 - paused_before).max(0)
+}
+
 /// Deterministically aligns audio segments to events by timestamp proximity.
-/// Converts absolute epoch event timestamps to relative audio file offsets using T0.
-/// For each event, finds all segments whose `[start_ms - PRE_MS, end_ms + POST_MS]` window
-/// overlaps the event's timestamp. The model then receives already-paired data.
+/// Converts absolute epoch event timestamps to relative audio file offsets using T0 and the
+/// recorded pauses. For each event, finds all segments whose `[start_ms - PRE_MS, end_ms + POST_MS]`
+/// window overlaps the event's timestamp. The model then receives already-paired data.
 fn align_audio_to_events<'a>(
     events: &'a [SessionEvent],
     segments: &'a [AudioSegment],
     session_start_ms: Option<i64>,
+    pauses: &[(i64, i64)],
 ) -> Vec<AlignedEvent<'a>> {
     // Window: 3s before event (user often explains before clicking) to 2s after
     const PRE_MS: i64 = 3000;
     const POST_MS: i64 = 2000;
 
     let first_event_ts = events.first().map(|e| e.timestamp_ms).unwrap_or(0);
-    let is_epoch = first_event_ts > 1_000_000_000_000;
-
-    let t0 = if is_epoch {
-        if let Some(start_ms) = session_start_ms.filter(|&s| s > 0 && (s - first_event_ts).abs() < 120_000) {
-            start_ms.min(first_event_ts)
-        } else {
-            first_event_ts
-        }
-    } else {
-        0
-    };
+    let origin = audio_timeline_origin(first_event_ts, session_start_ms);
 
     events
         .iter()
         .map(|event| {
-            let event_offset_ms = if is_epoch {
-                event.timestamp_ms.saturating_sub(t0)
-            } else {
-                event.timestamp_ms
-            };
+            let event_offset_ms = event_audio_offset_ms(event.timestamp_ms, origin, pauses);
 
             let window_start = event_offset_ms.saturating_sub(PRE_MS);
             let window_end = event_offset_ms + POST_MS;
@@ -754,4 +770,27 @@ pub fn emit_log(app: &AppHandle, session_id: &str, message: &str) {
             timestamp_ms: now,
         },
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{audio_timeline_origin, event_audio_offset_ms};
+
+    #[test]
+    fn pauses_are_cut_out_of_the_audio_timeline() {
+        let t0 = 1_700_000_000_000;
+        let origin = audio_timeline_origin(t0 + 500, Some(t0));
+        assert_eq!(origin, Some(t0));
+        // 10 s recorded, paused 20 s, event 5 s after resuming → 15 s into the audio.
+        let pauses = [(t0 + 10_000, t0 + 30_000)];
+        assert_eq!(event_audio_offset_ms(t0 + 35_000, origin, &pauses), 15_000);
+        // Events before the pause are unaffected.
+        assert_eq!(event_audio_offset_ms(t0 + 4_000, origin, &pauses), 4_000);
+    }
+
+    #[test]
+    fn relative_timestamps_are_used_as_is() {
+        assert_eq!(audio_timeline_origin(12_000, None), None);
+        assert_eq!(event_audio_offset_ms(12_000, None, &[(1, 2)]), 12_000);
+    }
 }

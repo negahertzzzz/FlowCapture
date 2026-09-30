@@ -24,6 +24,11 @@ impl EventCollector {
     }
 }
 
+/// Whether an app/window name belongs to FlowCapture itself (the recorder's own UI).
+pub fn is_flowcapture_app(app: &str) -> bool {
+    app.to_ascii_lowercase().contains("flowcapture")
+}
+
 pub fn should_trigger_screenshot(event: &CapturedInputEvent) -> bool {
     match event.event_type.as_str() {
         "mouse_click" | "mouse_double_click" | "shortcut_press" | "manual_marker" | "window_focus" => true,

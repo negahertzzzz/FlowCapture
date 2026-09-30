@@ -35,10 +35,16 @@ export function AiJobProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!activeJob || activeJob.isDone || activeJob.error) return;
 
-    let unlistenProgress: (() => void) | undefined;
-    let unlistenLog: (() => void) | undefined;
+    // `listen` resolves asynchronously: if the effect is cleaned up first (StrictMode runs it
+    // twice), the late unlisten must still run or every log line arrives twice.
+    let disposed = false;
+    const unlisteners: (() => void)[] = [];
+    const keep = (unlisten: () => void) => {
+      if (disposed) unlisten();
+      else unlisteners.push(unlisten);
+    };
 
-    api.onAiProgress(activeJob.sessionId, (evt: AiProgressEvent) => {
+    void api.onAiProgress(activeJob.sessionId, (evt: AiProgressEvent) => {
       setActiveJob((prev) => {
         if (!prev || prev.sessionId !== evt.session_id) return prev;
         const newCompleted =
@@ -53,11 +59,9 @@ export function AiJobProvider({ children }: { children: ReactNode }) {
           failedStage: newFailed,
         };
       });
-    }).then((un) => {
-      unlistenProgress = un;
-    });
+    }).then(keep);
 
-    api.onAiLog(activeJob.sessionId, (evt: AiLogEvent) => {
+    void api.onAiLog(activeJob.sessionId, (evt: AiLogEvent) => {
       setActiveJob((prev) => {
         if (!prev || prev.sessionId !== evt.session_id) return prev;
         return {
@@ -65,13 +69,11 @@ export function AiJobProvider({ children }: { children: ReactNode }) {
           logs: [...prev.logs, evt.message],
         };
       });
-    }).then((un) => {
-      unlistenLog = un;
-    });
+    }).then(keep);
 
     return () => {
-      if (unlistenProgress) unlistenProgress();
-      if (unlistenLog) unlistenLog();
+      disposed = true;
+      unlisteners.forEach((unlisten) => unlisten());
     };
   }, [activeJob?.sessionId, activeJob?.isDone, activeJob?.error]);
 

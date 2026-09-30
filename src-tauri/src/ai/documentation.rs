@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use regex::Regex;
 use serde_json::json;
 
+use crate::events::is_flowcapture_app;
 use crate::storage::models::{Screenshot, SessionEvent, WorkflowStep};
 
 pub fn is_web_browser(app_name: &str) -> bool {
@@ -41,7 +42,7 @@ pub fn clean_browser_window_title(title: &str, browser_name: &str) -> String {
     for suffix in &[
         " - Google Chrome",
         " - Microsoft Edge",
-        " - Microsoft​ Edge",
+        " - Microsoft\u{200B} Edge",
         " - Mozilla Firefox",
         " - Brave",
         " - Opera",
@@ -124,7 +125,8 @@ pub fn build_workflow_steps(events: &[SessionEvent]) -> Vec<WorkflowStep> {
                     annotations_json: None,
                 });
             }
-            "mouse_click" => {
+            "mouse_click" | "mouse_double_click" => {
+                let double = event.event_type == "mouse_double_click";
                 let button = event
                     .payload
                     .get("button")
@@ -167,7 +169,7 @@ pub fn build_workflow_steps(events: &[SessionEvent]) -> Vec<WorkflowStep> {
                         }
                     })
                     .unwrap_or_default();
-                let click_key = format!("{button}:{x}:{y}:{context}:{:?}", elem_name);
+                let click_key = format!("{button}:{double}:{x}:{y}:{context}:{:?}", elem_name);
 
                 if last_click_key.as_deref() == Some(click_key.as_str()) {
                     continue;
@@ -179,6 +181,7 @@ pub fn build_workflow_steps(events: &[SessionEvent]) -> Vec<WorkflowStep> {
                         let action = match button {
                             "right" => "Right-click",
                             "middle" => "Middle-click",
+                            _ if double => "Double-click",
                             _ => "Click",
                         };
                         let type_desc = elem_type
@@ -192,12 +195,17 @@ pub fn build_workflow_steps(events: &[SessionEvent]) -> Vec<WorkflowStep> {
                         (title, desc)
                     }
                     None => {
-                        let title = format!("{button}-click");
+                        let title = if double {
+                            format!("{button} double-click")
+                        } else {
+                            format!("{button}-click")
+                        };
                         let desc = format!(
                             "{}{}.",
                             match button {
                                 "right" => "Right-click the target element",
                                 "middle" => "Middle-click the target element",
+                                _ if double => "Double-click the target element",
                                 _ => "Click the target element",
                             },
                             context
@@ -233,6 +241,47 @@ pub fn build_workflow_steps(events: &[SessionEvent]) -> Vec<WorkflowStep> {
                     step: 0,
                     title: "Enter text".to_string(),
                     description: format!("In **{app}**, type `{text}`."),
+                    reason: None,
+                    timestamp_ms: event.timestamp_ms,
+                    screenshot_ids: Vec::new(),
+                    annotations_json: None,
+                });
+            }
+            "shortcut_press" | "key_press" => {
+                let key = event.payload.get("key").and_then(|v| v.as_str()).unwrap_or("");
+                let label = match event.payload.get("combo").and_then(|v| v.as_str()) {
+                    Some(combo) => combo
+                        .split('+')
+                        .map(crate::compression::display_key_name)
+                        .collect::<Vec<_>>()
+                        .join("+"),
+                    None => crate::compression::display_key_name(key),
+                };
+                if label.is_empty() {
+                    continue;
+                }
+                let app = event.app_name.clone();
+
+                // "Type X, then press Enter" reads better than two separate steps.
+                if matches!(label.as_str(), "Enter" | "Tab") {
+                    if let Some(last) = steps.last_mut() {
+                        let same_app = app.as_deref().is_none_or(|a| last.description.contains(&format!("**{a}**")));
+                        if last.title == "Enter text"
+                            && same_app
+                            && (event.timestamp_ms - last.timestamp_ms).abs() < 10_000
+                        {
+                            let sentence = last.description.trim_end_matches('.').to_string();
+                            last.description = format!("{sentence}, then press **{label}**.");
+                            continue;
+                        }
+                    }
+                }
+
+                let where_ = app.map(|a| format!(" in **{a}**")).unwrap_or_default();
+                steps.push(WorkflowStep {
+                    step: 0,
+                    title: format!("Press {label}"),
+                    description: format!("Press **{label}**{where_}."),
                     reason: None,
                     timestamp_ms: event.timestamp_ms,
                     screenshot_ids: Vec::new(),
@@ -513,7 +562,7 @@ fn screenshot_filename(shot: &Screenshot) -> String {
         .to_string()
 }
 
-fn screenshot_lookup<'a>(screenshots: &'a [Screenshot]) -> HashMap<&'a str, &'a Screenshot> {
+fn screenshot_lookup(screenshots: &[Screenshot]) -> HashMap<&str, &Screenshot> {
     screenshots.iter().map(|shot| (shot.id.as_str(), shot)).collect()
 }
 
@@ -523,19 +572,13 @@ fn nearest_screenshot(timestamp_ms: i64, screenshots: &[Screenshot]) -> Option<&
         .min_by_key(|shot| (shot.timestamp_ms - timestamp_ms).unsigned_abs())
 }
 
+/// Interactions with FlowCapture itself (Stop, Pause, renaming the session…) are not part of
+/// the documented workflow.
 fn should_skip_event(event: &SessionEvent) -> bool {
-    if event.event_type == "window_focus" || event.event_type == "mouse_click" {
-        event
-            .app_name
-            .as_deref()
-            .is_some_and(is_flowcapture_app)
-    } else {
-        false
-    }
-}
-
-fn is_flowcapture_app(app: &str) -> bool {
-    app.eq_ignore_ascii_case("flowcapture") || app.contains("FlowCapture")
+    event
+        .app_name
+        .as_deref()
+        .is_some_and(is_flowcapture_app)
 }
 
 fn is_generic_session_title(title: &str) -> bool {
