@@ -122,17 +122,27 @@ impl BrowserBridgeState {
         }
     }
 
-    pub fn match_and_take_event(&self, timestamp_ms: i64, x: i32, y: i32) -> Option<BrowserDomEvent> {
+    /// Takes the browser click that corresponds to a native click at `(x, y)`: within ±1.5 s
+    /// and at most `max_distance` pixels away (Manhattan distance, physical pixels). Without
+    /// the distance limit, a click in another app shortly after a browser click would receive
+    /// the web element's name.
+    pub fn match_and_take_event(
+        &self,
+        timestamp_ms: i64,
+        x: i32,
+        y: i32,
+        max_distance: i64,
+    ) -> Option<BrowserDomEvent> {
         let mut queue = self.events.lock().ok()?;
         if queue.is_empty() {
             return None;
         }
 
-        // Match within +/- 1500ms
         let best_idx = queue
             .iter()
             .enumerate()
             .filter(|(_, ev)| (ev.timestamp_ms - timestamp_ms).abs() <= 1500)
+            .filter(|(_, ev)| ev.distance_to(x, y) <= max_distance)
             .min_by_key(|(_, ev)| {
                 let dt = (ev.timestamp_ms - timestamp_ms).abs();
                 dt + ev.distance_to(x, y) * 2
@@ -141,6 +151,26 @@ impl BrowserBridgeState {
 
         best_idx.and_then(|idx| queue.remove(idx))
     }
+}
+
+/// Distance allowed between a native click and a browser click on a browser window. Generous:
+/// with monitors at different scaling, the browser's screen coordinates can be off by a few
+/// hundred pixels on the secondary monitor.
+pub const BROWSER_MATCH_DISTANCE: i64 = 400;
+/// Distance allowed when the foreground app is not a known browser: only a click at (almost)
+/// the same spot can be the same click (the app name may still be the previous window when the
+/// click itself brings the browser to the front).
+pub const OTHER_APP_MATCH_DISTANCE: i64 = 48;
+
+/// Whether an app / process name looks like a web browser.
+pub fn is_browser_app(app: &str) -> bool {
+    let app = app.to_ascii_lowercase();
+    [
+        "chrome", "chromium", "msedge", "microsoft edge", "firefox", "brave", "opera", "vivaldi",
+        "safari", "iexplore", "arc.exe",
+    ]
+    .iter()
+    .any(|name| app.contains(name))
 }
 
 /// Largest request accepted from the extension (a click payload is well under 4 KB).
@@ -364,14 +394,14 @@ mod tests {
         });
 
         // Query matching event
-        let matched = state.match_and_take_event(10150, 505, 302);
+        let matched = state.match_and_take_event(10150, 505, 302, BROWSER_MATCH_DISTANCE);
         assert!(matched.is_some());
         let ev = matched.unwrap();
         assert_eq!(ev.text, "Accedi");
         assert_eq!(ev.tag, "BUTTON");
 
         // Second query should be None as event was consumed
-        assert!(state.match_and_take_event(10150, 505, 302).is_none());
+        assert!(state.match_and_take_event(10150, 505, 302, BROWSER_MATCH_DISTANCE).is_none());
     }
 
     #[test]
@@ -396,7 +426,7 @@ mod tests {
         });
 
         // Query with large delta (3500ms > 1500ms limit)
-        assert!(state.match_and_take_event(4500, 100, 100).is_none());
+        assert!(state.match_and_take_event(4500, 100, 100, BROWSER_MATCH_DISTANCE).is_none());
     }
 
     fn dom_event(text: &str, x: i32, y: i32, dpr: Option<f64>) -> BrowserDomEvent {
@@ -420,6 +450,22 @@ mod tests {
     }
 
     #[test]
+    fn far_away_clicks_are_not_matched() {
+        let state = BrowserBridgeState::new();
+        state.push_event(dom_event("Salva", 300, 200, Some(1.0)));
+        // A click in another app on the other side of the screen, 200 ms later.
+        assert!(state.match_and_take_event(now_ms(), 1700, 900, BROWSER_MATCH_DISTANCE).is_none());
+        assert!(state.match_and_take_event(now_ms(), 330, 210, OTHER_APP_MATCH_DISTANCE).is_some());
+    }
+
+    #[test]
+    fn recognises_browsers() {
+        assert!(is_browser_app("msedge.exe"));
+        assert!(is_browser_app("Google Chrome"));
+        assert!(!is_browser_app("EXCEL.EXE"));
+    }
+
+    #[test]
     #[cfg(not(target_os = "macos"))]
     fn matches_physical_click_at_150_percent_scaling() {
         let state = BrowserBridgeState::new();
@@ -427,7 +473,7 @@ mod tests {
         // unscaled CSS coordinates would wrongly point.
         state.push_event(dom_event("Salva", 800, 400, Some(1.5)));
         state.push_event(dom_event("Annulla", 1190, 590, Some(1.0)));
-        let matched = state.match_and_take_event(now_ms(), 1200, 600).unwrap();
+        let matched = state.match_and_take_event(now_ms(), 1200, 600, BROWSER_MATCH_DISTANCE).unwrap();
         assert_eq!(matched.text, "Salva");
     }
 }

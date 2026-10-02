@@ -506,7 +506,8 @@ fn render_shot(shot: &Screenshot, options: &ExportOptions) -> String {
 
 /// Picks the on-disk variant of a screenshot that matches the "annotations" toggle:
 /// `{stem}_annotated.{ext}` is the editor render with every badge/highlight, while
-/// `{stem}_clean.{ext}` is the pristine capture saved before any click marker was baked in.
+/// the original file is the untouched capture (`{stem}_clean.{ext}` only exists for sessions of
+/// older versions that drew the marker onto the original).
 pub fn export_image_path(path: &str, annotations: bool) -> String {
     let original = Path::new(path);
     let (Some(parent), Some(stem), Some(ext)) = (

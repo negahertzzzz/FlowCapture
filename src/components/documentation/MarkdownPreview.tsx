@@ -73,6 +73,11 @@ function EditableBlock({
   "data-source-line"?: number;
 }) {
   const elementRef = useRef<HTMLElement | null>(null);
+  // Bumped after every edit (or Esc) to rebuild the element from its props: text typed into a
+  // contentEditable lives in DOM nodes React does not track, which otherwise shows up as
+  // duplicated text on the next render.
+  const [revision, setRevision] = useState(0);
+  const cancelled = useRef(false);
 
   if (!editable || !onTextChange) {
     return (
@@ -86,19 +91,41 @@ function EditableBlock({
 
   return (
     <Component
+      key={revision}
       ref={elementRef}
       data-source-line={dataSourceLine}
       contentEditable={true}
       suppressContentEditableWarning={true}
+      onKeyDown={(event: React.KeyboardEvent<HTMLElement>) => {
+        if (event.key === "Enter") {
+          // A block is one Markdown line: Enter confirms instead of inserting new elements.
+          event.preventDefault();
+          elementRef.current?.blur();
+        } else if (event.key === "Escape") {
+          event.preventDefault();
+          cancelled.current = true;
+          elementRef.current?.blur();
+        }
+      }}
+      onPaste={(event: React.ClipboardEvent<HTMLElement>) => {
+        // Plain text only: pasted HTML would add markup the Markdown cannot represent.
+        event.preventDefault();
+        const text = event.clipboardData.getData("text/plain").replace(/\s*\n\s*/g, " ");
+        document.execCommand("insertText", false, text);
+      }}
       onBlur={() => {
-        if (elementRef.current) {
-          const currentText = elementRef.current.innerText.trim();
+        const element = elementRef.current;
+        const discard = cancelled.current;
+        cancelled.current = false;
+        if (element && !discard) {
+          const currentText = element.innerText.replace(/\s*\n\s*/g, " ").trim();
           if (currentText && currentText !== initialText) {
             onTextChange(initialText, currentText);
           }
         }
+        setRevision((value) => value + 1);
       }}
-      title="Clicca per modificare direttamente questo testo"
+      title="Clicca per modificare direttamente questo testo · Invio per confermare, Esc per annullare"
       className={["md-editable", className].filter(Boolean).join(" ")}
     >
       {children}

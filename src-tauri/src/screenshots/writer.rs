@@ -4,6 +4,7 @@
 //! the near-duplicate check and the database insert happen on a dedicated writer thread so the
 //! loop keeps draining input events on time.
 
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -14,7 +15,6 @@ use parking_lot::Mutex;
 use super::frame::{diff_frames, is_insignificant, Frame, Rect};
 use super::{PendingCapture, ScreenshotEngine};
 use crate::storage::Database;
-use crate::thread_util::join_thread_with_timeout;
 
 /// Half-size (in input units) of the zone ignored around the mouse: the pointer itself, the
 /// pressed/hover state of the element under it, small tooltips.
@@ -48,37 +48,65 @@ enum Decision {
 pub struct ScreenshotWriter {
     tx: Option<Sender<CaptureJob>>,
     handle: Option<JoinHandle<()>>,
+    /// Screenshots submitted but not yet saved (or dropped). Shared with the recording so that
+    /// stopping waits for the queue instead of finishing the session without its last shots.
+    pending: Arc<AtomicUsize>,
 }
 
 impl ScreenshotWriter {
-    pub fn spawn(engine: Arc<Mutex<ScreenshotEngine>>, db: Arc<Database>, dedupe: bool) -> Self {
+    pub fn spawn(
+        engine: Arc<Mutex<ScreenshotEngine>>,
+        db: Arc<Database>,
+        dedupe: bool,
+        pending: Arc<AtomicUsize>,
+    ) -> Self {
         let (tx, rx) = mpsc::channel::<CaptureJob>();
+        let counter = pending.clone();
         let handle = thread::Builder::new()
             .name("screenshot-writer".to_string())
-            .spawn(move || run_writer(rx, engine, db, dedupe))
+            .spawn(move || run_writer(rx, engine, db, dedupe, counter))
             .ok();
-        Self { tx: Some(tx), handle }
+        Self { tx: Some(tx), handle, pending }
     }
 
     pub fn submit(&self, job: CaptureJob) {
         if let Some(tx) = &self.tx {
-            let _ = tx.send(job);
+            self.pending.fetch_add(1, Ordering::SeqCst);
+            if tx.send(job).is_err() {
+                self.pending.fetch_sub(1, Ordering::SeqCst);
+            }
         }
     }
 
-    /// Closes the queue and waits for every queued screenshot to be written.
-    pub fn finish(mut self, timeout: Duration) -> bool {
+    /// Closes the queue and waits until every queued screenshot has been written. There is no
+    /// timeout: the recording's stop waits on the `pending` counter with its own limit.
+    pub fn finish(mut self) {
         self.tx.take();
-        match self.handle.take() {
-            Some(handle) => join_thread_with_timeout(handle, timeout),
-            None => true,
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
         }
     }
 }
 
-fn run_writer(rx: Receiver<CaptureJob>, engine: Arc<Mutex<ScreenshotEngine>>, db: Arc<Database>, dedupe: bool) {
+/// Decrements the pending counter when a job is done, whatever path it took.
+struct PendingGuard<'a>(&'a AtomicUsize);
+
+impl Drop for PendingGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+fn run_writer(
+    rx: Receiver<CaptureJob>,
+    engine: Arc<Mutex<ScreenshotEngine>>,
+    db: Arc<Database>,
+    dedupe: bool,
+    pending: Arc<AtomicUsize>,
+) {
     let mut last: Option<SavedCapture> = None;
     for job in rx {
+        let _done = PendingGuard(&pending);
         let decision = if dedupe { decide(last.as_ref(), &job) } else { Decision::Keep };
         match decision {
             Decision::Drop => {
@@ -107,7 +135,17 @@ fn run_writer(rx: Receiver<CaptureJob>, engine: Arc<Mutex<ScreenshotEngine>>, db
             cursor: job.cursor,
             frame: job.frame,
         };
-        let inserted = engine.lock().finish_capture(job.pending);
+        // Clicks are recorded in global screen coordinates; screenshots, annotations and the
+        // replay overlay work in the image's pixels. Convert once here (monitor origin and
+        // scale), and drop a click that happened on another monitor than the captured one.
+        let mut record = job.pending;
+        let image_click = record
+            .click_x
+            .zip(record.click_y)
+            .and_then(|(x, y)| saved.frame.click_in_image(x, y));
+        record.click_x = image_click.map(|(x, _)| x);
+        record.click_y = image_click.map(|(_, y)| y);
+        let inserted = engine.lock().finish_capture(record);
         match inserted {
             Ok(_) => last = Some(saved),
             Err(err) => {

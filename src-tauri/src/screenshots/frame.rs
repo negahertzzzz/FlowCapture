@@ -41,6 +41,14 @@ impl Frame {
         )
     }
 
+    /// Global mouse position -> pixel inside this frame, or `None` when it falls outside
+    /// (the click happened on another monitor).
+    pub fn click_in_image(&self, x: i64, y: i64) -> Option<(i64, i64)> {
+        let (ix, iy) = self.to_image_coords(x, y);
+        let (width, height) = self.image.dimensions();
+        (ix >= 0 && iy >= 0 && ix < width as i64 && iy < height as i64).then_some((ix, iy))
+    }
+
     /// Square of side `2 * radius` (in input units) centred on a global mouse position.
     pub fn region_around(&self, x: i64, y: i64, radius: i64) -> Rect {
         let (cx, cy) = self.to_image_coords(x, y);
@@ -269,6 +277,17 @@ mod tests {
     #[test]
     fn size_mismatch_is_reported() {
         assert!(diff_frames(&solid(10, 10), &solid(10, 11), &[]).is_none());
+    }
+
+    #[test]
+    fn clicks_outside_the_captured_monitor_are_dropped() {
+        let frame = Frame {
+            image: Arc::new(solid(1920, 1080)),
+            origin: (1920, 0),
+            scale: (1.0, 1.0),
+        };
+        assert_eq!(frame.click_in_image(2500, 300), Some((580, 300)));
+        assert_eq!(frame.click_in_image(500, 300), None);
     }
 
     #[test]

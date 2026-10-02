@@ -408,12 +408,17 @@ pub struct GenerateDocumentationResult {
 }
 
 /// Token / cost estimate shown before starting a generation.
+/// Compresses and analyses every event of the session: off the UI thread for long recordings.
 #[tauri::command]
-pub fn estimate_generation_cost(
+pub async fn estimate_generation_cost(
     state: State<'_, Arc<AppState>>,
     session_id: String,
 ) -> Result<crate::ai::cost::CostEstimate, String> {
-    crate::ai::pipeline::estimate_generation_cost(&state.db, &session_id).map_err(|err| err.to_string())
+    let db = Arc::clone(&state.db);
+    tauri::async_runtime::spawn_blocking(move || crate::ai::pipeline::estimate_generation_cost(&db, &session_id))
+        .await
+        .map_err(|err| err.to_string())?
+        .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
@@ -963,14 +968,19 @@ pub async fn transcribe_session_audio(
     Ok(result.text)
 }
 
+/// Removing a session folder (videos can be several GB) runs off the UI thread.
 #[tauri::command]
-pub fn delete_session(
+pub async fn delete_session(
     state: State<'_, Arc<AppState>>,
     session_id: String,
 ) -> Result<(), String> {
     state.cancel_ai_job(&session_id);
     state.remove_ai_cancellation(&session_id);
-    state.db.delete_session(&session_id).map_err(|err| err.to_string())
+    let db = Arc::clone(&state.db);
+    tauri::async_runtime::spawn_blocking(move || db.delete_session(&session_id))
+        .await
+        .map_err(|err| err.to_string())?
+        .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
@@ -1160,9 +1170,10 @@ pub struct NewStepPayload {
     pub description: String,
 }
 
+/// Decoding a 4K PNG sent as base64 and writing it takes a moment: run it off the UI thread.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
-pub fn save_annotated_screenshot(
+pub async fn save_annotated_screenshot(
     state: State<'_, Arc<AppState>>,
     session_id: String,
     screenshot_id: String,
@@ -1172,23 +1183,43 @@ pub fn save_annotated_screenshot(
     new_step: Option<NewStepPayload>,
     annotations_json: Option<String>,
 ) -> Result<crate::storage::models::Screenshot, String> {
-    let screenshots = state.db.list_screenshots(&session_id).map_err(|err| err.to_string())?;
+    let db = Arc::clone(&state.db);
+    tauri::async_runtime::spawn_blocking(move || {
+        save_annotated_screenshot_blocking(
+            &db,
+            session_id,
+            screenshot_id,
+            image_base64,
+            click_x,
+            click_y,
+            new_step,
+            annotations_json,
+        )
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
+#[allow(clippy::too_many_arguments)]
+fn save_annotated_screenshot_blocking(
+    db: &crate::storage::Database,
+    session_id: String,
+    screenshot_id: String,
+    image_base64: String,
+    click_x: Option<i64>,
+    click_y: Option<i64>,
+    new_step: Option<NewStepPayload>,
+    annotations_json: Option<String>,
+) -> Result<crate::storage::models::Screenshot, String> {
+    let screenshots = db.list_screenshots(&session_id).map_err(|err| err.to_string())?;
     let screenshot = screenshots
         .into_iter()
         .find(|s| s.id == screenshot_id)
         .ok_or_else(|| "Screenshot not found".to_string())?;
 
     let original_path = std::path::PathBuf::from(&screenshot.path);
-    if original_path.is_file() {
-        let parent = original_path.parent().unwrap_or(std::path::Path::new(""));
-        let stem = original_path.file_stem().unwrap_or_default().to_string_lossy();
-        let ext = original_path.extension().unwrap_or_default().to_string_lossy();
-        let clean_path = parent.join(format!("{stem}_clean.{ext}"));
-        if clean_path.exists() {
-            // Restore pristine file if clean backup exists, undoing any previous baking
-            let _ = std::fs::copy(&clean_path, &original_path);
-        }
-    }
+    // Sessions from older versions may still have the click drawn on the original.
+    crate::export::restore_legacy_original(&original_path);
 
     // CRITICAL CONSTRAINT: NEVER overwrite raw screenshot.path!
     // Annotations are stored as structured JSON metadata in SQLite (annotations_json).
@@ -1209,11 +1240,11 @@ pub fn save_annotated_screenshot(
         }
     }
 
-    state.db.update_screenshot_annotations(&screenshot_id, annotations_json.as_deref(), click_x, click_y)
+    db.update_screenshot_annotations(&screenshot_id, annotations_json.as_deref(), click_x, click_y)
         .map_err(|err| err.to_string())?;
 
     if let Some(step_data) = new_step {
-        if let Ok(Some(session)) = state.db.get_session(&session_id) {
+        if let Ok(Some(session)) = db.get_session(&session_id) {
             let mut steps: Vec<crate::storage::models::WorkflowStep> = session
                 .steps_json
                 .as_deref()
@@ -1244,7 +1275,7 @@ pub fn save_annotated_screenshot(
                 img_line
             ));
 
-            let _ = state.db.save_documentation(
+            let _ = db.save_documentation(
                 &session_id,
                 &md,
                 &new_steps_json,
@@ -1253,7 +1284,7 @@ pub fn save_annotated_screenshot(
         }
     }
 
-    let updated_screenshots = state.db.list_screenshots(&session_id).map_err(|err| err.to_string())?;
+    let updated_screenshots = db.list_screenshots(&session_id).map_err(|err| err.to_string())?;
     updated_screenshots
         .into_iter()
         .find(|s| s.id == screenshot_id)
@@ -1378,9 +1409,18 @@ pub fn update_documentation(
         .unwrap_or_default();
     let mut parsed_steps = parse_steps_from_markdown(&documentation_md, &screenshots);
     carry_over_step_metadata(&mut parsed_steps, &previous_steps);
+    let previous_had_step_headings = session
+        .documentation_md
+        .as_deref()
+        .is_some_and(|md| !parse_steps_from_markdown(md, &screenshots).is_empty());
     let steps_json = if !parsed_steps.is_empty() {
         serde_json::to_string(&parsed_steps).unwrap_or_else(|_| session.steps_json.unwrap_or_else(|| "[]".to_string()))
+    } else if documentation_md.trim().is_empty() || previous_had_step_headings {
+        // The user removed the steps (or the whole guide): the replay must not keep showing them.
+        "[]".to_string()
     } else {
+        // The guide never used "### Step N:" headings (steps came from the AI pipeline in
+        // another shape): keep the steps we have.
         session.steps_json.unwrap_or_else(|| "[]".to_string())
     };
 

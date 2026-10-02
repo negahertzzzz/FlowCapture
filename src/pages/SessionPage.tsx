@@ -164,6 +164,10 @@ export function SessionPage() {
     }
   }, [sessionId]);
 
+  // Latest text in the editor, to tell whether more edits arrived while a save was running.
+  const latestMarkdown = useRef("");
+  latestMarkdown.current = markdown;
+
   const handleSaveDocumentation = useCallback(async (textToSave?: string) => {
     const md = textToSave !== undefined ? textToSave : markdown;
     if (!sessionId) return;
@@ -171,7 +175,17 @@ export function SessionPage() {
     try {
       await api.updateDocumentation(sessionId, md);
       lastSavedMarkdown.current = md;
-      isEditingMarkdown.current = false;
+      if (latestMarkdown.current === md) {
+        isEditingMarkdown.current = false;
+      }
+      // Saving also re-derives the steps from the guide: reload them (and the session) so the
+      // Replay and Export tabs work on what was just saved, with the new step numbers.
+      const [nextSession, nextSteps] = await Promise.all([
+        api.getSession(sessionId),
+        api.getReplaySteps(sessionId),
+      ]);
+      if (nextSession) setSession(nextSession);
+      setSteps(nextSteps);
       setToast("Documentazione salvata con successo");
     } catch (err) {
       setError(String(err));
@@ -186,7 +200,8 @@ export function SessionPage() {
   }, []);
 
   useDebouncedEffect(() => {
-    if (markdown && isEditingMarkdown.current && markdown !== lastSavedMarkdown.current) {
+    // An emptied guide is a change too: save it.
+    if (isEditingMarkdown.current && markdown !== lastSavedMarkdown.current) {
       handleSaveDocumentation(markdown);
     }
   }, [markdown, handleSaveDocumentation], 800);
@@ -532,6 +547,20 @@ export function SessionPage() {
   }
 
 
+  /** Leaving the guide with unsaved edits saves them right away (no 800 ms wait), so the
+   * other tabs show the current guide and its renumbered steps. */
+  function switchTab(next: TabName) {
+    if (
+      tab === "Documentation" &&
+      next !== tab &&
+      isEditingMarkdown.current &&
+      markdown !== lastSavedMarkdown.current
+    ) {
+      void handleSaveDocumentation(markdown);
+    }
+    setTab(next);
+  }
+
   async function handleFindDuplicates(threshold = duplicateThreshold) {
     setScanningDuplicates(true);
     try {
@@ -588,7 +617,7 @@ export function SessionPage() {
         <AppButton kind="primary" icon="sparkles" disabled={busy} onClick={handleGenerate}>
           Generate Documentation
         </AppButton>
-        <AppButton icon="download" disabled={busy} onClick={() => setTab("Exports")}>
+        <AppButton icon="download" disabled={busy} onClick={() => switchTab("Exports")}>
           Export
         </AppButton>
         <AppButton
@@ -637,7 +666,7 @@ export function SessionPage() {
             key={name}
             type="button"
             className={`tab${tab === name ? " active" : ""}`}
-            onClick={() => setTab(name)}
+            onClick={() => switchTab(name)}
           >
             {name}
           </button>

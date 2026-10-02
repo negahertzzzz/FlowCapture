@@ -36,7 +36,7 @@ impl ExportEngine {
         let options = options.unwrap_or_default().normalized();
         let session = self.require_session(session_id)?;
         let screenshots = self.db.list_screenshots(session_id)?;
-        prepare_screenshots_for_export(&screenshots);
+        prepare_screenshots_for_export(&screenshots, highlight_clicks_enabled(&self.db));
         let markdown = self.resolve_markdown(session_id, &session, &screenshots)?;
         let export_path = self.export_path(session_id, &session, "md");
         let rewritten = if options.screenshots {
@@ -60,7 +60,7 @@ impl ExportEngine {
     ) -> Result<ExportRecord> {
         let session = self.require_session(session_id)?;
         let screenshots = self.db.list_screenshots(session_id)?;
-        prepare_screenshots_for_export(&screenshots);
+        prepare_screenshots_for_export(&screenshots, highlight_clicks_enabled(&self.db));
         let steps = self.load_steps(session_id)?;
         let html = render_styled_export_html(
             &session,
@@ -85,7 +85,7 @@ impl ExportEngine {
         let options = options.unwrap_or_default().normalized();
         let session = self.require_session(session_id)?;
         let screenshots = self.db.list_screenshots(session_id)?;
-        prepare_screenshots_for_export(&screenshots);
+        prepare_screenshots_for_export(&screenshots, highlight_clicks_enabled(&self.db));
         let steps = self.load_steps(session_id)?;
         let html = render_styled_export_html(&session, &steps, &screenshots, &options, "pdf");
         let pdf_path = self.export_path(session_id, &session, "pdf");
@@ -548,32 +548,74 @@ fn file_url_from_path_string(raw: &str) -> String {
     }
 }
 
-pub fn prepare_screenshots_for_export(screenshots: &[Screenshot]) {
-    for shot in screenshots {
-        let path = PathBuf::from(&shot.path);
-        if !path.is_file() {
-            continue;
-        }
+/// `shot.png` -> `shot_<suffix>.png` next to it.
+fn screenshot_variant(path: &Path, suffix: &str) -> Option<PathBuf> {
+    let stem = path.file_stem()?.to_str()?;
+    let ext = path.extension()?.to_str()?;
+    Some(path.with_file_name(format!("{stem}_{suffix}.{ext}")))
+}
 
-        if let (Some(cx), Some(cy)) = (shot.click_x, shot.click_y) {
-            let parent = path.parent().unwrap_or_else(|| Path::new(""));
-            let stem = path.file_stem().unwrap_or_default().to_string_lossy();
-            let ext = path.extension().unwrap_or_default().to_string_lossy();
-            let clean_path = parent.join(format!("{stem}_clean.{ext}"));
-            let clean_exists = clean_path.exists();
-            if !clean_exists {
-                let _ = std::fs::copy(&path, &clean_path);
-            }
-
-            let has_custom_annotations = shot.annotations_json.as_deref()
-                .map(|s| s.contains("badge") || s.contains("rect") || s.contains("circle") || s.contains("highlight") || s.contains("text"))
-                .unwrap_or(false);
-
-            if !has_custom_annotations && !clean_exists {
-                let _ = crate::screenshots::highlight_click_on_image(&path, cx, cy, None);
-            }
+/// Older versions drew the click marker straight onto the screenshot and kept the pristine
+/// capture as `{stem}_clean.{ext}`. Bring such files back to the current layout: the original
+/// is the untouched capture again, and the version with the marker becomes the
+/// `{stem}_annotated.{ext}` variant (unless an annotated one already exists). Both are kept.
+pub fn restore_legacy_original(path: &Path) {
+    let (Some(clean), Some(annotated)) = (screenshot_variant(path, "clean"), screenshot_variant(path, "annotated")) else {
+        return;
+    };
+    if !clean.is_file() {
+        return;
+    }
+    if path.is_file() && !annotated.exists() {
+        let modified = std::fs::read(path).ok() != std::fs::read(&clean).ok();
+        if modified {
+            let _ = std::fs::copy(path, &annotated);
         }
     }
+    if std::fs::copy(&clean, path).is_ok() {
+        let _ = std::fs::remove_file(&clean);
+    }
+}
+
+/// Whether the screenshot carries annotations other than the automatic click marker (those are
+/// drawn by the annotation editor, which writes the `_annotated` variant itself).
+fn has_custom_annotations(shot: &Screenshot) -> bool {
+    shot.annotations_json
+        .as_deref()
+        .and_then(|json| serde_json::from_str::<Vec<serde_json::Value>>(json).ok())
+        .is_some_and(|items| items.iter().any(|item| item.get("type").and_then(|t| t.as_str()) != Some("click")))
+}
+
+/// Gets screenshots ready for documents: the original capture is never modified; when click
+/// highlighting is on, a copy with the click marker is written as `{stem}_annotated.{ext}`
+/// (used by exports with "annotations" enabled). Existing annotated variants, e.g. from the
+/// annotation editor, are kept as they are.
+pub fn prepare_screenshots_for_export(screenshots: &[Screenshot], highlight_clicks: bool) {
+    for shot in screenshots {
+        let path = PathBuf::from(&shot.path);
+        restore_legacy_original(&path);
+        if !highlight_clicks || !path.is_file() || has_custom_annotations(shot) {
+            continue;
+        }
+        let (Some(cx), Some(cy)) = (shot.click_x, shot.click_y) else {
+            continue;
+        };
+        let Some(annotated) = screenshot_variant(&path, "annotated") else {
+            continue;
+        };
+        if !annotated.exists() {
+            let _ = crate::screenshots::render_click_highlight(&path, &annotated, cx, cy);
+        }
+    }
+}
+
+/// The "highlight clicks" setting (on by default).
+pub fn highlight_clicks_enabled(db: &Database) -> bool {
+    db.get_setting("highlight_clicks")
+        .ok()
+        .flatten()
+        .map(|val| val != "false")
+        .unwrap_or(true)
 }
 
 #[cfg(test)]
@@ -673,6 +715,48 @@ mod tests {
     }
 
     use super::{export_name_suffix, file_name_slug, rename_session_exports};
+
+    #[test]
+    fn export_preparation_never_touches_the_original() {
+        let dir = std::env::temp_dir().join(format!("flowcapture-prep-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let original = dir.join("shot.png");
+        image::RgbaImage::from_pixel(120, 80, image::Rgba([10, 20, 30, 255])).save(&original).unwrap();
+        let before = std::fs::read(&original).unwrap();
+        let shot = Screenshot {
+            id: "s".into(),
+            session_id: "x".into(),
+            path: original.to_string_lossy().to_string(),
+            timestamp_ms: 0,
+            trigger: None,
+            selected: 1,
+            click_x: Some(60),
+            click_y: Some(40),
+            annotations_json: None,
+        };
+
+        super::prepare_screenshots_for_export(std::slice::from_ref(&shot), true);
+        assert_eq!(std::fs::read(&original).unwrap(), before, "original must stay untouched");
+        let annotated = dir.join("shot_annotated.png");
+        assert!(annotated.is_file(), "the highlighted copy is kept next to it");
+        assert_ne!(std::fs::read(&annotated).unwrap(), before);
+
+        // Highlighting off: nothing new is written.
+        std::fs::remove_file(&annotated).unwrap();
+        super::prepare_screenshots_for_export(std::slice::from_ref(&shot), false);
+        assert!(!annotated.exists());
+
+        // Legacy layout (marker baked into the original, pristine copy in `_clean`).
+        let clean = dir.join("shot_clean.png");
+        std::fs::write(&clean, &before).unwrap();
+        image::RgbaImage::from_pixel(120, 80, image::Rgba([200, 0, 0, 255])).save(&original).unwrap();
+        let baked = std::fs::read(&original).unwrap();
+        super::prepare_screenshots_for_export(std::slice::from_ref(&shot), false);
+        assert_eq!(std::fs::read(&original).unwrap(), before, "original restored");
+        assert_eq!(std::fs::read(&annotated).unwrap(), baked, "modified version kept");
+        assert!(!clean.exists());
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     #[test]
     fn exports_follow_the_session_title() {

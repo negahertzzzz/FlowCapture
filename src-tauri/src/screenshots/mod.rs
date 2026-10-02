@@ -235,58 +235,19 @@ pub fn run_capture(
     Ok(())
 }
 
-pub fn highlight_click_on_image(
-    path: &Path,
-    click_x: i64,
-    click_y: i64,
-    monitor_id: Option<&str>,
-) -> Result<()> {
-    if !path.is_file() {
-        return Ok(());
+/// Writes to `target` a copy of the screenshot at `source` with a click marker drawn at
+/// `(click_x, click_y)` (image pixels). The source file is never modified. Returns `false` when
+/// the point is outside the image and nothing was written.
+pub fn render_click_highlight(source: &Path, target: &Path, click_x: i64, click_y: i64) -> Result<bool> {
+    if !source.is_file() {
+        return Ok(false);
     }
-    let mut img = image::open(path)?.to_rgba8();
+    let mut img = image::open(source)?.to_rgba8();
     let (width, height) = img.dimensions();
-    if width == 0 || height == 0 {
-        return Ok(());
+    if click_x < 0 || click_y < 0 || click_x >= width as i64 || click_y >= height as i64 {
+        return Ok(false);
     }
-
-    // Determine coordinate scale factor and monitor origin offset
-    let (cx, cy) = {
-        #[cfg(not(target_os = "linux"))]
-        {
-            if let Ok(monitor) = crate::platform::find_monitor(monitor_id) {
-                let mon_x = monitor.x().unwrap_or(0);
-                let mon_y = monitor.y().unwrap_or(0);
-                let mon_w = monitor.width().unwrap_or(width);
-                let mon_h = monitor.height().unwrap_or(height);
-
-                let rel_x = click_x - mon_x as i64;
-                let rel_y = click_y - mon_y as i64;
-
-                if mon_w > 0 && mon_h > 0 {
-                    let scale_x = width as f64 / mon_w as f64;
-                    let scale_y = height as f64 / mon_h as f64;
-                    (
-                        (rel_x as f64 * scale_x).round() as i32,
-                        (rel_y as f64 * scale_y).round() as i32,
-                    )
-                } else {
-                    (rel_x as i32, rel_y as i32)
-                }
-            } else {
-                (click_x as i32, click_y as i32)
-            }
-        }
-        #[cfg(target_os = "linux")]
-        {
-            let _ = monitor_id;
-            (click_x as i32, click_y as i32)
-        }
-    };
-
-    if cx < 0 || cx >= width as i32 || cy < 0 || cy >= height as i32 {
-        return Ok(());
-    }
+    let (cx, cy) = (click_x as i32, click_y as i32);
 
     // High-visibility click cursor marker:
     // Center dot + dual contrast ring + outer subtle ripple
@@ -329,8 +290,12 @@ pub fn highlight_click_on_image(
         }
     }
 
-    img.save(path)?;
-    Ok(())
+    // Same format as the source, written next to the target and renamed into place.
+    let format = image::ImageFormat::from_path(source).unwrap_or(image::ImageFormat::Png);
+    let partial = target.with_extension("partial");
+    img.save_with_format(&partial, format)?;
+    std::fs::rename(&partial, target)?;
+    Ok(true)
 }
 
 fn now_ms() -> i64 {

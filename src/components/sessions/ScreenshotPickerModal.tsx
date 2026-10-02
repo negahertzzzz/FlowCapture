@@ -60,8 +60,15 @@ export function ScreenshotPickerModal({
   useEffect(() => {
     if (fullscreen) return;
     function onKey(event: KeyboardEvent) {
-      if (event.key === "Escape") onClose();
-      else if (event.key === "ArrowLeft" || event.key === "ArrowUp") move(-1);
+      if (event.key === "Escape") {
+        onClose();
+        return;
+      }
+      // On a focused button or field, Enter/arrows keep their own meaning: Enter on "Annulla"
+      // must cancel, not apply the selection as well.
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("button, input, textarea, select, [contenteditable='true']")) return;
+      if (event.key === "ArrowLeft" || event.key === "ArrowUp") move(-1);
       else if (event.key === "ArrowRight" || event.key === "ArrowDown") move(1);
       else if (event.key === "Enter" && selectedId && !saving) void handleConfirm();
     }

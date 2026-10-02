@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -22,7 +22,9 @@ use crate::thread_util::join_thread_with_timeout;
 
 // Covers flushing the background screenshot writer (PNG encoding of queued frames).
 const COLLECTOR_JOIN_TIMEOUT: Duration = Duration::from_secs(20);
-const WRITER_FLUSH_TIMEOUT: Duration = Duration::from_secs(18);
+/// Upper bound for writing the screenshots still queued when the recording stops. The session
+/// is marked ready only afterwards, so documentation never starts without its last shots.
+const SCREENSHOT_FLUSH_TIMEOUT: Duration = Duration::from_secs(180);
 const COLLECTOR_TICK: Duration = Duration::from_millis(60);
 const PLATFORM_STOP_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -53,6 +55,8 @@ pub struct ActiveRecording {
     paused_since: Option<i64>,
     collector_stop: Arc<AtomicBool>,
     collector_handle: JoinHandle<()>,
+    /// Screenshots captured but not yet written by the background writer.
+    pending_screenshots: Arc<AtomicUsize>,
     full_video_recorder: Option<crate::recorder::full_video::FullVideoRecorderHandle>,
 }
 
@@ -173,6 +177,7 @@ impl AppState {
             None
         };
 
+        let pending_screenshots = Arc::new(AtomicUsize::new(0));
         let start_result = (|| -> Result<(JoinHandle<()>, Arc<AtomicBool>)> {
             let mut platform = self.platform.lock();
             platform.input.start()?;
@@ -200,6 +205,7 @@ impl AppState {
                 browser_bridge_clone,
                 session_id.clone(),
                 session_dir,
+                pending_screenshots.clone(),
             );
 
             Ok((handle, collector_stop))
@@ -216,6 +222,7 @@ impl AppState {
                     paused_since: None,
                     collector_stop,
                     collector_handle,
+                    pending_screenshots,
                     full_video_recorder,
                 });
                 Ok(session)
@@ -258,6 +265,19 @@ impl AppState {
 
         if !join_thread_with_timeout(active.collector_handle, COLLECTOR_JOIN_TIMEOUT) {
             eprintln!("FlowCapture: recording collector did not stop within timeout");
+        }
+        // The collector hands its queue to the writer and exits; wait for the queue itself.
+        let flush_deadline = Instant::now() + SCREENSHOT_FLUSH_TIMEOUT;
+        while active.pending_screenshots.load(Ordering::SeqCst) > 0 && Instant::now() < flush_deadline {
+            thread::sleep(Duration::from_millis(50));
+        }
+        let unsaved = active.pending_screenshots.load(Ordering::SeqCst);
+        if unsaved > 0 {
+            crate::logger::write_entry(
+                "WARN",
+                "recording",
+                &format!("{unsaved} screenshot(s) still being written after {}s", SCREENSHOT_FLUSH_TIMEOUT.as_secs()),
+            );
         }
         let _ = stop_platform_services(self);
 
@@ -410,6 +430,7 @@ fn spawn_recording_collector(
     browser_bridge: crate::platform::browser_bridge::BrowserBridgeState,
     session_id: String,
     session_dir: PathBuf,
+    pending_screenshots: Arc<AtomicUsize>,
 ) -> JoinHandle<()> {
     thread::spawn(move || {
         let setting_enabled = |key: &str, default: bool| {
@@ -423,7 +444,7 @@ fn spawn_recording_collector(
         let dedupe = setting_enabled("dedupe_screenshots", true);
         let fast_sampling = supports_fast_sampling();
 
-        let writer = ScreenshotWriter::spawn(screenshot_engine.clone(), db.clone(), dedupe);
+        let writer = ScreenshotWriter::spawn(screenshot_engine.clone(), db.clone(), dedupe, pending_screenshots);
         let mut post_click: Option<PostClickSampler> = None;
         let mut last_mouse: Option<(i64, i64)> = None;
 
@@ -592,9 +613,7 @@ fn spawn_recording_collector(
             thread::sleep(COLLECTOR_TICK);
         }
 
-        if !writer.finish(WRITER_FLUSH_TIMEOUT) {
-            eprintln!("FlowCapture: screenshot writer did not flush within timeout");
-        }
+        writer.finish();
     })
 }
 
@@ -612,7 +631,12 @@ fn stored_from_input(
         let y = event.payload.get("y").and_then(|v| v.as_i64()).unwrap_or(0) as i32;
 
         // 1. Try matching with browser DOM event from the extension
-        if let Some(dom) = browser_bridge.match_and_take_event(event.timestamp_ms, x, y) {
+        use crate::platform::browser_bridge::{is_browser_app, BROWSER_MATCH_DISTANCE, OTHER_APP_MATCH_DISTANCE};
+        let max_distance = match event.app_name.as_deref() {
+            Some(app) if !is_browser_app(app) => OTHER_APP_MATCH_DISTANCE,
+            _ => BROWSER_MATCH_DISTANCE,
+        };
+        if let Some(dom) = browser_bridge.match_and_take_event(event.timestamp_ms, x, y, max_distance) {
             if let Some(obj) = event.payload.as_object_mut() {
                 if !dom.text.is_empty() {
                     obj.insert("element_name".to_string(), serde_json::Value::String(dom.text));
