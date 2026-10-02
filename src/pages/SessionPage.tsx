@@ -9,6 +9,12 @@ import type { PreviewImageInfo } from "@/components/documentation/MarkdownPrevie
 import { ImageAnnotationModal } from "@/components/sessions/ImageAnnotationModal";
 import { ScreenshotPickerModal } from "@/components/sessions/ScreenshotPickerModal";
 import { DuplicateScreenshotsModal } from "@/components/sessions/DuplicateScreenshotsModal";
+import {
+  clampSimilarity,
+  DEFAULT_DUPLICATE_SIMILARITY,
+  DUPLICATE_SIMILARITY_SETTING,
+  SimilarityThreshold,
+} from "@/components/sessions/SimilarityThreshold";
 import { AudioTab, type AudioTranscriptionStatus } from "@/components/sessions/AudioTab";
 import { TimelineTab } from "@/components/sessions/TimelineTab";
 import { ExportPanel } from "@/components/export/ExportPanel";
@@ -81,6 +87,23 @@ export function SessionPage() {
 
   const [scanningDuplicates, setScanningDuplicates] = useState(false);
   const [duplicateGroups, setDuplicateGroups] = useState<DuplicateScreenshotGroup[] | null>(null);
+  const [duplicateThreshold, setDuplicateThreshold] = useState(DEFAULT_DUPLICATE_SIMILARITY);
+  // Bumped on every search so the dialog restarts from the new groups.
+  const [duplicateScanId, setDuplicateScanId] = useState(0);
+
+  useEffect(() => {
+    api
+      .getSetting(DUPLICATE_SIMILARITY_SETTING)
+      .then((value) => {
+        if (value) setDuplicateThreshold(clampSimilarity(Number(value)));
+      })
+      .catch(() => undefined);
+  }, []);
+
+  function changeDuplicateThreshold(value: number) {
+    setDuplicateThreshold(value);
+    api.setSetting(DUPLICATE_SIMILARITY_SETTING, String(value)).catch(() => undefined);
+  }
 
   const [docImagePick, setDocImagePick] = useState<PreviewImageInfo | null>(null);
   const [docImageVersion, setDocImageVersion] = useState(0);
@@ -509,13 +532,15 @@ export function SessionPage() {
   }
 
 
-  async function handleFindDuplicates() {
+  async function handleFindDuplicates(threshold = duplicateThreshold) {
     setScanningDuplicates(true);
     try {
-      const groups = await api.findDuplicateScreenshots(sessionId);
+      const groups = await api.findDuplicateScreenshots(sessionId, threshold);
       if (groups.length === 0) {
-        setToast("Nessuno screenshot quasi identico trovato (somiglianza ≥ 97%)");
+        setDuplicateGroups(null);
+        setToast(`Nessuno screenshot duplicato trovato (somiglianza ≥ ${threshold}%)`);
       } else {
+        setDuplicateScanId((id) => id + 1);
         setDuplicateGroups(groups);
       }
     } catch (err) {
@@ -643,14 +668,21 @@ export function SessionPage() {
               <h3 style={{ margin: 0 }}>Captured Screenshots ({screenshots.length})</h3>
               <div className="pd">Catture basate sugli eventi registrati durante il workflow.</div>
             </div>
-            <AppButton
-              size="sm"
-              disabled={scanningDuplicates || screenshots.length < 2 || busy}
-              onClick={handleFindDuplicates}
-              title="Trova immagini con somiglianza ≥ 60% e ti permette di scegliere quali unire o eliminare"
-            >
-              {scanningDuplicates ? "Scansione duplicati…" : "🔍 Elimina duplicati (≥ 60%)"}
-            </AppButton>
+            <div className="duplicate-tools">
+              <SimilarityThreshold
+                value={duplicateThreshold}
+                onChange={changeDuplicateThreshold}
+                disabled={scanningDuplicates}
+              />
+              <AppButton
+                size="sm"
+                disabled={scanningDuplicates || screenshots.length < 2 || busy}
+                onClick={() => handleFindDuplicates()}
+                title={`Trova immagini con somiglianza ≥ ${duplicateThreshold}% e ti permette di scegliere quali unire o eliminare`}
+              >
+                {scanningDuplicates ? "Scansione duplicati…" : `🔍 Elimina duplicati (≥ ${duplicateThreshold}%)`}
+              </AppButton>
+            </div>
           </div>
           <div className="shot-grid">
             {screenshots.length === 0 ? (
@@ -1015,10 +1047,17 @@ export function SessionPage() {
 
       {duplicateGroups && (
         <DuplicateScreenshotsModal
+          key={duplicateScanId}
           groups={duplicateGroups}
           screenshots={screenshots}
           onMerge={handleMergeDuplicates}
           onClose={() => setDuplicateGroups(null)}
+          minSimilarity={duplicateThreshold}
+          rescanning={scanningDuplicates}
+          onRescan={async (value) => {
+            changeDuplicateThreshold(value);
+            await handleFindDuplicates(value);
+          }}
         />
       )}
 

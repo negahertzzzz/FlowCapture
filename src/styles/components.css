@@ -431,3 +431,12 @@
 .mirror-path svg { color: var(--mint); flex: none; }
 .mirror-path-empty { color: var(--dim); font-family: var(--sans); }
 .mirror-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* ---------- Duplicate screenshots threshold ---------- */
+.duplicate-tools { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.similarity-threshold { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--dim); white-space: nowrap; }
+.similarity-threshold input[type="range"] { width: 110px; accent-color: var(--mint); }
+.similarity-threshold-number {
+  width: 52px; padding: 3px 6px; border-radius: 6px; border: 1px solid var(--hair);
+  background: var(--surface); color: var(--text); font-family: var(--mono); font-size: 12px;
+}

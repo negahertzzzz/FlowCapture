@@ -298,8 +298,9 @@ export const api = {
     invoke<void>("update_documentation", { sessionId, documentationMd }),
   saveStepAnnotations: (sessionId: string, stepIndex: number, annotationsJson: string | null) =>
     invoke<void>("save_step_annotations", { sessionId, stepIndex, annotationsJson }),
-  findDuplicateScreenshots: (sessionId: string) =>
-    invoke<DuplicateScreenshotGroup[]>("find_duplicate_screenshots", { sessionId }),
+  /** `minSimilarity` in percent (50–100); omitted = the value saved in settings. */
+  findDuplicateScreenshots: (sessionId: string, minSimilarity?: number) =>
+    invoke<DuplicateScreenshotGroup[]>("find_duplicate_screenshots", { sessionId, minSimilarity }),
   mergeDuplicateScreenshots: (sessionId: string, keepId: string, removeIds: string[]) =>
     invoke<void>("merge_duplicate_screenshots", { sessionId, keepId, removeIds }),
   onAiProgress: (

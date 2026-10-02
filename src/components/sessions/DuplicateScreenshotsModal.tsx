@@ -2,12 +2,18 @@ import { useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import { AppButton } from "@/components/ui/AppButton";
 import type { DuplicateScreenshotGroup, Screenshot } from "@/lib/api";
+import { SimilarityThreshold } from "./SimilarityThreshold";
 
 interface DuplicateScreenshotsModalProps {
   groups: DuplicateScreenshotGroup[];
   screenshots: Screenshot[];
   onMerge: (keepId: string, removeIds: string[]) => Promise<void>;
   onClose: () => void;
+  /** Threshold (%) the groups were computed with. */
+  minSimilarity: number;
+  /** Re-runs the search with another threshold. */
+  onRescan: (minSimilarity: number) => Promise<void>;
+  rescanning?: boolean;
 }
 
 export function DuplicateScreenshotsModal({
@@ -15,7 +21,11 @@ export function DuplicateScreenshotsModal({
   screenshots,
   onMerge,
   onClose,
+  minSimilarity,
+  onRescan,
+  rescanning = false,
 }: DuplicateScreenshotsModalProps) {
+  const [threshold, setThreshold] = useState(minSimilarity);
   const [activeGroupIndex, setActiveGroupIndex] = useState(0);
   const [merging, setMerging] = useState(false);
   const [remainingGroups, setRemainingGroups] = useState<DuplicateScreenshotGroup[]>(groups);
@@ -147,7 +157,7 @@ export function DuplicateScreenshotsModal({
             <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
               <span style={{ fontSize: "18px" }}>🔍</span>
               <h3 style={{ margin: 0, fontSize: "16px", fontWeight: 600 }}>
-                Rilevamento Duplicati Screenshot (Somiglianza ≥ 97%)
+                Rilevamento Duplicati Screenshot (Somiglianza ≥ {minSimilarity}%)
               </h3>
               <span
                 style={{
@@ -167,7 +177,17 @@ export function DuplicateScreenshotsModal({
             </div>
           </div>
 
-          <div style={{ display: "flex", gap: "10px", alignItems: "center" }}>
+          <div style={{ display: "flex", gap: "10px", alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
+            <SimilarityThreshold value={threshold} onChange={setThreshold} disabled={rescanning || merging} />
+            <AppButton
+              size="sm"
+              kind="ghost"
+              disabled={rescanning || merging || threshold === minSimilarity}
+              onClick={() => onRescan(threshold)}
+              title="Ripeti la ricerca con la nuova soglia"
+            >
+              {rescanning ? "Ricalcolo…" : "Ricalcola"}
+            </AppButton>
             <AppButton size="sm" kind="ghost" onClick={onClose}>
               Annulla
             </AppButton>

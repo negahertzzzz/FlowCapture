@@ -1433,8 +1433,20 @@ pub fn save_step_annotations(
 const DUPLICATE_THUMB_SIDE: u32 = 64;
 /// Per-pixel difference (0–255) below which two thumbnail pixels count as equal.
 const DUPLICATE_PIXEL_TOLERANCE: u8 = 24;
-/// Share of equal pixels needed to call two screenshots duplicates.
+/// Default share of equal pixels needed to call two screenshots duplicates (the user can change
+/// it: setting `duplicate_min_similarity`, in percent).
 const DUPLICATE_MIN_SIMILARITY: f64 = 0.97;
+const DUPLICATE_SIMILARITY_SETTING: &str = "duplicate_min_similarity";
+/// Below this, "duplicates" would group screenshots that merely share a layout.
+const DUPLICATE_SIMILARITY_FLOOR: f64 = 0.5;
+
+/// Threshold in percent (as typed by the user) -> ratio, clamped to a meaningful range.
+fn duplicate_threshold(percent: Option<f64>) -> f64 {
+    percent
+        .filter(|p| p.is_finite())
+        .map(|p| (p / 100.0).clamp(DUPLICATE_SIMILARITY_FLOOR, 1.0))
+        .unwrap_or(DUPLICATE_MIN_SIMILARITY)
+}
 
 fn thumbnail_similarity(a: &[u8], b: &[u8]) -> f64 {
     let total = a.len().min(b.len()).max(1);
@@ -1448,7 +1460,7 @@ fn thumbnail_similarity(a: &[u8], b: &[u8]) -> f64 {
 
 /// Groups near-identical screenshots. Every member of a group must match every other member
 /// (complete linkage), so a slowly changing screen doesn't chain unrelated shots together.
-fn group_duplicates(thumbs: &[Vec<u8>]) -> Vec<(Vec<usize>, f64)> {
+fn group_duplicates(thumbs: &[Vec<u8>], min_similarity: f64) -> Vec<(Vec<usize>, f64)> {
     let n = thumbs.len();
     let mut sim = vec![vec![0.0; n]; n];
     for i in 0..n {
@@ -1467,7 +1479,7 @@ fn group_duplicates(thumbs: &[Vec<u8>]) -> Vec<(Vec<usize>, f64)> {
         }
         let mut members = vec![i];
         for j in (i + 1)..n {
-            if !assigned[j] && members.iter().all(|&m| sim[m][j] >= DUPLICATE_MIN_SIMILARITY) {
+            if !assigned[j] && members.iter().all(|&m| sim[m][j] >= min_similarity) {
                 members.push(j);
             }
         }
@@ -1494,9 +1506,18 @@ fn group_duplicates(thumbs: &[Vec<u8>]) -> Vec<(Vec<usize>, f64)> {
 pub async fn find_duplicate_screenshots(
     state: State<'_, Arc<AppState>>,
     session_id: String,
+    min_similarity: Option<f64>,
 ) -> Result<Vec<crate::storage::models::DuplicateScreenshotGroup>, String> {
     let db = Arc::clone(&state.db);
-    tauri::async_runtime::spawn_blocking(move || find_duplicate_screenshots_blocking(&db, &session_id))
+    // Explicit value (percent) from the dialog, else the one saved in Settings.
+    let percent = min_similarity.or_else(|| {
+        db.get_setting(DUPLICATE_SIMILARITY_SETTING)
+            .ok()
+            .flatten()
+            .and_then(|value| value.trim().parse::<f64>().ok())
+    });
+    let threshold = duplicate_threshold(percent);
+    tauri::async_runtime::spawn_blocking(move || find_duplicate_screenshots_blocking(&db, &session_id, threshold))
         .await
         .map_err(|err| err.to_string())?
         .map_err(|err| err.to_string())
@@ -1505,6 +1526,7 @@ pub async fn find_duplicate_screenshots(
 fn find_duplicate_screenshots_blocking(
     db: &crate::storage::Database,
     session_id: &str,
+    min_similarity: f64,
 ) -> anyhow::Result<Vec<crate::storage::models::DuplicateScreenshotGroup>> {
     let screenshots = db.list_screenshots(session_id)?;
     if screenshots.len() < 2 {
@@ -1542,7 +1564,7 @@ fn find_duplicate_screenshots_blocking(
     }
 
     let pixels: Vec<Vec<u8>> = thumbs.iter().map(|(_, px)| px.clone()).collect();
-    Ok(group_duplicates(&pixels)
+    Ok(group_duplicates(&pixels, min_similarity)
         .into_iter()
         .enumerate()
         .map(|(idx, (members, similarity))| crate::storage::models::DuplicateScreenshotGroup {
@@ -1703,7 +1725,8 @@ pub fn get_browser_bridge_status(state: State<'_, Arc<AppState>>) -> Result<serd
 #[cfg(test)]
 mod doc_step_tests {
     use super::{
-        carry_over_step_metadata, group_duplicates, replace_image_file_refs, replace_step_image,
+        carry_over_step_metadata, duplicate_threshold, group_duplicates, DUPLICATE_MIN_SIMILARITY,
+        DUPLICATE_SIMILARITY_FLOOR, replace_image_file_refs, replace_step_image,
         update_step_markdown,
     };
     use crate::storage::models::WorkflowStep;
@@ -1747,9 +1770,25 @@ mod doc_step_tests {
         drift[40..160].fill(255); // ~4 % away from `base`, <3 % from `tiny_change`
         let different = vec![20u8; 64 * 64];
 
-        let groups = group_duplicates(&[base, tiny_change, drift, different]);
+        let thumbs = [base, tiny_change, drift, different];
+        let groups = group_duplicates(&thumbs, DUPLICATE_MIN_SIMILARITY);
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].0, vec![0, 1]);
+
+        // A lower threshold chosen by the user also accepts the drifted shot…
+        let loose = group_duplicates(&thumbs, 0.95);
+        assert_eq!(loose[0].0, vec![0, 1, 2]);
+        // …and 100 % only keeps pixel-identical thumbnails.
+        assert!(group_duplicates(&thumbs, 1.0).is_empty());
+    }
+
+    #[test]
+    fn duplicate_threshold_is_clamped() {
+        assert_eq!(duplicate_threshold(None), DUPLICATE_MIN_SIMILARITY);
+        assert_eq!(duplicate_threshold(Some(90.0)), 0.9);
+        assert_eq!(duplicate_threshold(Some(10.0)), DUPLICATE_SIMILARITY_FLOOR);
+        assert_eq!(duplicate_threshold(Some(150.0)), 1.0);
+        assert_eq!(duplicate_threshold(Some(f64::NAN)), DUPLICATE_MIN_SIMILARITY);
     }
 
     fn step(n: usize, title: &str, shot: Option<&str>) -> WorkflowStep {
