@@ -37,6 +37,8 @@ pub struct AppState {
     pub active_session: Mutex<Option<ActiveRecording>>,
     pub active_ai_cancellations: Mutex<HashMap<String, Arc<AtomicBool>>>,
     pub browser_bridge: crate::platform::browser_bridge::BrowserBridgeState,
+    /// Keeps the optional "sessions folder" copy of every session up to date.
+    pub mirror: crate::storage::mirror::MirrorWorker,
 }
 
 pub struct ActiveRecording {
@@ -62,7 +64,12 @@ impl AppState {
             crate::platform::browser_bridge::DEFAULT_BRIDGE_PORT,
         );
 
+        let mirror = crate::storage::mirror::MirrorWorker::spawn(db.clone());
+        let notifier = mirror.clone();
+        db.set_change_listener(Box::new(move |session_id| notifier.request(session_id)));
+
         Ok(Self {
+            mirror,
             db: db.clone(),
             platform: Arc::new(Mutex::new(platform)),
             recorder: Mutex::new(RecorderEngine::new()),

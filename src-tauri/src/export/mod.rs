@@ -1,4 +1,6 @@
 pub(crate) mod styled_html;
+#[cfg(target_os = "windows")]
+pub mod webview_pdf;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -72,29 +74,30 @@ impl ExportEngine {
         self.persist_export(session_id, "html", path)
     }
 
-    pub fn export_pdf(
+    /// PDF export. `printer(html_path, pdf_path, options)` turns the rendered page into the PDF:
+    /// the app's WebView2 on Windows, a headless browser (`try_print_pdf`) elsewhere.
+    pub fn export_pdf_with(
         &self,
         session_id: &str,
         options: Option<ExportOptions>,
+        printer: &dyn Fn(&Path, &Path, &ExportOptions) -> Result<()>,
     ) -> Result<ExportRecord> {
+        let options = options.unwrap_or_default().normalized();
         let session = self.require_session(session_id)?;
         let screenshots = self.db.list_screenshots(session_id)?;
         prepare_screenshots_for_export(&screenshots);
         let steps = self.load_steps(session_id)?;
-        let html = render_styled_export_html(
-            &session,
-            &steps,
-            &screenshots,
-            &options.unwrap_or_default(),
-            "pdf",
-        );
+        let html = render_styled_export_html(&session, &steps, &screenshots, &options, "pdf");
         let pdf_path = self.export_path(session_id, &session, "pdf");
-        // Intermediate page for the headless browser: not an export, removed afterwards.
+        // Intermediate page for the printer: not an export, removed afterwards.
         let html_path = pdf_path.with_extension("print.html");
         std::fs::write(&html_path, html)?;
-        let printed = try_print_pdf(html_path.to_string_lossy().as_ref(), &pdf_path);
+        let printed = printer(&html_path, &pdf_path, &options);
         let _ = std::fs::remove_file(&html_path);
-        printed.context("PDF export failed. Install Google Chrome, Chromium, or Microsoft Edge.")?;
+        if printed.is_err() {
+            let _ = std::fs::remove_file(&pdf_path);
+        }
+        printed.context("PDF export failed")?;
         self.persist_export(session_id, "pdf", pdf_path)
     }
 
@@ -207,8 +210,70 @@ impl ExportEngine {
     }
 }
 
+/// Renames the exported files of a session after its title changed, so they keep matching the
+/// session name: "<old title>_<date>.pdf" becomes "<new title>_<date>.pdf". Files from older
+/// versions named "export_<uuid>.<ext>" get the new scheme too. Returns how many were renamed.
+pub fn rename_session_exports(db: &Database, session_id: &str, new_title: &str) -> Result<usize> {
+    let slug = file_name_slug(new_title);
+    let mut renamed = 0;
+    for record in db.list_exports(session_id)? {
+        let path = PathBuf::from(&record.path);
+        if !path.is_file() {
+            continue;
+        }
+        let (Some(dir), Some(stem), Some(ext)) = (
+            path.parent(),
+            path.file_stem().and_then(|s| s.to_str()),
+            path.extension().and_then(|s| s.to_str()),
+        ) else {
+            continue;
+        };
+        let Some(suffix) = export_name_suffix(stem, &record.created_at) else {
+            continue;
+        };
+        let new_stem = format!("{slug}_{suffix}");
+        if new_stem == stem {
+            continue;
+        }
+        let mut target = dir.join(format!("{new_stem}.{ext}"));
+        let mut counter = 2;
+        while target.exists() {
+            target = dir.join(format!("{new_stem}_{counter}.{ext}"));
+            counter += 1;
+        }
+        std::fs::rename(&path, &target)
+            .with_context(|| format!("renaming {} to {}", path.display(), target.display()))?;
+        db.update_export_path(&record.id, &target.to_string_lossy())?;
+        renamed += 1;
+    }
+    Ok(renamed)
+}
+
+/// The part of an export file name that does not depend on the session title: the
+/// "<date>_<time>[_n]" tail of current names, or the creation time for legacy GUID names.
+fn export_name_suffix(stem: &str, created_at: &str) -> Option<String> {
+    static TAIL: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    static LEGACY: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let tail = TAIL.get_or_init(|| {
+        regex::Regex::new(r"_(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}(?:_\d+)?)$").unwrap()
+    });
+    if let Some(caps) = tail.captures(stem) {
+        return Some(caps[1].to_string());
+    }
+    let legacy = LEGACY.get_or_init(|| {
+        regex::Regex::new(r"(?i)^export_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$").unwrap()
+    });
+    if legacy.is_match(stem) {
+        let created = chrono::DateTime::parse_from_rfc3339(created_at)
+            .map(|dt| dt.with_timezone(&chrono::Local))
+            .unwrap_or_else(|_| chrono::Local::now());
+        return Some(created.format("%Y-%m-%d_%H-%M-%S").to_string());
+    }
+    None
+}
+
 /// Session title -> safe file name (keeps letters incl. accents, digits, '-' and '_').
-fn file_name_slug(title: &str) -> String {
+pub(crate) fn file_name_slug(title: &str) -> String {
     let slug: String = title
         .trim()
         .chars()
@@ -256,8 +321,8 @@ fn copy_referenced_screenshots(markdown: &str, screenshots: &[Screenshot], image
 
 const PDF_TIMEOUT: Duration = Duration::from_secs(120);
 
-fn try_print_pdf(html_path: &str, pdf_path: &Path) -> Result<()> {
-    let html_url = path_to_file_url(html_path)?;
+pub(crate) fn try_print_pdf(html_path: &Path, pdf_path: &Path) -> Result<()> {
+    let html_url = path_to_file_url(&html_path.to_string_lossy())?;
     let pdf_arg = pdf_path.to_string_lossy().to_string();
     let mut failures: Vec<String> = Vec::new();
 
@@ -306,7 +371,7 @@ fn try_print_pdf(html_path: &str, pdf_path: &Path) -> Result<()> {
     wkhtml.args([
         "--enable-local-file-access",
         "--print-media-type",
-        html_path,
+        html_path.to_string_lossy().as_ref(),
         pdf_path.to_string_lossy().as_ref(),
     ]);
     match run_command_with_timeout(wkhtml, PDF_TIMEOUT) {
@@ -326,7 +391,7 @@ fn try_print_pdf(html_path: &str, pdf_path: &Path) -> Result<()> {
     anyhow::bail!("Could not render PDF. Attempts: {}", failures.join("; "))
 }
 
-fn is_valid_pdf(path: &Path) -> bool {
+pub(crate) fn is_valid_pdf(path: &Path) -> bool {
     use std::io::Read;
     let Ok(mut file) = std::fs::File::open(path) else {
         return false;
@@ -450,7 +515,7 @@ fn binary_on_path(name: &str) -> bool {
 /// `canonicalize` returns verbatim paths (`\\?\C:\...`) which must be stripped, and
 /// drive paths need a third slash (`file:///C:/...`). Anything outside the unreserved
 /// set (spaces, `#`, `%`, non-ASCII user names...) is percent-encoded.
-fn path_to_file_url(path: &str) -> Result<String> {
+pub(crate) fn path_to_file_url(path: &str) -> Result<String> {
     let absolute = std::fs::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path));
     Ok(file_url_from_path_string(&absolute.to_string_lossy()))
 }
@@ -569,7 +634,7 @@ mod tests {
         let html_path = dir.join("export.html");
         std::fs::write(&html_path, html).unwrap();
         let pdf_path = dir.join("export.pdf");
-        try_print_pdf(html_path.to_str().unwrap(), &pdf_path).expect("pdf render");
+        try_print_pdf(&html_path, &pdf_path).expect("pdf render");
         let bytes = std::fs::read(&pdf_path).unwrap();
         assert!(bytes.starts_with(b"%PDF-"));
         println!("PDF written to {} ({} bytes)", pdf_path.display(), bytes.len());
@@ -607,7 +672,55 @@ mod tests {
         );
     }
 
-    use super::file_name_slug;
+    use super::{export_name_suffix, file_name_slug, rename_session_exports};
+
+    #[test]
+    fn exports_follow_the_session_title() {
+        let data = std::env::temp_dir().join(format!("flowcapture-exp-{}", uuid::Uuid::new_v4()));
+        let db = crate::storage::Database::new(data.clone()).unwrap();
+        let session = db.create_session(Some("Vecchio titolo".into())).unwrap();
+        let exports = db.session_dir(&session.id).join("exports");
+        let current = exports.join("Vecchio_titolo_2026-10-02_10-15-30.pdf");
+        let legacy = exports.join("export_3f2c1d4e-1111-4222-8333-944455556666.html");
+        for (idx, path) in [&current, &legacy].into_iter().enumerate() {
+            std::fs::write(path, b"x").unwrap();
+            db.create_export(&crate::storage::models::ExportRecord {
+                id: format!("e{idx}"),
+                session_id: session.id.clone(),
+                format: "pdf".into(),
+                path: path.to_string_lossy().to_string(),
+                created_at: "2026-10-01T08:00:00Z".into(),
+            })
+            .unwrap();
+        }
+
+        assert_eq!(rename_session_exports(&db, &session.id, "Nuovo titolo").unwrap(), 2);
+        let names: Vec<String> = db
+            .list_exports(&session.id)
+            .unwrap()
+            .iter()
+            .map(|e| std::path::Path::new(&e.path).file_name().unwrap().to_string_lossy().to_string())
+            .collect();
+        assert!(names.contains(&"Nuovo_titolo_2026-10-02_10-15-30.pdf".to_string()), "{names:?}");
+        assert!(names.iter().any(|n| n.starts_with("Nuovo_titolo_2026-10-01_") && n.ends_with(".html")), "{names:?}");
+        assert!(!current.exists() && !legacy.exists());
+        drop(db);
+        let _ = std::fs::remove_dir_all(data);
+    }
+
+    #[test]
+    fn export_suffix_survives_renames() {
+        assert_eq!(
+            export_name_suffix("Vecchio_titolo_2026-10-02_10-15-30", "").as_deref(),
+            Some("2026-10-02_10-15-30")
+        );
+        assert_eq!(
+            export_name_suffix("Titolo_2026-10-02_10-15-30_2", "").as_deref(),
+            Some("2026-10-02_10-15-30_2")
+        );
+        assert!(export_name_suffix("export_3f2c1d4e-1111-4222-8333-944455556666", "2026-10-02T08:00:00Z").is_some());
+        assert_eq!(export_name_suffix("appunti miei", ""), None);
+    }
 
     #[test]
     fn slugs_are_safe_file_names() {

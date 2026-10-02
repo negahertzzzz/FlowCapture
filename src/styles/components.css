@@ -421,3 +421,13 @@
 .anno-newstep-title { font-weight: 600; }
 .anno-note { font-size: 11px; color: var(--dim); }
 .anno-newstep-fields { margin-top: 10px; }
+
+/* ---------- Sessions folder (mirror) ---------- */
+.mirror-path {
+  display: flex; align-items: center; gap: 8px; margin-top: 14px; padding: 10px 12px; max-width: 720px;
+  border: 1px solid var(--hair); border-radius: 8px; background: rgba(0,0,0,.2);
+  font-family: var(--mono); font-size: 12.5px; color: var(--text); word-break: break-all;
+}
+.mirror-path svg { color: var(--mint); flex: none; }
+.mirror-path-empty { color: var(--dim); font-family: var(--sans); }
+.mirror-actions { display: flex; gap: 8px; flex-wrap: wrap; }

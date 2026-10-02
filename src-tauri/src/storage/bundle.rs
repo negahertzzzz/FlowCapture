@@ -49,11 +49,62 @@ pub struct BundleScreenshotMeta {
     pub file_name: String,
 }
 
+/// Where the files of a session bundle go: a `.flowcapture` zip archive or a plain folder.
+pub(crate) trait BundleSink {
+    /// Copies `source` to `entry` (a `/`-separated relative path). Each entry is written once.
+    fn add_file(&mut self, entry: &str, source: &Path) -> Result<()>;
+    fn add_bytes(&mut self, entry: &str, bytes: &[u8]) -> Result<()>;
+}
+
+struct ZipSink {
+    zip: ZipWriter<File>,
+    written: HashSet<String>,
+}
+
+impl BundleSink for ZipSink {
+    fn add_file(&mut self, entry: &str, source: &Path) -> Result<()> {
+        add_file(&mut self.zip, &mut self.written, entry, source)
+    }
+
+    fn add_bytes(&mut self, entry: &str, bytes: &[u8]) -> Result<()> {
+        if !self.written.insert(entry.to_string()) {
+            return Ok(());
+        }
+        self.zip.start_file(
+            entry,
+            SimpleFileOptions::default().compression_method(CompressionMethod::Deflated),
+        )?;
+        self.zip.write_all(bytes)?;
+        Ok(())
+    }
+}
+
 pub fn export_session_bundle(
     db: &Database,
     session_id: &str,
     target_path: &Path,
 ) -> Result<PathBuf> {
+    db.get_session(session_id)?.context("Session not found for export")?;
+    if let Some(parent) = target_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let file = File::create(target_path)
+        .with_context(|| format!("Failed to create export bundle at {}", target_path.display()))?;
+    let mut sink = ZipSink { zip: ZipWriter::new(file), written: HashSet::new() };
+
+    let manifest = write_session_bundle(db, session_id, &mut sink)?;
+    sink.add_bytes("manifest.json", &serde_json::to_vec_pretty(&manifest)?)?;
+    sink.zip.finish()?;
+    Ok(target_path.to_path_buf())
+}
+
+/// Writes screenshots, media and exports of a session into `sink` and returns the manifest
+/// describing them (the caller stores it as `manifest.json`).
+pub(crate) fn write_session_bundle(
+    db: &Database,
+    session_id: &str,
+    sink: &mut dyn BundleSink,
+) -> Result<SessionBundleManifest> {
     let session = db
         .get_session(session_id)?
         .context("Session not found for export")?;
@@ -62,15 +113,6 @@ pub fn export_session_bundle(
     let ai_jobs = db.list_ai_jobs(session_id)?;
     let exports = db.list_exports(session_id)?;
     let session_dir = db.session_dir(session_id);
-
-    if let Some(parent) = target_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-
-    let file = File::create(target_path)
-        .with_context(|| format!("Failed to create export bundle at {}", target_path.display()))?;
-    let mut zip = ZipWriter::new(file);
-    let mut written: HashSet<String> = HashSet::new();
 
     // 1. Screenshots, with their derived variants (clean copy, annotated / click-highlighted copy)
     let mut manifest_screenshots = Vec::new();
@@ -90,7 +132,7 @@ pub fn export_session_bundle(
         if let Some(source) = source {
             for candidate in std::iter::once(source.clone()).chain(screenshot_variants(&source)) {
                 if let Some(name) = candidate.file_name().and_then(|n| n.to_str()) {
-                    add_file(&mut zip, &mut written, &format!("screenshots/{name}"), &candidate)?;
+                    sink.add_file(&format!("screenshots/{name}"), &candidate)?;
                 }
             }
         }
@@ -108,7 +150,7 @@ pub fn export_session_bundle(
     }
 
     // 2. Media: microphone audio, slideshow video and full HD video
-    let pack_media = |zip: &mut ZipWriter<File>, written: &mut HashSet<String>, stored: Option<&String>| -> Result<Option<String>> {
+    let pack_media = |sink: &mut dyn BundleSink, stored: Option<&String>| -> Result<Option<String>> {
         let Some(stored) = stored else {
             return Ok(None);
         };
@@ -121,15 +163,15 @@ pub fn export_session_bundle(
             .find(|p| p.is_file());
         match source {
             Some(source) => {
-                add_file(zip, written, &format!("media/{name}"), &source)?;
+                sink.add_file(&format!("media/{name}"), &source)?;
                 Ok(Some(name))
             }
             None => Ok(None),
         }
     };
-    let audio_file_name = pack_media(&mut zip, &mut written, session.audio_path.as_ref())?;
-    let video_file_name = pack_media(&mut zip, &mut written, session.video_path.as_ref())?;
-    let full_video_file_name = pack_media(&mut zip, &mut written, session.full_video_path.as_ref())?;
+    let audio_file_name = pack_media(sink, session.audio_path.as_ref())?;
+    let video_file_name = pack_media(sink, session.video_path.as_ref())?;
+    let full_video_file_name = pack_media(sink, session.full_video_path.as_ref())?;
 
     // 3. Exported documents, including the images folder the HTML / Markdown exports reference
     let exports_dir = session_dir.join("exports");
@@ -137,7 +179,7 @@ pub fn export_session_bundle(
         for path in walk_files(&exports_dir)? {
             if let Ok(relative) = path.strip_prefix(&exports_dir) {
                 let entry = relative.to_string_lossy().replace('\\', "/");
-                add_file(&mut zip, &mut written, &format!("exports/{entry}"), &path)?;
+                sink.add_file(&format!("exports/{entry}"), &path)?;
             }
         }
     }
@@ -145,7 +187,7 @@ pub fn export_session_bundle(
         let exp_path = Path::new(&export.path);
         if let Some(fname) = exp_path.file_name().and_then(|f| f.to_str()) {
             if exp_path.is_file() {
-                add_file(&mut zip, &mut written, &format!("exports/{fname}"), exp_path)?;
+                sink.add_file(&format!("exports/{fname}"), exp_path)?;
             }
         }
     }
@@ -216,15 +258,7 @@ pub fn export_session_bundle(
         aligned_events,
     };
 
-    let manifest_json = serde_json::to_vec_pretty(&manifest)?;
-    zip.start_file(
-        "manifest.json",
-        SimpleFileOptions::default().compression_method(CompressionMethod::Deflated),
-    )?;
-    zip.write_all(&manifest_json)?;
-
-    zip.finish()?;
-    Ok(target_path.to_path_buf())
+    Ok(manifest)
 }
 
 pub fn import_session_bundle(

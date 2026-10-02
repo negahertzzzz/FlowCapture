@@ -339,6 +339,10 @@ export const api = {
       }
     }),
   openLogsFolder: () => invoke<string>("open_logs_folder"),
+  getSessionMirrorDir: () => invoke<string | null>("get_session_mirror_dir"),
+  setSessionMirrorDir: (path: string | null) => invoke<number>("set_session_mirror_dir", { path }),
+  syncSessionMirror: () => invoke<number>("sync_session_mirror"),
+  openSessionMirrorDir: () => invoke<void>("open_session_mirror_dir"),
   openBrowserExtensionFolder: () => invoke<string>("open_browser_extension_folder"),
   getBrowserBridgeStatus: () =>
     invoke<{ port: number; recording: boolean }>("get_browser_bridge_status"),

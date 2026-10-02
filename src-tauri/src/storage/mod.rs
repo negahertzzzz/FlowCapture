@@ -12,11 +12,16 @@ use crate::storage::models::{
 };
 
 pub mod bundle;
+pub mod mirror;
 pub mod models;
+
+/// Called with the id of a session whose data changed (title, documentation, media, exports…).
+pub type SessionChangeListener = Box<dyn Fn(&str) + Send + Sync>;
 
 pub struct Database {
     conn: Mutex<Connection>,
     data_dir: PathBuf,
+    change_listener: std::sync::OnceLock<SessionChangeListener>,
 }
 
 impl Database {
@@ -28,10 +33,34 @@ impl Database {
         let db = Self {
             conn: Mutex::new(conn),
             data_dir: app_data_dir,
+            change_listener: std::sync::OnceLock::new(),
         };
         db.run_migrations()?;
         db.seed_default_providers()?;
         Ok(db)
+    }
+
+    /// Registers the observer told about every change to a session (used to keep the session
+    /// folder mirror up to date). Only the first registration is kept.
+    pub fn set_change_listener(&self, listener: SessionChangeListener) {
+        let _ = self.change_listener.set(listener);
+    }
+
+    pub fn notify_session_changed(&self, session_id: &str) {
+        if let Some(listener) = self.change_listener.get() {
+            listener(session_id);
+        }
+    }
+
+    fn session_of_screenshot(&self, screenshot_id: &str) -> Option<String> {
+        self.conn
+            .lock()
+            .query_row(
+                "SELECT session_id FROM screenshots WHERE id = ?1",
+                params![screenshot_id],
+                |row| row.get(0),
+            )
+            .ok()
     }
 
     pub fn session_dir(&self, session_id: &str) -> PathBuf {
@@ -149,6 +178,7 @@ impl Database {
     }
 
     pub fn update_session_status(&self, session_id: &str, status: SessionStatus) -> Result<()> {
+        self.notify_session_changed(session_id);
         self.conn.lock().execute(
             "UPDATE sessions SET status = ?1 WHERE id = ?2",
             params![status.as_str(), session_id],
@@ -162,6 +192,7 @@ impl Database {
         video_path: Option<String>,
         duration: i64,
     ) -> Result<()> {
+        self.notify_session_changed(session_id);
         let ended_at = Utc::now().to_rfc3339();
         self.conn.lock().execute(
             "UPDATE sessions SET status = ?1, ended_at = ?2, video_path = ?3, duration = ?4 WHERE id = ?5",
@@ -177,6 +208,7 @@ impl Database {
     }
 
     pub fn update_session_title(&self, session_id: &str, title: &str) -> Result<()> {
+        self.notify_session_changed(session_id);
         self.conn.lock().execute(
             "UPDATE sessions SET title = ?1 WHERE id = ?2",
             params![title, session_id],
@@ -185,6 +217,7 @@ impl Database {
     }
 
     pub fn update_session_video_path(&self, session_id: &str, video_path: &str) -> Result<()> {
+        self.notify_session_changed(session_id);
         self.conn.lock().execute(
             "UPDATE sessions SET video_path = ?1 WHERE id = ?2",
             params![video_path, session_id],
@@ -193,6 +226,7 @@ impl Database {
     }
 
     pub fn update_session_full_video_path(&self, session_id: &str, full_video_path: &str) -> Result<()> {
+        self.notify_session_changed(session_id);
         self.conn.lock().execute(
             "UPDATE sessions SET full_video_path = ?1 WHERE id = ?2",
             params![full_video_path, session_id],
@@ -201,6 +235,7 @@ impl Database {
     }
 
     pub fn update_session_documentation(&self, session_id: &str, markdown: &str) -> Result<()> {
+        self.notify_session_changed(session_id);
         self.conn.lock().execute(
             "UPDATE sessions SET documentation_md = ?1, status = ?2 WHERE id = ?3",
             params![markdown, SessionStatus::Ready.as_str(), session_id],
@@ -215,6 +250,7 @@ impl Database {
         steps_json: &str,
         compressed_events_json: &str,
     ) -> Result<()> {
+        self.notify_session_changed(session_id);
         self.conn.lock().execute(
             "UPDATE sessions SET documentation_md = ?1, steps_json = ?2, compressed_events_json = ?3, status = ?4 WHERE id = ?5",
             params![
@@ -229,6 +265,7 @@ impl Database {
     }
 
     pub fn update_session_audio(&self, session_id: &str, audio_path: &str) -> Result<()> {
+        self.notify_session_changed(session_id);
         self.conn.lock().execute(
             "UPDATE sessions SET audio_path = ?1 WHERE id = ?2",
             params![audio_path, session_id],
@@ -237,6 +274,7 @@ impl Database {
     }
 
     pub fn update_session_audio_transcript(&self, session_id: &str, transcript: &str) -> Result<()> {
+        self.notify_session_changed(session_id);
         self.conn.lock().execute(
             "UPDATE sessions SET audio_transcript = ?1 WHERE id = ?2",
             params![transcript, session_id],
@@ -245,6 +283,7 @@ impl Database {
     }
 
     pub fn update_session_audio_segments(&self, session_id: &str, segments_json: &str) -> Result<()> {
+        self.notify_session_changed(session_id);
         self.conn.lock().execute(
             "UPDATE sessions SET audio_segments_json = ?1 WHERE id = ?2",
             params![segments_json, session_id],
@@ -254,6 +293,7 @@ impl Database {
 
     /// Pause intervals of a finished recording, as a JSON array of epoch-ms `[start, end]` pairs.
     pub fn set_session_pauses(&self, session_id: &str, pauses_json: &str) -> Result<()> {
+        self.notify_session_changed(session_id);
         self.conn.lock().execute(
             "UPDATE sessions SET pauses_json = ?1 WHERE id = ?2",
             params![pauses_json, session_id],
@@ -437,6 +477,7 @@ impl Database {
     }
 
     pub fn insert_screenshot(&self, screenshot: &Screenshot) -> Result<()> {
+        self.notify_session_changed(&screenshot.session_id);
         self.conn.lock().execute(
             "INSERT INTO screenshots (id, session_id, path, timestamp_ms, trigger, selected, click_x, click_y, annotations_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
@@ -509,6 +550,9 @@ impl Database {
     }
 
     pub fn delete_screenshot(&self, screenshot_id: &str) -> Result<()> {
+        if let Some(session_id) = self.session_of_screenshot(screenshot_id) {
+            self.notify_session_changed(&session_id);
+        }
         self.conn.lock().execute(
             "DELETE FROM screenshots WHERE id = ?1",
             params![screenshot_id],
@@ -538,6 +582,9 @@ impl Database {
         click_x: Option<i64>,
         click_y: Option<i64>,
     ) -> Result<()> {
+        if let Some(session_id) = self.session_of_screenshot(screenshot_id) {
+            self.notify_session_changed(&session_id);
+        }
         self.conn.lock().execute(
             "UPDATE screenshots SET annotations_json = ?1, click_x = ?2, click_y = ?3 WHERE id = ?4",
             params![annotations_json, click_x, click_y, screenshot_id],
@@ -546,6 +593,7 @@ impl Database {
     }
 
     pub fn create_export(&self, export: &ExportRecord) -> Result<()> {
+        self.notify_session_changed(&export.session_id);
         self.conn.lock().execute(
             "INSERT INTO exports (id, session_id, format, path, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![
@@ -555,6 +603,14 @@ impl Database {
                 export.path,
                 export.created_at
             ],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_export_path(&self, export_id: &str, path: &str) -> Result<()> {
+        self.conn.lock().execute(
+            "UPDATE exports SET path = ?1 WHERE id = ?2",
+            params![path, export_id],
         )?;
         Ok(())
     }
@@ -677,6 +733,7 @@ impl Database {
         ai_jobs: &[AiJob],
         exports: &[ExportRecord],
     ) -> Result<()> {
+        self.notify_session_changed(&session.id);
         let mut conn = self.conn.lock();
         let tx = conn.transaction()?;
 

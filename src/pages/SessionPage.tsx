@@ -103,7 +103,9 @@ export function SessionPage() {
 
   const handleTitleSaved = useCallback((nextTitle: string) => {
     setSession((current) => (current ? { ...current, title: nextTitle } : current));
-  }, []);
+    // Exported files are renamed after the session: reload their new paths.
+    api.listExports(sessionId).then(setExports).catch(() => undefined);
+  }, [sessionId]);
 
   const { title, setTitle, saving } = useSessionTitle({
     sessionId,

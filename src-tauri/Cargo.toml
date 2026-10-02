@@ -56,3 +56,6 @@ objc2-foundation = "0.3"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 uiautomation = "0.25"
+# Same versions Tauri/wry use, so the WebView2 handles from `with_webview` share their types.
+webview2-com = "0.38"
+windows = "0.61"

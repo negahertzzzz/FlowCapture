@@ -118,7 +118,12 @@ pub fn update_session_title(
     state
         .db
         .update_session_title(&session_id, &title)
-        .map_err(|err| err.to_string())
+        .map_err(|err| err.to_string())?;
+    // Exported files carry the session name: keep them in sync with the new title.
+    if let Err(err) = crate::export::rename_session_exports(&state.db, &session_id, &title) {
+        crate::logger::write_entry("WARN", "export", &format!("could not rename exports: {err:#}"));
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -421,6 +426,7 @@ pub fn list_ai_jobs(state: State<'_, Arc<AppState>>, session_id: String) -> Resu
 
 #[tauri::command]
 pub async fn export_session(
+    app: AppHandle,
     state: State<'_, Arc<AppState>>,
     session_id: String,
     format: String,
@@ -434,7 +440,9 @@ pub async fn export_session(
         match format.as_str() {
             "markdown" => engine.export_markdown(&session_id, options),
             "html" => engine.export_html(&session_id, options),
-            "pdf" => engine.export_pdf(&session_id, options),
+            "pdf" => engine.export_pdf_with(&session_id, options, &|html, pdf, opts| {
+                print_pdf(&app, html, pdf, opts)
+            }),
             "video" => engine.export_video(&session_id),
             other => Err(anyhow!("unsupported export format: {other}")),
         }
@@ -442,6 +450,28 @@ pub async fn export_session(
     .await
     .map_err(|err| err.to_string())?
     .map_err(|err| err.to_string())
+}
+
+/// Windows: print with the app's own WebView2 first (independent of how Edge is installed or
+/// managed), then fall back to an external headless browser. Elsewhere: headless browser.
+fn print_pdf(
+    app: &AppHandle,
+    html: &std::path::Path,
+    pdf: &std::path::Path,
+    options: &crate::export::ExportOptions,
+) -> anyhow::Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        match crate::export::webview_pdf::print_html_to_pdf(app, html, pdf, &options.page_size) {
+            Ok(()) => return Ok(()),
+            Err(err) => {
+                crate::logger::write_entry("WARN", "export", &format!("WebView2 PDF printing failed, trying a browser: {err:#}"));
+            }
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = (app, options);
+    crate::export::try_print_pdf(html, pdf)
 }
 
 #[tauri::command]
@@ -1764,4 +1794,49 @@ mod doc_step_tests {
         carry_over_step_metadata(&mut parsed, &previous);
         assert!(parsed[0].annotations_json.is_none());
     }
+}
+
+/// Folder where every session is kept as a readable copy (`None` = feature off).
+#[tauri::command]
+pub fn get_session_mirror_dir(state: State<'_, Arc<AppState>>) -> Result<Option<String>, String> {
+    Ok(crate::storage::mirror::mirror_root(&state.db).map(|p| p.to_string_lossy().to_string()))
+}
+
+/// Sets (or clears, with `None`) the sessions folder and copies every session into it.
+/// Returns how many sessions are being written.
+#[tauri::command]
+pub fn set_session_mirror_dir(
+    state: State<'_, Arc<AppState>>,
+    path: Option<String>,
+) -> Result<usize, String> {
+    let value = path.map(|p| p.trim().to_string()).unwrap_or_default();
+    if !value.is_empty() {
+        std::fs::create_dir_all(&value).map_err(|err| format!("Cartella non utilizzabile: {err}"))?;
+    }
+    state
+        .db
+        .set_setting(crate::storage::mirror::MIRROR_DIR_SETTING, &value)
+        .map_err(|err| err.to_string())?;
+    if value.is_empty() {
+        return Ok(0);
+    }
+    crate::storage::mirror::sync_all(&state.db, &state.mirror).map_err(|err| err.to_string())
+}
+
+/// Re-copies every session into the sessions folder (e.g. after files were removed by hand).
+#[tauri::command]
+pub fn sync_session_mirror(state: State<'_, Arc<AppState>>) -> Result<usize, String> {
+    if crate::storage::mirror::mirror_root(&state.db).is_none() {
+        return Err("Nessuna cartella sessioni configurata".to_string());
+    }
+    crate::storage::mirror::sync_all(&state.db, &state.mirror).map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+pub fn open_session_mirror_dir(state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    let root = crate::storage::mirror::mirror_root(&state.db)
+        .ok_or_else(|| "Nessuna cartella sessioni configurata".to_string())?;
+    std::fs::create_dir_all(&root).map_err(|err| err.to_string())?;
+    open_in_file_manager(&root);
+    Ok(())
 }

@@ -1336,6 +1336,8 @@ dependencies = [
  "tokio",
  "uiautomation",
  "uuid",
+ "webview2-com",
+ "windows 0.61.3",
  "xcap 0.4.1",
  "xcap 0.9.6",
  "zip",

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { AppButton } from "@/components/ui/AppButton";
 import { api, type ProviderConfig, type MonitorInfo } from "@/lib/api";
 import { Icon } from "@/components/ui/Icon";
@@ -33,6 +34,7 @@ export function SettingsPage() {
   const [fullVideoFps, setFullVideoFps] = useState("30");
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [mirrorDir, setMirrorDir] = useState<string | null>(null);
   const [bridgeInfo, setBridgeInfo] = useState<{ port: number; recording: boolean } | null>(null);
 
   async function refreshDevices() {
@@ -131,6 +133,7 @@ export function SettingsPage() {
     if (nextMonitorId) setSelectedMonitorId(nextMonitorId);
     setMonitors(nextMonitors);
     api.getBrowserBridgeStatus().then(setBridgeInfo).catch(() => {});
+    api.getSessionMirrorDir().then(setMirrorDir).catch(() => {});
     await refreshDevices();
   }
 
@@ -185,6 +188,42 @@ export function SettingsPage() {
   }
 
   const activeProvider = providers.find((provider) => provider.enabled);
+
+  async function chooseMirrorDir() {
+    try {
+      const picked = await openDialog({
+        directory: true,
+        multiple: false,
+        title: "Cartella in cui salvare una copia di ogni sessione",
+        defaultPath: mirrorDir ?? undefined,
+      });
+      if (typeof picked !== "string" || !picked) return;
+      const count = await api.setSessionMirrorDir(picked);
+      setMirrorDir(picked);
+      setMessage(`Cartella sessioni impostata: copia di ${count} sessioni in corso`);
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  async function disableMirrorDir() {
+    try {
+      await api.setSessionMirrorDir(null);
+      setMirrorDir(null);
+      setMessage("Copia automatica delle sessioni disattivata (i file già copiati restano dove sono)");
+    } catch (err) {
+      setError(String(err));
+    }
+  }
+
+  async function syncMirrorNow() {
+    try {
+      const count = await api.syncSessionMirror();
+      setMessage(`Aggiornamento di ${count} sessioni in corso`);
+    } catch (err) {
+      setError(String(err));
+    }
+  }
 
   async function saveSetting(key: string, value: string) {
     try {
@@ -250,6 +289,38 @@ export function SettingsPage() {
             return saveSetting("redaction_enabled", String(next));
           }}
         />
+      </div>
+
+      <div className="card set-card">
+        <h3>Cartella sessioni</h3>
+        <div className="sub">
+          Salva automaticamente una copia di ogni sessione in una cartella a tua scelta, come
+          un'esportazione completa: video, audio, screenshot, documentazione, esportazioni e un{" "}
+          <code>manifest.json</code> con passaggi ed eventi. Ogni sessione ha una sottocartella con il suo
+          nome, rinominata insieme alla sessione; la copia si aggiorna da sola a ogni modifica.
+        </div>
+        <div className="mirror-path">
+          <Icon name="folder" size={16} />
+          <span className={mirrorDir ? "" : "mirror-path-empty"}>{mirrorDir ?? "Nessuna cartella: copia disattivata"}</span>
+        </div>
+        <div className="settings-actions mirror-actions">
+          <AppButton kind="primary" icon="folder" onClick={chooseMirrorDir}>
+            {mirrorDir ? "Cambia cartella" : "Scegli cartella"}
+          </AppButton>
+          {mirrorDir ? (
+            <>
+              <AppButton kind="ghost" onClick={() => api.openSessionMirrorDir().catch((err) => setError(String(err)))}>
+                Apri cartella
+              </AppButton>
+              <AppButton kind="ghost" onClick={syncMirrorNow}>
+                Aggiorna ora
+              </AppButton>
+              <AppButton kind="ghost" onClick={disableMirrorDir}>
+                Disattiva
+              </AppButton>
+            </>
+          ) : null}
+        </div>
       </div>
 
       <div className="card set-card">
