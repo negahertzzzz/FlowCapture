@@ -69,9 +69,14 @@ pub fn log_api_request(
     let mut header_lines = String::new();
     if let Some(hdrs) = headers {
         for (k, v) in hdrs {
-            let masked = if k.eq_ignore_ascii_case("authorization") || k.eq_ignore_ascii_case("x-api-key") {
-                if v.len() > 10 {
-                    format!("{}...{}", &v[..5], &v[v.len() - 3..])
+            let lower = k.to_ascii_lowercase();
+            let is_secret = lower == "authorization" || lower.contains("key") || lower.contains("token");
+            let masked = if is_secret {
+                let chars: Vec<char> = v.chars().collect();
+                if chars.len() > 10 {
+                    let head: String = chars[..5].iter().collect();
+                    let tail: String = chars[chars.len() - 3..].iter().collect();
+                    format!("{head}...{tail}")
                 } else {
                     "***".to_string()
                 }

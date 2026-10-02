@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -25,6 +25,7 @@ pub struct SessionBundleManifest {
     pub exports: Vec<ExportRecord>,
     pub audio_file_name: Option<String>,
     pub video_file_name: Option<String>,
+    /// Full-resolution screen recording (`video/recording_hd.mp4`). Added in bundle version 2.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub full_video_file_name: Option<String>,
     /// Pause intervals (epoch ms) needed to align events with the audio track.
@@ -69,34 +70,29 @@ pub fn export_session_bundle(
     let file = File::create(target_path)
         .with_context(|| format!("Failed to create export bundle at {}", target_path.display()))?;
     let mut zip = ZipWriter::new(file);
-    let file_opts = SimpleFileOptions::default()
-        .compression_method(CompressionMethod::Deflated);
+    let mut written: HashSet<String> = HashSet::new();
 
-    // 1. Pack screenshots
+    // 1. Screenshots, with their derived variants (clean copy, annotated / click-highlighted copy)
     let mut manifest_screenshots = Vec::new();
     for s in &screenshots {
         let original_path = Path::new(&s.path);
         let file_name = original_path
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| format!("{}.jpg", s.id));
+            .unwrap_or_else(|| format!("{}.png", s.id));
 
-        let zip_entry_name = format!("screenshots/{file_name}");
-
-        let maybe_bytes = if original_path.is_file() {
-            std::fs::read(original_path).ok()
+        let source = if original_path.is_file() {
+            Some(original_path.to_path_buf())
         } else {
-            let candidate = session_dir.join("screenshots").join(&file_name);
-            if candidate.is_file() {
-                std::fs::read(candidate).ok()
-            } else {
-                None
-            }
+            Some(session_dir.join("screenshots").join(&file_name)).filter(|p| p.is_file())
         };
 
-        if let Some(bytes) = maybe_bytes {
-            zip.start_file(&zip_entry_name, file_opts)?;
-            zip.write_all(&bytes)?;
+        if let Some(source) = source {
+            for candidate in std::iter::once(source.clone()).chain(screenshot_variants(&source)) {
+                if let Some(name) = candidate.file_name().and_then(|n| n.to_str()) {
+                    add_file(&mut zip, &mut written, &format!("screenshots/{name}"), &candidate)?;
+                }
+            }
         }
 
         manifest_screenshots.push(BundleScreenshotMeta {
@@ -111,89 +107,45 @@ pub fn export_session_bundle(
         });
     }
 
-    // 2. Pack audio file if present
-    let mut audio_file_name = None;
-    if let Some(audio_path_str) = &session.audio_path {
-        let audio_path = Path::new(audio_path_str);
-        let name = audio_path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "audio.webm".to_string());
-
-        let maybe_bytes = if audio_path.is_file() {
-            std::fs::read(audio_path).ok()
-        } else {
-            let candidate = session_dir.join(&name);
-            if candidate.is_file() {
-                std::fs::read(candidate).ok()
-            } else {
-                None
-            }
+    // 2. Media: microphone audio, slideshow video and full HD video
+    let pack_media = |zip: &mut ZipWriter<File>, written: &mut HashSet<String>, stored: Option<&String>| -> Result<Option<String>> {
+        let Some(stored) = stored else {
+            return Ok(None);
         };
-
-        if let Some(bytes) = maybe_bytes {
-            zip.start_file(format!("media/{name}"), file_opts)?;
-            zip.write_all(&bytes)?;
-            audio_file_name = Some(name);
-        }
-    }
-
-    // 3. Pack video file if present
-    let mut video_file_name = None;
-    if let Some(video_path_str) = &session.video_path {
-        let video_path = Path::new(video_path_str);
-        let name = video_path
-            .file_name()
-            .map(|n| n.to_string_lossy().to_string())
-            .unwrap_or_else(|| "recording.mp4".to_string());
-
-        let maybe_bytes = if video_path.is_file() {
-            std::fs::read(video_path).ok()
-        } else {
-            let candidate = session_dir.join(&name);
-            if candidate.is_file() {
-                std::fs::read(candidate).ok()
-            } else {
-                None
-            }
+        let path = Path::new(stored);
+        let Some(name) = path.file_name().map(|n| n.to_string_lossy().to_string()) else {
+            return Ok(None);
         };
-
-        if let Some(bytes) = maybe_bytes {
-            zip.start_file(format!("media/{name}"), file_opts)?;
-            zip.write_all(&bytes)?;
-            video_file_name = Some(name);
+        let source = [path.to_path_buf(), session_dir.join(&name), session_dir.join("video").join(&name), session_dir.join("audio").join(&name)]
+            .into_iter()
+            .find(|p| p.is_file());
+        match source {
+            Some(source) => {
+                add_file(zip, written, &format!("media/{name}"), &source)?;
+                Ok(Some(name))
+            }
+            None => Ok(None),
         }
-    }
+    };
+    let audio_file_name = pack_media(&mut zip, &mut written, session.audio_path.as_ref())?;
+    let video_file_name = pack_media(&mut zip, &mut written, session.video_path.as_ref())?;
+    let full_video_file_name = pack_media(&mut zip, &mut written, session.full_video_path.as_ref())?;
 
-    // 3b. Pack the full-length HD video if present (stored under `video/` in the session)
-    let mut full_video_file_name = None;
-    if let Some(full_video_str) = &session.full_video_path {
-        let full_video = Path::new(full_video_str);
-        if full_video.is_file() {
-            let name = full_video
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| "recording_hd.mp4".to_string());
-            // Media entries share one folder: keep the timelapse and the HD video apart.
-            if video_file_name.as_deref() != Some(name.as_str()) {
-                zip.start_file(format!("media/{name}"), file_opts)?;
-                let mut source = File::open(full_video)?;
-                std::io::copy(&mut source, &mut zip)?;
-                full_video_file_name = Some(name);
+    // 3. Exported documents, including the images folder the HTML / Markdown exports reference
+    let exports_dir = session_dir.join("exports");
+    if exports_dir.is_dir() {
+        for path in walk_files(&exports_dir)? {
+            if let Ok(relative) = path.strip_prefix(&exports_dir) {
+                let entry = relative.to_string_lossy().replace('\\', "/");
+                add_file(&mut zip, &mut written, &format!("exports/{entry}"), &path)?;
             }
         }
     }
-
-    // 4. Pack exports directory files if present
     for export in &exports {
         let exp_path = Path::new(&export.path);
-        if exp_path.is_file() {
-            if let Some(fname) = exp_path.file_name().and_then(|f| f.to_str()) {
-                if let Ok(bytes) = std::fs::read(exp_path) {
-                    let zip_entry = format!("exports/{fname}");
-                    let _ = zip.start_file(&zip_entry, file_opts);
-                    let _ = zip.write_all(&bytes);
-                }
+        if let Some(fname) = exp_path.file_name().and_then(|f| f.to_str()) {
+            if exp_path.is_file() {
+                add_file(&mut zip, &mut written, &format!("exports/{fname}"), exp_path)?;
             }
         }
     }
@@ -248,7 +200,7 @@ pub fn export_session_bundle(
     };
 
     let manifest = SessionBundleManifest {
-        version: 1,
+        version: 2,
         exported_at: Utc::now().to_rfc3339(),
         app_version: env!("CARGO_PKG_VERSION").to_string(),
         session,
@@ -265,7 +217,10 @@ pub fn export_session_bundle(
     };
 
     let manifest_json = serde_json::to_vec_pretty(&manifest)?;
-    zip.start_file("manifest.json", file_opts)?;
+    zip.start_file(
+        "manifest.json",
+        SimpleFileOptions::default().compression_method(CompressionMethod::Deflated),
+    )?;
     zip.write_all(&manifest_json)?;
 
     zip.finish()?;
@@ -292,10 +247,16 @@ pub fn import_session_bundle(
     let manifest: SessionBundleManifest = serde_json::from_str(&manifest_str)
         .context("Failed to parse bundle manifest.json")?;
 
-    // 2. Check collision with existing sessions
-    let (target_session_id, is_remapped) = match db.get_session(&manifest.session.id)? {
-        Some(_) => (Uuid::new_v4().to_string(), true),
-        None => (manifest.session.id.clone(), false),
+    // 2. Check collision with existing sessions. The id becomes a directory name, so anything
+    //    that is not a plain UUID (e.g. "../../x") is replaced with a fresh one.
+    let id_is_safe = Uuid::parse_str(&manifest.session.id).is_ok();
+    let (target_session_id, is_remapped) = if !id_is_safe {
+        (Uuid::new_v4().to_string(), true)
+    } else {
+        match db.get_session(&manifest.session.id)? {
+            Some(_) => (Uuid::new_v4().to_string(), true),
+            None => (manifest.session.id.clone(), false),
+        }
     };
 
     let target_session_dir = db.session_dir(&target_session_id);
@@ -304,7 +265,9 @@ pub fn import_session_bundle(
     std::fs::create_dir_all(&target_screenshots_dir)?;
     std::fs::create_dir_all(&target_exports_dir)?;
 
-    // 3. Extract all files from zip into target session directory
+    // 3. Extract all files from zip into target session directory.
+    //    Entry names come from an untrusted archive: only plain file names directly under the
+    //    known folders are accepted, so "screenshots/../../evil.exe" cannot escape the session dir.
     for i in 0..zip.len() {
         let mut entry = zip.by_index(i)?;
         let entry_name = entry.name().to_string();
@@ -313,28 +276,28 @@ pub fn import_session_bundle(
             continue;
         }
 
-        if entry_name.starts_with("screenshots/") {
-            let file_name = entry_name.trim_start_matches("screenshots/");
-            if !file_name.is_empty() {
-                let out_path = target_screenshots_dir.join(file_name);
-                let mut out_file = File::create(&out_path)?;
-                std::io::copy(&mut entry, &mut out_file)?;
+        let target_dir = if let Some(rest) = entry_name.strip_prefix("screenshots/") {
+            safe_file_name(rest).map(|name| target_screenshots_dir.join(name))
+        } else if let Some(rest) = entry_name.strip_prefix("media/") {
+            safe_file_name(rest).map(|name| target_session_dir.join(name))
+        } else if let Some(rest) = entry_name.strip_prefix("exports/") {
+            safe_relative_path(rest).map(|relative| target_exports_dir.join(relative))
+        } else {
+            None
+        };
+
+        let Some(out_path) = target_dir else {
+            if !entry_name.eq_ignore_ascii_case("manifest.json") {
+                crate::logger::info("bundle", &format!("Skipping unsafe or unknown archive entry: {entry_name}"));
             }
-        } else if entry_name.starts_with("media/") {
-            let file_name = entry_name.trim_start_matches("media/");
-            if !file_name.is_empty() {
-                let out_path = target_session_dir.join(file_name);
-                let mut out_file = File::create(&out_path)?;
-                std::io::copy(&mut entry, &mut out_file)?;
-            }
-        } else if entry_name.starts_with("exports/") {
-            let file_name = entry_name.trim_start_matches("exports/");
-            if !file_name.is_empty() {
-                let out_path = target_exports_dir.join(file_name);
-                let mut out_file = File::create(&out_path)?;
-                std::io::copy(&mut entry, &mut out_file)?;
-            }
+            continue;
+        };
+
+        if let Some(parent) = out_path.parent() {
+            std::fs::create_dir_all(parent)?;
         }
+        let mut out_file = File::create(&out_path)?;
+        std::io::copy(&mut entry, &mut out_file)?;
     }
 
     // 4. Map screenshot IDs and local paths
@@ -342,6 +305,9 @@ pub fn import_session_bundle(
     let mut restored_screenshots = Vec::new();
 
     for meta in &manifest.screenshots {
+        let Some(file_name) = safe_file_name(&meta.file_name) else {
+            continue;
+        };
         let new_id = if is_remapped {
             let gen = Uuid::new_v4().to_string();
             screenshot_id_map.insert(meta.id.clone(), gen.clone());
@@ -351,7 +317,7 @@ pub fn import_session_bundle(
         };
 
         let local_path = target_screenshots_dir
-            .join(&meta.file_name)
+            .join(file_name)
             .to_string_lossy()
             .to_string();
 
@@ -374,27 +340,34 @@ pub fn import_session_bundle(
     session.id = target_session_id.clone();
 
     // Fix audio & video path to point to local extracted files
-    if let Some(audio_name) = &manifest.audio_file_name {
-        let local_audio = target_session_dir.join(audio_name);
-        if local_audio.is_file() {
-            session.audio_path = Some(local_audio.to_string_lossy().to_string());
-        }
-    } else {
-        session.audio_path = None;
-    }
+    session.audio_path = manifest
+        .audio_file_name
+        .as_deref()
+        .and_then(safe_file_name)
+        .map(|name| target_session_dir.join(name))
+        .filter(|path| path.is_file())
+        .map(|path| path.to_string_lossy().to_string());
 
-    if let Some(video_name) = &manifest.video_file_name {
-        let local_video = target_session_dir.join(video_name);
-        if local_video.is_file() {
-            session.video_path = Some(local_video.to_string_lossy().to_string());
-        }
-    } else {
-        session.video_path = None;
-    }
+    session.video_path = manifest
+        .video_file_name
+        .as_deref()
+        .and_then(safe_file_name)
+        .map(|name| target_session_dir.join(name))
+        .filter(|path| path.is_file())
+        .map(|path| path.to_string_lossy().to_string());
 
-    session.full_video_path = manifest
-        .full_video_file_name
-        .as_ref()
+    // Never keep a path that points outside this session.
+    let full_video_name = manifest.full_video_file_name.clone().or_else(|| {
+        session
+            .full_video_path
+            .as_deref()
+            .and_then(|p| Path::new(p).file_name())
+            .and_then(|name| name.to_str())
+            .map(str::to_string)
+    });
+    session.full_video_path = full_video_name
+        .as_deref()
+        .and_then(safe_file_name)
         .map(|name| target_session_dir.join(name))
         .filter(|path| path.is_file())
         .map(|path| path.to_string_lossy().to_string());
@@ -477,4 +450,201 @@ pub fn import_session_bundle(
     // 10. Return imported session
     db.get_session(&target_session_id)?
         .context("Failed to reload newly imported session")
+}
+
+/// Streams a file into the archive. Already-compressed media (images, video, audio) is stored
+/// as-is: deflating it again costs time and saves almost nothing. Each entry is written once.
+fn add_file(
+    zip: &mut ZipWriter<File>,
+    written: &mut HashSet<String>,
+    entry_name: &str,
+    source: &Path,
+) -> Result<()> {
+    if !written.insert(entry_name.to_string()) {
+        return Ok(());
+    }
+    let ext = source
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    let method = if matches!(
+        ext.as_str(),
+        "png" | "jpg" | "jpeg" | "webp" | "mp4" | "webm" | "m4a" | "mp3" | "ogg" | "zip" | "pdf"
+    ) {
+        CompressionMethod::Stored
+    } else {
+        CompressionMethod::Deflated
+    };
+    let options = SimpleFileOptions::default()
+        .compression_method(method)
+        .large_file(source.metadata().map(|m| m.len() >= u32::MAX as u64).unwrap_or(false));
+    let mut input = File::open(source)
+        .with_context(|| format!("Cannot read {} for the bundle", source.display()))?;
+    zip.start_file(entry_name, options)?;
+    std::io::copy(&mut input, zip)?;
+    Ok(())
+}
+
+/// `shot.png` -> existing `shot_clean.png` / `shot_annotated.png` next to it.
+fn screenshot_variants(path: &Path) -> Vec<PathBuf> {
+    let (Some(stem), Some(ext), Some(parent)) = (
+        path.file_stem().and_then(|s| s.to_str()),
+        path.extension().and_then(|e| e.to_str()),
+        path.parent(),
+    ) else {
+        return Vec::new();
+    };
+    ["clean", "annotated"]
+        .iter()
+        .map(|suffix| parent.join(format!("{stem}_{suffix}.{ext}")))
+        .filter(|p| p.is_file())
+        .collect()
+}
+
+fn walk_files(root: &Path) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir)? {
+            let path = entry?.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    Ok(files)
+}
+
+/// Like `safe_file_name`, but allows sub-folders ("screenshots/shot.png"): every component
+/// must be a plain name.
+fn safe_relative_path(path: &str) -> Option<PathBuf> {
+    let mut result = PathBuf::new();
+    for component in path.split('/') {
+        result.push(safe_file_name(component)?);
+    }
+    Some(result).filter(|p| p.components().count() > 0)
+}
+
+/// Returns `name` only if it is a single, plain file name (no directories, no `..`,
+/// no drive prefixes or absolute paths). Used to sanitize names read from imported bundles.
+fn safe_file_name(name: &str) -> Option<&str> {
+    let name = name.trim();
+    if name.is_empty()
+        || name == "."
+        || name == ".."
+        || name.contains(['/', '\\', ':', '\0'])
+    {
+        return None;
+    }
+    let path = Path::new(name);
+    if path.file_name().and_then(|f| f.to_str()) != Some(name) {
+        return None;
+    }
+    Some(name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{export_session_bundle, import_session_bundle, safe_file_name, safe_relative_path};
+    use crate::storage::models::Screenshot;
+    use crate::storage::Database;
+
+    #[test]
+    fn bundle_round_trip_keeps_all_session_files() {
+        let root = std::env::temp_dir().join(format!("flowcapture-bundle-{}", uuid::Uuid::new_v4()));
+        let db = Database::new(root.join("data")).unwrap();
+        let session = db.create_session(Some("Test".into())).unwrap();
+        let dir = db.session_dir(&session.id);
+
+        let write = |rel: &str| {
+            let path = dir.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, rel.as_bytes()).unwrap();
+            path
+        };
+        let shot = write("screenshots/s1.png");
+        write("screenshots/s1_annotated.png");
+        write("screenshots/s1_clean.png");
+        let audio = write("audio/mic.webm");
+        let video = write("video/recording.mp4");
+        let hd = write("video/recording_hd.mp4");
+        write("exports/guide.html");
+        write("exports/screenshots/step_1.png");
+
+        db.insert_screenshot(&Screenshot {
+            id: "shot-1".into(),
+            session_id: session.id.clone(),
+            path: shot.to_string_lossy().into(),
+            timestamp_ms: 1,
+            trigger: None,
+            selected: 1,
+            click_x: None,
+            click_y: None,
+            annotations_json: None,
+        })
+        .unwrap();
+        db.update_session_audio(&session.id, &audio.to_string_lossy()).unwrap();
+        db.update_session_video_path(&session.id, &video.to_string_lossy()).unwrap();
+        db.update_session_full_video_path(&session.id, &hd.to_string_lossy()).unwrap();
+
+        let archive = root.join("bundle.zip");
+        export_session_bundle(&db, &session.id, &archive).unwrap();
+
+        // Same database: the id collides, so the import gets a new session.
+        let imported = import_session_bundle(&db, &archive).unwrap();
+        assert_ne!(imported.id, session.id);
+        let new_dir = db.session_dir(&imported.id);
+        for rel in [
+            "screenshots/s1.png",
+            "screenshots/s1_annotated.png",
+            "screenshots/s1_clean.png",
+            "exports/guide.html",
+            "exports/screenshots/step_1.png",
+        ] {
+            assert!(new_dir.join(rel).is_file(), "missing {rel}");
+        }
+        assert!(imported.audio_path.as_deref().is_some_and(|p| std::path::Path::new(p).is_file()));
+        assert!(imported.video_path.as_deref().is_some_and(|p| std::path::Path::new(p).is_file()));
+        assert!(imported.full_video_path.as_deref().is_some_and(|p| std::path::Path::new(p).is_file()));
+
+        drop(db);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn accepts_nested_export_paths_only_when_safe() {
+        assert!(safe_relative_path("screenshots/a.png").is_some());
+        assert!(safe_relative_path("guide.html").is_some());
+        assert!(safe_relative_path("../a.png").is_none());
+        assert!(safe_relative_path("screenshots/../../a.png").is_none());
+        assert!(safe_relative_path("screenshots//a.png").is_none());
+    }
+
+    #[test]
+    fn accepts_plain_file_names() {
+        assert_eq!(safe_file_name("shot_001.png"), Some("shot_001.png"));
+        assert_eq!(safe_file_name("audio.webm"), Some("audio.webm"));
+    }
+
+    #[test]
+    fn rejects_traversal_and_absolute_paths() {
+        for bad in [
+            "",
+            ".",
+            "..",
+            "../evil.exe",
+            r"..\evil.exe",
+            "sub/dir.png",
+            r"C:\Windows\evil.dll",
+            "C:evil.dll",
+            "/etc/passwd",
+            "file.txt:stream",
+        ] {
+            assert_eq!(safe_file_name(bad), None, "should reject {bad:?}");
+        }
+    }
 }

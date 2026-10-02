@@ -38,18 +38,53 @@ impl Database {
         self.data_dir.join("sessions").join(session_id)
     }
 
+    /// Schema changes are numbered and applied once, in order. The number of the last applied
+    /// step is stored in SQLite's `PRAGMA user_version`, so a failing step is a real error
+    /// instead of being silently ignored.
     fn run_migrations(&self) -> Result<()> {
-        let migration = include_str!("../../migrations/001_initial.sql");
         let conn = self.conn.lock();
-        conn.execute_batch(migration)?;
-        let _ = conn.execute("ALTER TABLE sessions ADD COLUMN audio_path TEXT", []);
-        let _ = conn.execute("ALTER TABLE sessions ADD COLUMN audio_transcript TEXT", []);
-        let _ = conn.execute("ALTER TABLE sessions ADD COLUMN full_video_path TEXT", []);
-        let _ = conn.execute("ALTER TABLE sessions ADD COLUMN audio_segments_json TEXT", []);
-        let _ = conn.execute("ALTER TABLE screenshots ADD COLUMN click_x INTEGER", []);
-        let _ = conn.execute("ALTER TABLE screenshots ADD COLUMN click_y INTEGER", []);
-        let _ = conn.execute("ALTER TABLE screenshots ADD COLUMN annotations_json TEXT", []);
-        let _ = conn.execute("ALTER TABLE sessions ADD COLUMN pauses_json TEXT", []);
+        conn.execute_batch(include_str!("../../migrations/001_initial.sql"))?;
+
+        let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+
+        if version < 1 {
+            // Columns added after the first release. Databases created before versioned
+            // migrations may already have some of them.
+            for (table, column, kind) in [
+                ("sessions", "audio_path", "TEXT"),
+                ("sessions", "audio_transcript", "TEXT"),
+                ("sessions", "full_video_path", "TEXT"),
+                ("sessions", "audio_segments_json", "TEXT"),
+                ("screenshots", "click_x", "INTEGER"),
+                ("screenshots", "click_y", "INTEGER"),
+                ("screenshots", "annotations_json", "TEXT"),
+            ] {
+                add_column_if_missing(&conn, table, column, kind)
+                    .with_context(|| format!("migration 1: adding {table}.{column}"))?;
+            }
+            conn.execute_batch("PRAGMA user_version = 1")?;
+        }
+
+        if version < 2 {
+            // Replace retired default models, only where the user never changed them.
+            conn.execute(
+                "UPDATE providers SET model = ?1 WHERE id = 'claude' AND model = 'claude-3-5-haiku-latest'",
+                params![crate::ai::providers::DEFAULT_CLAUDE_MODEL],
+            )?;
+            conn.execute(
+                "UPDATE providers SET model = ?1 WHERE id = 'openai' AND model = 'gpt-4o-mini'",
+                params![crate::ai::providers::DEFAULT_OPENAI_MODEL],
+            )?;
+            conn.execute_batch("PRAGMA user_version = 2")?;
+        }
+
+        if version < 3 {
+            // Pause intervals of a recording, used to align events with the audio track.
+            add_column_if_missing(&conn, "sessions", "pauses_json", "TEXT")
+                .context("migration 3: adding sessions.pauses_json")?;
+            conn.execute_batch("PRAGMA user_version = 3")?;
+        }
+
         Ok(())
     }
 
@@ -62,28 +97,28 @@ impl Database {
                 "OpenAI",
                 "openai",
                 "https://api.openai.com/v1",
-                "gpt-4o-mini",
+                crate::ai::providers::DEFAULT_OPENAI_MODEL,
             ),
             (
                 "claude",
                 "Claude",
                 "claude",
                 "https://api.anthropic.com/v1",
-                "claude-3-5-haiku-latest",
+                crate::ai::providers::DEFAULT_CLAUDE_MODEL,
             ),
             (
                 "ollama",
                 "Ollama",
                 "ollama",
                 "http://localhost:11434",
-                "llama3.2",
+                crate::ai::providers::DEFAULT_OLLAMA_MODEL,
             ),
             (
                 "gemini",
                 "Gemini",
                 "gemini",
                 "https://generativelanguage.googleapis.com/v1beta",
-                "gemini-2.5-flash",
+                crate::ai::providers::DEFAULT_GEMINI_MODEL,
             ),
         ] {
             conn.execute(
@@ -103,7 +138,6 @@ impl Database {
         let session_dir = self.session_dir(&id);
         std::fs::create_dir_all(session_dir.join("screenshots"))?;
         std::fs::create_dir_all(session_dir.join("exports"))?;
-        std::fs::create_dir_all(session_dir.join("frames"))?;
 
         self.conn.lock().execute(
             "INSERT INTO sessions (id, title, status, started_at) VALUES (?1, ?2, ?3, ?4)",
@@ -755,4 +789,66 @@ fn preview_screenshot_path(paths: &[String]) -> Option<String> {
     };
 
     paths.get(index).cloned()
+}
+
+fn add_column_if_missing(conn: &Connection, table: &str, column: &str, kind: &str) -> Result<()> {
+    let exists = conn
+        .prepare(&format!("PRAGMA table_info({table})"))?
+        .query_map([], |row| row.get::<_, String>(1))?
+        .filter_map(|name| name.ok())
+        .any(|name| name == column);
+    if !exists {
+        conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {column} {kind}"), [])?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_dir() -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("flowcapture-test-{}", Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn migrations_are_versioned_and_idempotent() {
+        let dir = temp_dir();
+        {
+            let db = Database::new(dir.clone()).unwrap();
+            let version: i64 = db
+                .conn
+                .lock()
+                .query_row("PRAGMA user_version", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(version, 3);
+        }
+        // Reopening must not fail on already existing columns.
+        let db = Database::new(dir.clone()).unwrap();
+        let claude = db.list_providers().unwrap().into_iter().find(|p| p.id == "claude").unwrap();
+        assert_eq!(claude.model.as_deref(), Some(crate::ai::providers::DEFAULT_CLAUDE_MODEL));
+        drop(db);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn old_default_model_is_upgraded_but_custom_model_is_kept() {
+        let dir = temp_dir();
+        {
+            let db = Database::new(dir.clone()).unwrap();
+            let conn = db.conn.lock();
+            conn.execute("UPDATE providers SET model = 'claude-3-5-haiku-latest' WHERE id = 'claude'", []).unwrap();
+            conn.execute("UPDATE providers SET model = 'my-copilot-model' WHERE id = 'openai'", []).unwrap();
+            conn.execute_batch("PRAGMA user_version = 1").unwrap();
+        }
+        let db = Database::new(dir.clone()).unwrap();
+        let providers = db.list_providers().unwrap();
+        let model = |id: &str| providers.iter().find(|p| p.id == id).unwrap().model.clone();
+        assert_eq!(model("claude").as_deref(), Some(crate::ai::providers::DEFAULT_CLAUDE_MODEL));
+        assert_eq!(model("openai").as_deref(), Some("my-copilot-model"));
+        drop(db);
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

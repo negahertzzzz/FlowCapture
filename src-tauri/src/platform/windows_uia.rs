@@ -46,3 +46,34 @@ pub fn get_element_at_point(x: i32, y: i32) -> Option<UIElementMetadata> {
 pub fn get_element_at_point(_x: i32, _y: i32) -> Option<UIElementMetadata> {
     None
 }
+
+/// Tells whether the element that currently has keyboard focus is a password field,
+/// so keystrokes typed into it can be masked before they are stored.
+/// Holds one UI Automation client per thread (COM objects are thread-bound).
+pub struct PasswordFieldDetector {
+    #[cfg(target_os = "windows")]
+    automation: Option<uiautomation::UIAutomation>,
+}
+
+impl PasswordFieldDetector {
+    pub fn new() -> Self {
+        Self {
+            #[cfg(target_os = "windows")]
+            automation: uiautomation::UIAutomation::new().ok(),
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    pub fn focused_is_password(&self) -> bool {
+        self.automation
+            .as_ref()
+            .and_then(|automation| automation.get_focused_element().ok())
+            .and_then(|element| element.is_password().ok())
+            .unwrap_or(false)
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    pub fn focused_is_password(&self) -> bool {
+        false
+    }
+}

@@ -312,10 +312,25 @@ export function MarkdownEditor({
     insertFormatting(tableSnippet, "", "");
   }
 
+  function handleEditorKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (!(event.ctrlKey || event.metaKey)) return;
+    const key = event.key.toLowerCase();
+    if (key === "b") {
+      event.preventDefault();
+      insertFormatting("**", "**", t("md.bold_text", "bold text"));
+    } else if (key === "i") {
+      event.preventDefault();
+      insertFormatting("*", "*", t("md.italic_text", "italic text"));
+    } else if (key === "s" && onSave) {
+      event.preventDefault();
+      onSave();
+    }
+  }
+
   const previewVisible = viewMode === "split" || viewMode === "preview";
 
   return (
-    <div className="fc-markdown-editor">
+    <div className="fc-markdown-editor" style={{ minHeight }}>
       <div className="mde-toolbar">
         <div className="mde-group">
           <button
@@ -574,7 +589,7 @@ export function MarkdownEditor({
         </div>
       </div>
 
-      <div className="mde-body" style={{ minHeight }}>
+      <div className="mde-body" style={{ minHeight, maxHeight }}>
         {/* Off-screen mirror to measure exact textarea line heights and word wraps */}
         <div
           ref={mirrorRef}
@@ -599,6 +614,7 @@ export function MarkdownEditor({
                 lastCursor.current = e.currentTarget.selectionStart;
               }}
               onScroll={handleEditorScroll}
+              onKeyDown={handleEditorKeyDown}
               disabled={disabled}
               placeholder="Scrivi qui il markdown della documentazione o usa la toolbar sopra..."
               style={{ minHeight }}

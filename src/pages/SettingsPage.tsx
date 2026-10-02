@@ -23,9 +23,12 @@ export function SettingsPage() {
   const [transcriptionBaseUrl, setTranscriptionBaseUrl] = useState("");
   const [transcriptionLanguage, setTranscriptionLanguage] = useState("it");
   const [aiThinkingMode, setAiThinkingMode] = useState("auto");
-  const [aiCustomParams, setAiCustomParams] = useState("{\n  \"temperature\": 0.2\n}");
+  // Empty by default: a saved temperature would be sent with every request.
+  const [aiCustomParams, setAiCustomParams] = useState("");
   const [customParamsError, setCustomParamsError] = useState<string | null>(null);
-  const [aiGenerationTimeout, setAiGenerationTimeout] = useState("300");
+  const [aiGenerationTimeout, setAiGenerationTimeout] = useState("600");
+  const [docLanguage, setDocLanguage] = useState("Italian");
+  const [prices, setPrices] = useState<Record<string, { input: string; output: string }>>({});
   const [recordFullVideo, setRecordFullVideo] = useState(true);
   const [fullVideoFps, setFullVideoFps] = useState("30");
   const [message, setMessage] = useState<string | null>(null);
@@ -72,6 +75,7 @@ export function SettingsPage() {
       nextFullVideoFps,
       nextAiTimeout,
       nextDedupe,
+      nextDocLanguage,
     ] = await Promise.all([
       api.listProviders(),
       api.getSetting("redaction_enabled"),
@@ -92,6 +96,7 @@ export function SettingsPage() {
       api.getSetting("full_video_fps"),
       api.getSetting("ai_generation_timeout_seconds"),
       api.getSetting("dedupe_screenshots"),
+      api.getSetting("documentation_language"),
     ]);
     setProviders(nextProviders);
     setRedactionEnabled((nextSetting ?? "true") === "true");
@@ -105,7 +110,18 @@ export function SettingsPage() {
     setTranscriptionBaseUrl(nextTransUrl ?? "");
     setTranscriptionLanguage(nextTransLang ?? "it");
     setAiThinkingMode(nextThinkingMode ?? "auto");
-    setAiGenerationTimeout(nextAiTimeout || "300");
+    setAiGenerationTimeout(nextAiTimeout || "600");
+    setDocLanguage(nextDocLanguage || "Italian");
+    const priceEntries = await Promise.all(
+      nextProviders.map(async (p) => {
+        const [input, output] = await Promise.all([
+          api.getSetting(`price_input_per_mtok:${p.id}`),
+          api.getSetting(`price_output_per_mtok:${p.id}`),
+        ]);
+        return [p.id, { input: input ?? "", output: output ?? "" }] as const;
+      }),
+    );
+    setPrices(Object.fromEntries(priceEntries));
     setRecordFullVideo((nextRecordFullVideo ?? "true") !== "false");
     setFullVideoFps(nextFullVideoFps || "30");
     if (nextCustomParams) {
@@ -582,9 +598,35 @@ export function SettingsPage() {
         </div>
 
         <div className="settings-section">
+          <label className="settings-label">Lingua della documentazione generata</label>
+          <div className="sub settings-help">
+            Lingua in cui l'AI scrive la guida. I titoli delle sezioni seguono la lingua scelta, così l'export HTML li riconosce.
+          </div>
+          <div className="seg settings-seg-inline">
+            {[
+              { label: "Italiano", val: "Italian" },
+              { label: "English", val: "English" },
+            ].map((item) => (
+              <button
+                key={item.val}
+                type="button"
+                className={docLanguage === item.val ? "on" : ""}
+                onClick={async () => {
+                  setDocLanguage(item.val);
+                  await saveSetting("documentation_language", item.val);
+                  setMessage(`Lingua della documentazione: ${item.label}`);
+                }}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="settings-section">
           <label className="settings-label">Timeout Generazione Documentazione AI</label>
           <div className="sub settings-help">
-            Tempo massimo di attesa per il consolidamento dei passaggi e la stesura della documentazione con i modelli LLM. Per sessioni lunghe o modelli locali (Ollama / LM Studio), è consigliato un valore tra 180s e 600s.
+            Tempo massimo di attesa per la stesura della documentazione (il consolidamento dei passaggi usa metà di questo tempo). Allo scadere viene usato il template base. Per guide lunghe o modelli locali (Ollama / LM Studio) usa 600s o più.
           </div>
           <div className="settings-timeout-row">
             <div className="seg settings-seg-inline">
@@ -592,8 +634,9 @@ export function SettingsPage() {
                 { label: "60s", val: "60" },
                 { label: "120s (2m)", val: "120" },
                 { label: "180s (3m)", val: "180" },
-                { label: "300s (5m - Consigliato)", val: "300" },
-                { label: "600s (10m)", val: "600" },
+                { label: "300s (5m)", val: "300" },
+                { label: "600s (10m - Consigliato)", val: "600" },
+                { label: "1200s (20m)", val: "1200" },
               ].map((item) => (
                 <button
                   key={item.val}
@@ -732,6 +775,35 @@ export function SettingsPage() {
               defaultValue={provider.base_url ?? ""}
               onBlur={(event) => saveProvider({ ...provider, base_url: event.target.value })}
             />
+          </div>
+          <div className="field-row settings-provider-row">
+            {(["input", "output"] as const).map((kind) => (
+              <div className="field" key={kind}>
+                <label htmlFor={`${provider.id}-price-${kind}`}>
+                  {kind === "input" ? "Prezzo input ($ / 1M token)" : "Prezzo output ($ / 1M token)"}
+                </label>
+                <input
+                  id={`${provider.id}-price-${kind}`}
+                  inputMode="decimal"
+                  placeholder="automatico"
+                  value={prices[provider.id]?.[kind] ?? ""}
+                  onChange={(event) =>
+                    setPrices((prev) => ({
+                      ...prev,
+                      [provider.id]: { ...(prev[provider.id] ?? { input: "", output: "" }), [kind]: event.target.value },
+                    }))
+                  }
+                  onBlur={(event) =>
+                    api
+                      .setSetting(`price_${kind}_per_mtok:${provider.id}`, event.target.value.trim())
+                      .catch((err) => setError(String(err)))
+                  }
+                />
+              </div>
+            ))}
+          </div>
+          <div className="sub settings-price-note">
+            Usati per la stima dei costi. Vuoti = listino noto del modello. Con abbonamenti o proxy (es. GitHub Copilot) o modelli locali imposta 0.
           </div>
           <div className="settings-actions wide">
             <AppButton

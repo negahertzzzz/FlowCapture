@@ -1,6 +1,6 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -68,9 +68,7 @@ impl FullVideoRecorderHandle {
         let crf = config.quality_crf.clamp(15, 35).to_string();
         let fps_str = fps.to_string();
 
-        let mut command = Command::new(&ffmpeg_path);
-        hide_console_window(&mut command);
-        let mut child = command
+        let mut child = crate::process_util::background_command(&ffmpeg_path)
             .args([
                 "-hide_banner",
                 "-loglevel",
@@ -251,8 +249,7 @@ pub fn finalize_hd_video(session_dir: &Path, audio_path: Option<&Path>) -> Resul
     };
 
     if let Some(audio) = audio_path.filter(|p| p.is_file()) {
-        let mut cmd = Command::new(&ffmpeg);
-        hide_console_window(&mut cmd);
+        let mut cmd = crate::process_util::background_command(&ffmpeg);
         cmd.args([
             "-hide_banner",
             "-loglevel",
@@ -288,17 +285,4 @@ pub fn finalize_hd_video(session_dir: &Path, audio_path: Option<&Path>) -> Resul
     } else {
         Ok(Some(temp_video))
     }
-}
-
-/// ffmpeg is a console program: without this flag Windows opens a console window for it, which
-/// also ends up in the recording.
-pub(crate) fn hide_console_window(command: &mut Command) {
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
-    #[cfg(not(target_os = "windows"))]
-    let _ = command;
 }

@@ -288,19 +288,6 @@ pub struct DuplicateScreenshotGroup {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Documentation {
-    pub title: String,
-    pub steps: Vec<WorkflowStep>,
-    pub metadata: DocumentationMetadata,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DocumentationMetadata {
-    pub session_id: String,
-    pub created_at: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RedactionSummary {
     pub count: usize,
     pub patterns: Vec<String>,

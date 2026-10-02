@@ -28,9 +28,22 @@
     const alt = el.getAttribute('alt');
     if (alt && alt.trim()) return alt.trim();
 
-    // Priority 5: value on buttons or inputs
-    if ((el.tagName === 'INPUT' || el.tagName === 'BUTTON') && el.value && el.value.trim()) {
+    // Priority 5: value on buttons only. The value of text/password fields is what the
+    // user typed, so it is never read.
+    const inputType = (el.getAttribute('type') || '').toLowerCase();
+    const isButtonLike =
+      el.tagName === 'BUTTON' ||
+      (el.tagName === 'INPUT' && ['button', 'submit', 'reset'].includes(inputType));
+    if (isButtonLike && el.value && el.value.trim()) {
       return el.value.trim();
+    }
+
+    // Typed content of editable fields is never sent (e.g. textarea / contenteditable).
+    if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable) {
+      const label = el.labels && el.labels[0] && el.labels[0].innerText;
+      if (label && label.trim()) return label.trim().replace(/\s+/g, ' ').slice(0, 100);
+      const name = el.getAttribute('name');
+      return name && name.trim() ? name.trim() : '';
     }
 
     // Priority 6: innerText or textContent

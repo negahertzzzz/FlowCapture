@@ -1,5 +1,5 @@
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::Arc;
 use std::thread;
 
@@ -39,7 +39,7 @@ pub fn resolve_ffmpeg() -> Option<PathBuf> {
         }
     }
 
-    if Command::new("ffmpeg")
+    if crate::process_util::background_command("ffmpeg")
         .arg("-version")
         .output()
         .is_ok_and(|output| output.status.success())
@@ -183,11 +183,13 @@ pub fn spawn_session_full_video_finalize(
 
 pub fn encode_session_video(session_dir: &Path, duration_secs: i64) -> Result<Option<PathBuf>> {
     let output = session_dir.join("video/recording.mp4");
+    let frames_dir = session_dir.join("video/frames");
     if output.is_file() && output.metadata().is_ok_and(|meta| meta.len() > 1024) {
+        // Leftover frames from sessions encoded by older versions.
+        let _ = std::fs::remove_dir_all(&frames_dir);
         return Ok(Some(output));
     }
 
-    let frames_dir = session_dir.join("video/frames");
     if !frames_dir.is_dir() {
         return Ok(None);
     }
@@ -195,6 +197,9 @@ pub fn encode_session_video(session_dir: &Path, duration_secs: i64) -> Result<Op
     let audio_file = find_session_audio(session_dir);
     let duration = duration_secs.max(1) as f64;
     if encode_frames_to_mp4(&frames_dir, audio_file.as_deref(), &output, duration)? {
+        // The PNG frames are only the encoder input: once the MP4 exists they are dead weight
+        // (hundreds of full-resolution images per session).
+        let _ = std::fs::remove_dir_all(&frames_dir);
         Ok(Some(output))
     } else {
         Ok(None)
@@ -234,7 +239,7 @@ pub fn encode_frames_to_mp4(
     let fps = (frame_count as f64 / duration_secs.max(1.0)).clamp(1.0, 30.0);
     let fps_arg = format!("{fps:.3}");
 
-    let mut cmd = Command::new(ffmpeg);
+    let mut cmd = crate::process_util::background_command(ffmpeg);
     cmd.args([
         "-hide_banner",
         "-loglevel",

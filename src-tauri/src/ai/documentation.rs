@@ -4,6 +4,7 @@ use regex::Regex;
 use serde_json::json;
 
 use crate::events::is_flowcapture_app;
+use crate::ai::prompts::DocLanguage;
 use crate::storage::models::{Screenshot, SessionEvent, WorkflowStep};
 
 pub fn is_web_browser(app_name: &str) -> bool {
@@ -414,27 +415,35 @@ pub fn infer_workflow_summary(
     (title, overview)
 }
 
+/// Builds the base guide from the steps. Headings follow `lang` and match what the exporters
+/// recognise (`## Prerequisiti`, `### Passo N:`, `> **Perché:**`, ...).
 pub fn render_documentation_markdown(
+    lang: DocLanguage,
     title: &str,
     overview: &str,
     steps: &[WorkflowStep],
     screenshots: &[Screenshot],
 ) -> String {
-    let mut output = format!("# {title}\n\n{overview}\n\n## Prerequisites\n\nEnsure you have access to the applications and accounts used in this workflow.\n\n## Steps\n\n");
+    let h = lang.headings();
+    let mut output = format!(
+        "# {title}\n\n{overview}\n\n## {}\n\n{}\n\n## {}\n\n",
+        h.prerequisites, h.default_prerequisites, h.steps
+    );
     let lookup = screenshot_lookup(screenshots);
 
     for step in steps {
-        output.push_str(&format!("### Step {}: {}\n\n", step.step, step.title));
+        output.push_str(&format!("### {} {}: {}\n\n", h.step_prefix, step.step, step.title));
         output.push_str(&format!("{}\n\n", step.description));
         if let Some(reason) = &step.reason {
             if !reason.trim().is_empty() {
-                output.push_str(&format!("> **Why:** {}\n\n", reason.trim()));
+                output.push_str(&format!("> **{}:** {}\n\n", h.why, reason.trim()));
             }
         }
         if let Some(id) = step.screenshot_ids.first() {
             if let Some(shot) = lookup.get(id.as_str()) {
                 output.push_str(&format!(
-                    "![Step {}]({})\n\n",
+                    "![{} {}]({})\n\n",
+                    h.step_prefix,
                     step.step,
                     markdown_image_path(shot)
                 ));
@@ -442,7 +451,7 @@ pub fn render_documentation_markdown(
         }
     }
 
-    output.push_str("## Expected Result\n\nAfter completing all steps, the workflow should be finished successfully.\n");
+    output.push_str(&format!("## {}\n\n{}\n", h.expected_result, h.default_expected_result));
 
     output.trim().to_string()
 }
@@ -635,4 +644,37 @@ pub fn events_for_prompt(events: &[SessionEvent]) -> serde_json::Value {
         })
         .collect();
     json!(compact)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn step(n: usize, title: &str, reason: Option<&str>) -> WorkflowStep {
+        WorkflowStep {
+            step: n,
+            title: title.to_string(),
+            description: format!("Descrizione {n}"),
+            reason: reason.map(str::to_string),
+            timestamp_ms: n as i64 * 1000,
+            screenshot_ids: Vec::new(),
+            annotations_json: None,
+        }
+    }
+
+    /// The base template must stay readable by the styled HTML exporter in both languages.
+    #[test]
+    fn rendered_template_is_parsed_by_exporter() {
+        let steps = vec![step(1, "Apri il browser", Some("Serve per il login")), step(2, "Clicca Salva", None)];
+        for lang in [DocLanguage::Italian, DocLanguage::English] {
+            let md = render_documentation_markdown(lang, "Titolo", "Panoramica", &steps, &[]);
+            let parsed = crate::export::styled_html::parse_documentation_markdown(&md, &[], "Sessione", &[]);
+            assert_eq!(parsed.title, "Titolo");
+            assert_eq!(parsed.steps.len(), 2, "{lang:?}: {md}");
+            assert_eq!(parsed.steps[0].title, "Apri il browser");
+            assert_eq!(parsed.steps[0].reason.as_deref(), Some("Serve per il login"));
+            assert!(parsed.prerequisites.is_some(), "{lang:?}");
+            assert!(parsed.expected_result.is_some(), "{lang:?}");
+        }
+    }
 }

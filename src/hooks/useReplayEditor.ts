@@ -66,9 +66,10 @@ export function useReplayEditor({
 
   const screenshot = useMemo<Screenshot | null>(() => {
     if (!step) return null;
+    // Only the screenshot linked to the step: "the N-th screenshot" would be unrelated to it.
     const screenshotId = step.screenshot_ids[0];
-    return screenshots.find((shot) => shot.id === screenshotId) ?? screenshots[index] ?? null;
-  }, [step, screenshots, index]);
+    return screenshots.find((shot) => shot.id === screenshotId) ?? null;
+  }, [step, screenshots]);
 
   const annotations = useMemo<AnnotationItem[]>(() => {
     if (!step) return [];

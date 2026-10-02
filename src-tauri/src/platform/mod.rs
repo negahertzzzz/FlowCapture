@@ -24,7 +24,6 @@ pub use permissions::{
 pub use macos::refresh_dev_dock_icon;
 pub use traits::*;
 
-#[cfg(not(target_os = "linux"))]
 pub use common::find_monitor;
 pub use common::{list_monitors, SharedScreenshotCapturer};
 
@@ -39,7 +38,7 @@ pub fn create_platform_services() -> Result<PlatformServices> {
     }
     #[cfg(target_os = "windows")]
     {
-        return Ok(windows::WindowsPlatform::new()?.into_services());
+        Ok(windows::WindowsPlatform::new()?.into_services())
     }
     #[cfg(target_os = "linux")]
     {

@@ -9,6 +9,8 @@ import type { PreviewImageInfo } from "@/components/documentation/MarkdownPrevie
 import { ImageAnnotationModal } from "@/components/sessions/ImageAnnotationModal";
 import { ScreenshotPickerModal } from "@/components/sessions/ScreenshotPickerModal";
 import { DuplicateScreenshotsModal } from "@/components/sessions/DuplicateScreenshotsModal";
+import { AudioTab, type AudioTranscriptionStatus } from "@/components/sessions/AudioTab";
+import { TimelineTab } from "@/components/sessions/TimelineTab";
 import { ExportPanel } from "@/components/export/ExportPanel";
 import { ReplayPanel } from "@/components/replay/ReplayPanel";
 import { AppButton } from "@/components/ui/AppButton";
@@ -18,10 +20,10 @@ import { Toast } from "@/components/ui/Toast";
 import { useDebouncedEffect } from "@/hooks/useDebouncedEffect";
 import { useSessionTitle } from "@/hooks/useSessionTitle";
 import { useAiJob } from "@/context/AiJobContext";
+import { describeCostEstimate, describeUsage } from "@/lib/cost";
 import { useSessionsContext } from "@/context/SessionsContext";
 import {
   api,
-  type AudioSegment,
   type DuplicateScreenshotGroup,
   type ExportOptionsPayload,
   type ExportRecord,
@@ -31,7 +33,6 @@ import {
   type Screenshot,
   type WorkflowStep,
 } from "@/lib/api";
-import { timelineIcon } from "@/lib/icons";
 import { replaceImageOnLine } from "@/lib/markdownSteps";
 import { formatDuration } from "@/lib/utils";
 
@@ -70,19 +71,7 @@ export function SessionPage() {
 
   const [audioLogs, setAudioLogs] = useState<string[]>([]);
   const [showAudioLog, setShowAudioLog] = useState(false);
-  const [audioStatus, setAudioStatus] = useState<"idle" | "transcribing" | "success" | "error">("idle");
-  const [audioViewMode, setAudioViewMode] = useState<"segments" | "text">("segments");
-  const audioPlayerRef = useRef<HTMLAudioElement | null>(null);
-
-  const audioSegments: AudioSegment[] = useMemo(() => {
-    if (!session?.audio_segments_json) return [];
-    try {
-      const parsed = JSON.parse(session.audio_segments_json);
-      return Array.isArray(parsed) ? parsed : [];
-    } catch {
-      return [];
-    }
-  }, [session?.audio_segments_json]);
+  const [audioStatus, setAudioStatus] = useState<AudioTranscriptionStatus>("idle");
   const [annotatingScreenshot, setAnnotatingScreenshot] = useState<Screenshot | null>(null);
   const [exportingBundle, setExportingBundle] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -104,63 +93,6 @@ export function SessionPage() {
     kind?: "danger" | "warning" | "primary";
     action: () => Promise<void> | void;
   } | null>(null);
-
-  const [hideAllScreenshots, setHideAllScreenshots] = useState(false);
-  const [collapsedEvents, setCollapsedEvents] = useState<Record<number, boolean>>({});
-
-  const eventScreenshotsMap = useMemo(() => {
-    const map = new Map<number, Screenshot[]>();
-    if (!events.length) return map;
-
-    for (let i = 0; i < events.length; i++) {
-      map.set(i, []);
-    }
-
-    for (const shot of screenshots) {
-      let targetIdx = -1;
-      for (let i = 0; i < events.length; i++) {
-        const currentStart = i === 0 ? -Infinity : events[i].timestamp_ms - 150;
-        const nextStart = i < events.length - 1 ? events[i + 1].timestamp_ms - 150 : Infinity;
-        if (shot.timestamp_ms >= currentStart && shot.timestamp_ms < nextStart) {
-          targetIdx = i;
-          break;
-        }
-      }
-      if (targetIdx === -1) {
-        targetIdx = events.length - 1;
-      }
-      map.get(targetIdx)?.push(shot);
-    }
-    return map;
-  }, [events, screenshots]);
-
-  const isEventCollapsed = useCallback(
-    (index: number) => {
-      if (collapsedEvents[index] !== undefined) {
-        return collapsedEvents[index];
-      }
-      return hideAllScreenshots;
-    },
-    [collapsedEvents, hideAllScreenshots],
-  );
-
-  const toggleEventScreenshots = useCallback(
-    (index: number) => {
-      setCollapsedEvents((prev) => {
-        const current = prev[index] !== undefined ? prev[index] : hideAllScreenshots;
-        return { ...prev, [index]: !current };
-      });
-    },
-    [hideAllScreenshots],
-  );
-
-  const toggleAllScreenshots = useCallback(() => {
-    setHideAllScreenshots((prev) => {
-      const next = !prev;
-      setCollapsedEvents({});
-      return next;
-    });
-  }, []);
 
   const isCurrentSessionGenerating =
     activeJob?.sessionId === sessionId && !activeJob.isDone;
@@ -244,7 +176,7 @@ export function SessionPage() {
       setMarkdown(activeJob.result.markdown);
       setTab("Documentation");
       setRedactionSummary(activeJob.result.redaction_summary);
-      setToast("Documentation generated");
+      setToast(`Documentazione generata. ${describeUsage(activeJob.result)}`);
       refresh().catch(() => undefined);
     }
   }, [activeJob?.sessionId, activeJob?.isDone, activeJob?.result, sessionId]);
@@ -278,7 +210,8 @@ export function SessionPage() {
 
   useEffect(() => {
     if (!sessionId) return;
-    if (session?.video_path?.endsWith(".mp4") && session?.full_video_path?.endsWith(".mp4")) {
+    // One video is enough: with the HD recording on, the low-fps slideshow is not produced.
+    if (session?.video_path?.endsWith(".mp4") || session?.full_video_path?.endsWith(".mp4")) {
       return;
     }
 
@@ -314,7 +247,7 @@ export function SessionPage() {
         window.clearInterval(interval);
         return;
       }
-      if ((!session?.full_video_path || !session?.video_path) && session && session.duration > 0) {
+      if (session && session.duration > 0) {
         try {
           const updated = await api.getSession(sessionId);
           if (updated && (updated.video_path !== session.video_path || updated.full_video_path !== session.full_video_path)) {
@@ -337,20 +270,27 @@ export function SessionPage() {
     };
   }, [sessionId, session?.video_path, session?.full_video_path, session?.ended_at]);
 
-  function handleGenerate() {
-    if (session?.documentation_md && session.documentation_md.trim().length > 0) {
-      setConfirmModal({
-        isOpen: true,
-        title: "Sovrascrivere la Documentazione Esistente?",
-        message: "Per questa sessione esiste già una documentazione generata.\n\nAvviando una nuova generazione con l'AI, la documentazione attuale e i passaggi salvati verranno sovrascritti con i nuovi contenuti.\n\nDesideri procedere comunque?",
-        confirmLabel: "Rigenera e Sovrascrivi",
-        cancelLabel: "Annulla",
-        kind: "warning",
-        action: () => executeGenerate(),
-      });
-    } else {
-      executeGenerate();
+  async function handleGenerate() {
+    let estimateText: string;
+    try {
+      estimateText = describeCostEstimate(await api.estimateGenerationCost(sessionId));
+    } catch (err) {
+      // No provider configured or session not readable: the generation itself reports the real error.
+      estimateText = `Stima dei costi non disponibile (${String(err)}).`;
     }
+
+    const hasDocumentation = Boolean(session?.documentation_md && session.documentation_md.trim().length > 0);
+    setConfirmModal({
+      isOpen: true,
+      title: hasDocumentation ? "Sovrascrivere la Documentazione Esistente?" : "Generare la documentazione?",
+      message: hasDocumentation
+        ? `Per questa sessione esiste già una documentazione generata: la documentazione attuale e i passaggi salvati verranno sovrascritti.\n\n${estimateText}`
+        : estimateText,
+      confirmLabel: hasDocumentation ? "Rigenera e Sovrascrivi" : "Genera",
+      cancelLabel: "Annulla",
+      kind: hasDocumentation ? "warning" : "primary",
+      action: () => executeGenerate(),
+    });
   }
 
   async function executeGenerate() {
@@ -678,166 +618,11 @@ export function SessionPage() {
       </div>
 
       {tab === "Timeline" ? (
-        <div className="card panel">
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              marginBottom: "14px",
-              flexWrap: "wrap",
-              gap: "10px",
-            }}
-          >
-            <div>
-              <h3 style={{ margin: 0 }}>Compressed Timeline ({events.length})</h3>
-              <div className="pd">
-                {events.length} eventi registrati · {screenshots.length} screenshot associati nel workflow.
-              </div>
-            </div>
-            {screenshots.length > 0 && (
-              <AppButton
-                size="sm"
-                kind="ghost"
-                icon={hideAllScreenshots ? "eye" : "eyeOff"}
-                onClick={toggleAllScreenshots}
-                title={hideAllScreenshots ? "Mostra tutti gli screenshot per gli eventi" : "Nascondi tutti gli screenshot per gli eventi"}
-              >
-                {hideAllScreenshots ? "Mostra tutti gli screenshot" : "Nascondi tutti gli screenshot"}
-              </AppButton>
-            )}
-          </div>
-
-          <div className="tl-list">
-            {events.length === 0 ? (
-              <div className="pd">No compressed events yet.</div>
-            ) : (
-              events.map((event, index) => {
-                const eventShots = eventScreenshotsMap.get(index) ?? [];
-                const isCollapsed = isEventCollapsed(index);
-
-                return (
-                  <div
-                    key={`${event.timestamp_ms}-${index}`}
-                    className={`tl-evt${event.event_type.includes("click") ? " click" : ""}`}
-                  >
-                    <div className="tl-evt-header">
-                      <span className="tk">
-                        <Icon name={timelineIcon(event.event_type)} size={17} />
-                      </span>
-                      <div className="tinfo">
-                        <div className="tt">{event.event_type.replaceAll("_", " ")}</div>
-                        <div className="td">
-                          {event.app_name ?? "Unknown app"} · {JSON.stringify(event.payload)}
-                        </div>
-                      </div>
-
-                      <div className="tl-evt-meta">
-                        {eventShots.length > 0 ? (
-                          <button
-                            type="button"
-                            className={`tl-evt-toggle-btn${isCollapsed ? " collapsed" : ""}`}
-                            onClick={() => toggleEventScreenshots(index)}
-                            title={isCollapsed ? "Mostra gli screenshot di questo evento" : "Nascondi gli screenshot di questo evento"}
-                          >
-                            <Icon name="camera" size={13} />
-                            <span>
-                              {eventShots.length} {eventShots.length === 1 ? "screen" : "screen"}
-                            </span>
-                            <Icon name={isCollapsed ? "chevronDown" : "chevronUp"} size={12} />
-                          </button>
-                        ) : (
-                          <span className="tl-evt-no-shots">Nessun screenshot</span>
-                        )}
-
-                        <div className="ttime">{event.timestamp_ms}ms</div>
-                      </div>
-                    </div>
-
-                    {!isCollapsed && eventShots.length > 0 && (
-                      <div className="tl-evt-shots">
-                        {eventShots.map((shot) => {
-                          const hasClick = shot.click_x != null && shot.click_y != null;
-                          let annotationsCount = 0;
-                          if (shot.annotations_json) {
-                            try {
-                              const parsed = JSON.parse(shot.annotations_json);
-                              if (Array.isArray(parsed)) annotationsCount = parsed.length;
-                            } catch {}
-                          }
-                          const deltaMs = shot.timestamp_ms - event.timestamp_ms;
-                          const timeLabel =
-                            deltaMs === 0
-                              ? `${shot.timestamp_ms}ms`
-                              : deltaMs > 0
-                              ? `+${deltaMs}ms`
-                              : `${deltaMs}ms`;
-
-                          return (
-                            <div
-                              key={shot.id}
-                              className="tl-shot-card"
-                              onClick={() => setAnnotatingScreenshot(shot)}
-                              title="Clicca per aprire lo screenshot a schermo intero o annotare"
-                            >
-                              <div className="tl-shot-thumb">
-                                <img
-                                  src={convertFileSrc(shot.path)}
-                                  alt={shot.trigger ?? "Screenshot evento"}
-                                  loading="lazy"
-                                  onError={(e) => {
-                                    (e.target as HTMLImageElement).style.display = "none";
-                                  }}
-                                />
-                                <div className="tl-shot-badge">
-                                  <span>{shot.trigger?.replaceAll("_", " ") ?? "screenshot"}</span>
-                                </div>
-                                {hasClick && (
-                                  <div
-                                    className="tl-shot-ann-badge"
-                                    style={{ background: "rgba(16, 185, 129, 0.9)" }}
-                                    title="Punto di click registrato"
-                                  >
-                                    🎯 Click
-                                  </div>
-                                )}
-                                {annotationsCount > 0 && (
-                                  <div
-                                    className="tl-shot-ann-badge"
-                                    style={{
-                                      left: hasClick ? "65px" : "5px",
-                                    }}
-                                    title={`${annotationsCount} annotazioni`}
-                                  >
-                                    ✏️ {annotationsCount}
-                                  </div>
-                                )}
-                                <div className="tl-shot-hover-action">
-                                  <span className="tl-shot-hover-btn">
-                                    <Icon name="edit" size={12} />
-                                    <span>Modifica</span>
-                                  </span>
-                                </div>
-                              </div>
-                              <div className="tl-shot-footer">
-                                <span className="tl-shot-label" title={shot.trigger ?? "screenshot"}>
-                                  {shot.trigger?.replaceAll("_", " ") ?? "screenshot"}
-                                </span>
-                                <span className="tl-shot-time" title={`Timestamp assoluto: ${shot.timestamp_ms}ms`}>
-                                  {timeLabel}
-                                </span>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-                );
-              })
-            )}
-          </div>
-        </div>
+        <TimelineTab
+          events={events}
+          screenshots={screenshots}
+          onOpenScreenshot={setAnnotatingScreenshot}
+        />
       ) : null}
 
       {tab === "Screenshots" ? (
@@ -975,7 +760,7 @@ export function SessionPage() {
                     ? "rgba(239, 68, 68, 0.45)"
                     : translationStatus === "success"
                     ? "rgba(52, 211, 153, 0.45)"
-                    : "rgba(96, 165, 250, 0.4)"
+                    : "rgba(108, 198, 255, 0.4)"
                 }`,
                 borderRadius: "10px",
                 padding: "14px 16px",
@@ -1002,7 +787,7 @@ export function SessionPage() {
                         ? "#f87171"
                         : translationStatus === "success"
                         ? "#34d399"
-                        : "#60a5fa",
+                        : "var(--ice)",
                   }}
                 >
                   {translationStatus === "translating" && (
@@ -1011,7 +796,7 @@ export function SessionPage() {
                         display: "inline-block",
                         width: "12px",
                         height: "12px",
-                        border: "2px solid #60a5fa",
+                        border: "2px solid var(--ice)",
                         borderTopColor: "transparent",
                         borderRadius: "50%",
                         animation: "spin 0.8s linear infinite",
@@ -1103,337 +888,16 @@ export function SessionPage() {
       ) : null}
 
       {tab === "Audio" ? (
-        <div className="card panel">
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px", flexWrap: "wrap", gap: "10px" }}>
-            <div>
-              <h3>Registrazione Audio & Trascrizione Vocale</h3>
-              <div className="pd">Riascolta l'audio del microfono catturato e visualizza la trascrizione AI del parlato.</div>
-            </div>
-            {session.audio_path ? (
-              <AppButton
-                kind="primary"
-                icon="sparkles"
-                size="sm"
-                disabled={transcribing || busy}
-                onClick={handleTranscribeAudio}
-              >
-                {transcribing ? "Trascrizione in corso…" : session.audio_transcript ? "Ritrascrivi Audio" : "Trascrivi con AI"}
-              </AppButton>
-            ) : null}
-          </div>
-
-          {showAudioLog && (
-            <div
-              style={{
-                marginTop: "12px",
-                marginBottom: "16px",
-                background: "#0d1117",
-                border: `1px solid ${
-                  audioStatus === "error"
-                    ? "rgba(239, 68, 68, 0.45)"
-                    : audioStatus === "success"
-                    ? "rgba(52, 211, 153, 0.45)"
-                    : "rgba(96, 165, 250, 0.4)"
-                }`,
-                borderRadius: "10px",
-                padding: "14px 16px",
-                boxShadow: "0 6px 20px rgba(0, 0, 0, 0.35)",
-              }}
-            >
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  marginBottom: "8px",
-                }}
-              >
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "8px",
-                    fontWeight: 600,
-                    fontSize: "13px",
-                    color:
-                      audioStatus === "error"
-                        ? "#f87171"
-                        : audioStatus === "success"
-                        ? "#34d399"
-                        : "#60a5fa",
-                  }}
-                >
-                  {audioStatus === "transcribing" && (
-                    <span
-                      style={{
-                        display: "inline-block",
-                        width: "12px",
-                        height: "12px",
-                        border: "2px solid #60a5fa",
-                        borderTopColor: "transparent",
-                        borderRadius: "50%",
-                        animation: "spin 0.8s linear infinite",
-                      }}
-                    />
-                  )}
-                  {audioStatus === "success" && <Icon name="check" size={15} />}
-                  {audioStatus === "error" && <Icon name="alert" size={15} />}
-                  <span>
-                    {audioStatus === "transcribing"
-                      ? "Trascrizione audio in corso con servizio AI..."
-                      : audioStatus === "success"
-                      ? "Trascrizione vocale completata!"
-                      : "Errore durante la trascrizione vocale"}
-                  </span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setShowAudioLog(false)}
-                  style={{
-                    background: "rgba(255, 255, 255, 0.08)",
-                    border: "none",
-                    borderRadius: "6px",
-                    color: "#8b949e",
-                    cursor: "pointer",
-                    padding: "3px 8px",
-                    fontSize: "11px",
-                  }}
-                >
-                  Chiudi log ✕
-                </button>
-              </div>
-
-              <div
-                style={{
-                  fontFamily: "var(--mono, monospace)",
-                  fontSize: "12px",
-                  lineHeight: "1.5",
-                  color: "#c9d1d9",
-                  maxHeight: "160px",
-                  overflowY: "auto",
-                  background: "rgba(0, 0, 0, 0.4)",
-                  borderRadius: "6px",
-                  padding: "10px 12px",
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: "4px",
-                }}
-              >
-                {audioLogs.map((log, idx) => (
-                  <div
-                    key={idx}
-                    style={{
-                      color: log.includes("ERRORE")
-                        ? "#f87171"
-                        : log.includes("successo")
-                        ? "#34d399"
-                        : "#e6edf3",
-                    }}
-                  >
-                    {log}
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {session.audio_path ? (
-            <div style={{ marginTop: "16px", display: "flex", flexDirection: "column", gap: "16px" }}>
-              <div style={{ padding: "16px", background: "rgba(255,255,255,0.03)", borderRadius: "8px", border: "1px solid var(--hair)" }}>
-                <div style={{ fontSize: "13px", fontWeight: 500, marginBottom: "8px", color: "var(--text)" }}>
-                  Traccia Audio Microfono:
-                </div>
-                <audio
-                  ref={audioPlayerRef}
-                  controls
-                  src={convertFileSrc(session.audio_path)}
-                  style={{ width: "100%", height: "40px" }}
-                />
-              </div>
-
-              <div style={{ padding: "16px", background: "rgba(255,255,255,0.03)", borderRadius: "8px", border: "1px solid var(--hair)" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px", flexWrap: "wrap", gap: "8px" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
-                    <div style={{ fontSize: "13px", fontWeight: 500, color: "var(--text)" }}>
-                      Trascrizione del Parlato (Speech-to-Text):
-                    </div>
-                    {session.audio_transcript ? (
-                      <span style={{ fontSize: "11px", color: "#34d399", fontWeight: 600, background: "rgba(52, 211, 153, 0.15)", padding: "2px 8px", borderRadius: "10px" }}>
-                        ● Trascritto
-                      </span>
-                    ) : null}
-                    {audioSegments.length > 0 ? (
-                      <span style={{ fontSize: "11px", color: "#60a5fa", fontWeight: 600, background: "rgba(96, 165, 250, 0.15)", padding: "2px 8px", borderRadius: "10px" }}>
-                        {audioSegments.length} segmenti temporizzati
-                      </span>
-                    ) : null}
-                  </div>
-
-                  {session.audio_transcript && audioSegments.length > 0 && (
-                    <div style={{ display: "flex", background: "rgba(255, 255, 255, 0.05)", borderRadius: "6px", padding: "2px", border: "1px solid var(--hair)" }}>
-                      <button
-                        type="button"
-                        onClick={() => setAudioViewMode("segments")}
-                        style={{
-                          background: audioViewMode === "segments" ? "var(--color-primary)" : "transparent",
-                          color: audioViewMode === "segments" ? "#fff" : "var(--dim)",
-                          border: "none",
-                          borderRadius: "4px",
-                          padding: "4px 10px",
-                          fontSize: "12px",
-                          cursor: "pointer",
-                          fontWeight: audioViewMode === "segments" ? 600 : 400,
-                          transition: "all 0.15s",
-                        }}
-                      >
-                        Segmenti ({audioSegments.length})
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setAudioViewMode("text")}
-                        style={{
-                          background: audioViewMode === "text" ? "var(--color-primary)" : "transparent",
-                          color: audioViewMode === "text" ? "#fff" : "var(--dim)",
-                          border: "none",
-                          borderRadius: "4px",
-                          padding: "4px 10px",
-                          fontSize: "12px",
-                          cursor: "pointer",
-                          fontWeight: audioViewMode === "text" ? 600 : 400,
-                          transition: "all 0.15s",
-                        }}
-                      >
-                        Testo Continuo
-                      </button>
-                    </div>
-                  )}
-                </div>
-
-                {session.audio_transcript ? (
-                  audioViewMode === "segments" && audioSegments.length > 0 ? (
-                    <div style={{ display: "flex", flexDirection: "column", gap: "8px", maxHeight: "480px", overflowY: "auto", paddingRight: "4px" }}>
-                      {audioSegments.map((seg, idx) => {
-                        const startSec = Math.floor(seg.start_ms / 1000);
-                        const endSec = Math.floor(seg.end_ms / 1000);
-                        const fmtTime = (s: number) => `${Math.floor(s / 60).toString().padStart(2, "0")}:${(s % 60).toString().padStart(2, "0")}`;
-                        return (
-                          <div
-                            key={idx}
-                            style={{
-                              display: "flex",
-                              alignItems: "flex-start",
-                              gap: "12px",
-                              padding: "10px 14px",
-                              borderRadius: "6px",
-                              background: "var(--surface)",
-                              border: "1px solid var(--hair)",
-                              transition: "background 0.15s",
-                            }}
-                          >
-                            <button
-                              type="button"
-                              title="Ascolta questo segmento"
-                              onClick={() => {
-                                if (audioPlayerRef.current) {
-                                  audioPlayerRef.current.currentTime = seg.start_ms / 1000;
-                                  audioPlayerRef.current.play();
-                                }
-                              }}
-                              style={{
-                                display: "flex",
-                                alignItems: "center",
-                                gap: "5px",
-                                background: "rgba(96, 165, 250, 0.12)",
-                                border: "1px solid rgba(96, 165, 250, 0.3)",
-                                borderRadius: "4px",
-                                padding: "3px 8px",
-                                color: "#60a5fa",
-                                fontSize: "11px",
-                                fontFamily: "monospace",
-                                cursor: "pointer",
-                                flexShrink: 0,
-                                marginTop: "1px",
-                              }}
-                            >
-                              <span>▶</span>
-                              <span>{fmtTime(startSec)} - {fmtTime(endSec)}</span>
-                            </button>
-                            <div style={{ flex: 1, fontSize: "13.5px", lineHeight: "1.5", color: "var(--text)" }}>
-                              {seg.text}
-                            </div>
-                            {typeof seg.avg_logprob === "number" && seg.avg_logprob !== 0 && (
-                              <span
-                                title={`Whisper logprob: ${seg.avg_logprob.toFixed(2)}`}
-                                style={{
-                                  fontSize: "10px",
-                                  padding: "2px 6px",
-                                  borderRadius: "4px",
-                                  background: seg.avg_logprob > -0.6 ? "rgba(52, 211, 153, 0.1)" : "rgba(251, 191, 36, 0.1)",
-                                  color: seg.avg_logprob > -0.6 ? "#34d399" : "#fbbf24",
-                                  fontFamily: "monospace",
-                                  flexShrink: 0,
-                                }}
-                              >
-                                {Math.round(Math.min(100, Math.max(0, Math.exp(seg.avg_logprob) * 100)))}%
-                              </span>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  ) : (
-                    <div>
-                      {audioSegments.length === 0 && (
-                        <div
-                          style={{
-                            marginBottom: "12px",
-                            padding: "10px 14px",
-                            background: "rgba(234, 179, 8, 0.08)",
-                            border: "1px solid rgba(234, 179, 8, 0.3)",
-                            borderRadius: "6px",
-                            fontSize: "12.5px",
-                            color: "#fbbf24",
-                            display: "flex",
-                            alignItems: "center",
-                            gap: "8px",
-                          }}
-                        >
-                          <span>💡</span>
-                          <span>
-                            Questa sessione contiene una trascrizione solo testuale senza segmenti temporizzati.
-                            Clicca sul pulsante <strong>"Ritrascrivi Audio"</strong> in alto a destra per estrarre la segmentazione con il server Whisper aggiornato.
-                          </span>
-                        </div>
-                      )}
-                      <div
-                        style={{
-                          whiteSpace: "pre-wrap",
-                          fontSize: "14px",
-                          lineHeight: "1.6",
-                          color: "var(--text)",
-                          background: "var(--surface)",
-                          padding: "14px 16px",
-                          borderRadius: "6px",
-                          border: "1px solid var(--hair)",
-                        }}
-                      >
-                        {session.audio_transcript}
-                      </div>
-                    </div>
-                  )
-                ) : (
-                  <div style={{ color: "var(--dim)", fontSize: "13.5px" }}>
-                    Nessuna trascrizione generata finora. Clicca sul pulsante in alto a destra "Trascrivi con AI" per convertire la voce in testo.
-                  </div>
-                )}
-              </div>
-            </div>
-          ) : (
-            <div className="pd" style={{ marginTop: "16px" }}>
-              Nessun audio del microfono registrato per questa sessione. Per registrare l'audio, attiva l'opzione "Registra audio microfono" prima di avviare la registrazione.
-            </div>
-          )}
-        </div>
+        <AudioTab
+          session={session}
+          busy={busy}
+          transcribing={transcribing}
+          onTranscribe={handleTranscribeAudio}
+          showLog={showAudioLog}
+          onCloseLog={() => setShowAudioLog(false)}
+          status={audioStatus}
+          logs={audioLogs}
+        />
       ) : null}
 
       {tab === "Replay" ? (

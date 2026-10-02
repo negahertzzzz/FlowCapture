@@ -140,7 +140,7 @@ export function DuplicateScreenshotsModal({
             display: "flex",
             justifyContent: "space-between",
             alignItems: "center",
-            background: "var(--bg-2, #131b26)",
+            background: "var(--bg-2)",
           }}
         >
           <div>
@@ -153,8 +153,8 @@ export function DuplicateScreenshotsModal({
                 style={{
                   fontSize: "12px",
                   padding: "2px 8px",
-                  background: "rgba(56, 189, 248, 0.15)",
-                  color: "#38bdf8",
+                  background: "rgba(95, 233, 184, 0.15)",
+                  color: "var(--mint)",
                   borderRadius: "10px",
                   fontWeight: 600,
                 }}
@@ -205,9 +205,9 @@ export function DuplicateScreenshotsModal({
                   fontSize: "12px",
                   fontWeight: 500,
                   cursor: "pointer",
-                  border: activeGroupIndex === idx ? "1px solid #38bdf8" : "1px solid var(--hair)",
-                  background: activeGroupIndex === idx ? "rgba(56, 189, 248, 0.15)" : "transparent",
-                  color: activeGroupIndex === idx ? "#38bdf8" : "var(--dim)",
+                  border: activeGroupIndex === idx ? "1px solid var(--mint)" : "1px solid var(--hair)",
+                  background: activeGroupIndex === idx ? "rgba(95, 233, 184, 0.15)" : "transparent",
+                  color: activeGroupIndex === idx ? "var(--mint)" : "var(--dim)",
                 }}
               >
                 Gruppo {idx + 1} ({g.screenshot_ids.length} screen · {g.similarity_pct.toFixed(1)}%)

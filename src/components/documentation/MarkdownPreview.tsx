@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useRef, useState, type CSSProperties } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { Screenshot } from "@/lib/api";
@@ -17,6 +18,11 @@ export type PreviewImageActions = {
   onChange?: (info: PreviewImageInfo) => void;
   onAnnotate?: (info: PreviewImageInfo) => void;
 };
+
+/** Keeps screenshot paths working (they are resolved by `resolveImageSrc`) but drops script URLs. */
+function safeUrl(url: string): string {
+  return /^\s*(javascript|vbscript|data:text\/html)/i.test(url) ? "" : url;
+}
 
 interface MarkdownPreviewProps {
   markdown: string;
@@ -248,6 +254,21 @@ export function MarkdownPreview({
       };
     const Paragraph = editableBlock("p");
     return {
+      // Links open in the system browser: navigating the app window would replace the app.
+      a: ({ href, children }: any) => (
+        <a
+          href={href}
+          className="md-link"
+          onClick={(event) => {
+            event.preventDefault();
+            if (typeof href === "string" && /^(https?:|mailto:)/i.test(href)) {
+              openUrl(href).catch(() => undefined);
+            }
+          }}
+        >
+          {children}
+        </a>
+      ),
       img: function Img({ src, alt, node }: any) {
         const ctx = latest.current;
         return (
@@ -318,7 +339,7 @@ export function MarkdownPreview({
     <div className="doc-render md-preview" style={{ "--doc-zoom": String(zoomFactor) } as CSSProperties}>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
-        urlTransform={(url) => url}
+        urlTransform={safeUrl}
         components={components}
       >
         {markdown}

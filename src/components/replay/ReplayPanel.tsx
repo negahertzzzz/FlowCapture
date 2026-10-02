@@ -72,7 +72,7 @@ export function ReplayPanel({
           <div className="rp-step">
             <div className="rp-step-top">
               <div className="rpn">
-                Step {replay.index + 1} of {steps.length}
+                Passo {replay.index + 1} di {steps.length}
               </div>
               {!replay.editing ? (
                 <button type="button" className="rp-link-btn" onClick={replay.startEditing}>
